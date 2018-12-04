@@ -1,0 +1,2 @@
+h5py  # reading hdf5 files (.hdf5)
+pyhdf  # reading hdf4 files (.hdf)
