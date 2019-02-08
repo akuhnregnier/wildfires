@@ -102,16 +102,4 @@ class AvitabileAGB(Dataset):
 
 
 if __name__ == '__main__':
-    agb = AvitabileAGB()
-
-    plt.figure()
-    qplt.contourf(agb.get_cube(), 20)
-    plt.gca().coastlines()
-
-    new = agb.regrid()
-
-    plt.figure()
-    qplt.contourf(new, 20)
-    plt.gca().coastlines()
-
-    plt.show()
+    # agb = AvitabileAGB()
