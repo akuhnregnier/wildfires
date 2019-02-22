@@ -18,6 +18,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+DATA_DIR = os.path.join(os.path.expanduser('~'), 'Data')
+
 def get_centres(data):
     return (data[:-1] + data[1:]) / 2.
 
@@ -86,9 +88,7 @@ class Dataset(ABC):
 class AvitabileAGB(Dataset):
 
     def __init__(self):
-        self.dir = os.path.join(
-                os.path.expanduser('~'),
-                'Data', 'Avitabile_AGB')
+        self.dir = os.path.join(DATA_DIR, 'Avitabile_AGB')
         self.cube = iris.load_cube(os.path.join(
             self.dir, 'Avitabile_AGB_Map_0d25.nc'))
         self.select_data(
@@ -104,9 +104,7 @@ class AvitabileAGB(Dataset):
 class AvitabileThurnerAGB(Dataset):
 
     def __init__(self):
-        self.dir = os.path.join(
-                os.path.expanduser('~'),
-                'Data', 'AvitabileThurner-merged_AGB')
+        self.dir = os.path.join(DATA_DIR, 'AvitabileThurner-merged_AGB')
         self.cube = iris.load_cube(os.path.join(
             self.dir, 'Avi2015-Thu2014-merged_AGBtree.nc'))
         self.select_data(
@@ -120,9 +118,7 @@ class AvitabileThurnerAGB(Dataset):
 class GFEDv4s(Dataset):
 
     def __init__(self):
-        self.dir = os.path.join(
-                os.path.expanduser('~'),
-                'Data', 'gfedv4', 'data')
+        self.dir = os.path.join(DATA_DIR, 'gfedv4', 'data')
 
         filenames = glob.glob(os.path.join(self.dir, '*.hdf5'))
         filenames.sort()  # increasing years
