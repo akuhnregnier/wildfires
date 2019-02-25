@@ -108,9 +108,6 @@ class AvitabileThurnerAGB(Dataset):
         self.dir = os.path.join(DATA_DIR, 'AvitabileThurner-merged_AGB')
         self.cube = iris.load_cube(os.path.join(
             self.dir, 'Avi2015-Thu2014-merged_AGBtree.nc'))
-        self.select_data(
-                # latitude_range=(0, 40)
-                )
 
     def get_monthly_data(self, months=1):
         raise NotImplementedError()
@@ -143,8 +140,64 @@ class ESA_CCI_Landcover(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'ESA-CCI-LC_landcover',
                                 '0d25_landcover')
-        self.cube = iris.load_cube(os.path.join(
-                self.dir, 'MODIS_cci.BA.2001.2016.1440.720.365days.sum.nc'))
+        filenames = glob.glob(os.path.join(self.dir, '*.nc'))
+        filenames.sort()  # increasing years
+        self.raw_cubes = iris.load(filenames)
+
+        # To concatenate the cubes, take advantage of the fact that there
+        # are 17 cubes per year, and then simply loop over the years,
+        # joining the corresponding cubes into lists corresponding to their
+        # variable.
+        cube_lists = []
+        for i in range(17):
+            cube_lists.append(iris.cube.CubeList([]))
+
+        n_years = len(self.raw_cubes) / 17
+        assert np.isclose(n_years, int(n_years))
+        n_years = int(n_years)
+
+        years = range(1992, 2016)
+        assert len(years) == n_years
+
+        time_unit_str = 'hours since 1970-01-01 00:00:00'
+        calendar = 'gregorian'
+        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
+
+        for i in range(n_years):
+            time = iris.coords.DimCoord(
+                    [cf_units.date2num(datetime.datetime(years[i], 1, 1),
+                                       time_unit_str, calendar)],
+                    standard_name='time',
+                    units=time_unit)
+            for j in range(17):
+                cube = self.raw_cubes[(17*i) + j]
+
+                cube_coords = cube.coords()
+
+                cube2 = iris.cube.Cube(cube.lazy_data().reshape(1, 720, 1440))
+                cube2.attributes = cube.attributes
+                cube2.long_name = cube.long_name
+                cube2.name = cube.name
+                cube2.standard_name = cube.standard_name
+                cube2.units = cube.units
+                cube2.var_name = cube.var_name
+
+                for key in ['id', 'tracking_id', 'date_created']:
+                    del cube2.attributes[key]
+                cube2.attributes['time_coverage_start'] = (
+                        self.raw_cubes[0].attributes['time_coverage_start'])
+                cube2.attributes['time_coverage_end'] = (
+                        self.raw_cubes[-1].attributes['time_coverage_end'])
+
+                cube2.add_dim_coord(time, 0)
+                cube2.add_dim_coord(cube_coords[0], 1)
+                cube2.add_dim_coord(cube_coords[1], 2)
+
+                cube_lists[j].append(cube2)
+
+        self.cubes = iris.cube.CubeList([])
+        for cube_list in cube_lists:
+            self.cubes.append(cube_list.concatenate_cube())
 
     def get_monthly_data(self):
         raise NotImplementedError("Only yearly data available!")
@@ -153,9 +206,16 @@ class ESA_CCI_Landcover(Dataset):
 class ESA_CCI_Landcover_PFT(Dataset):
 
     def __init__(self):
-        self.dir = os.path.join(DATA_DIR, 'ESA-CCI-Fire_burnedarea')
-        self.cube = iris.load_cube(os.path.join(
-                self.dir, 'MODIS_cci.BA.2001.2016.1440.720.365days.sum.nc'))
+        self.dir = os.path.join(DATA_DIR, 'ESA-CCI-LC_landcover',
+                                '0d25_lc2pft')
+        self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+        time_coord = self.cubes[-1].coords()[0]
+        assert time_coord.standard_name == 'time'
+
+        # fix peculiar 'z' coordinate, which should be the number of years
+        for i in range(0, 2):
+            self.cubes[i].remove_coord('z')
+            self.cubes[i].add_dim_coord(time_coord, 0)
 
     def get_monthly_data(self):
         raise NotImplementedError("Only yearly data available!")
@@ -164,14 +224,25 @@ class ESA_CCI_Landcover_PFT(Dataset):
 class ESA_CCI_Soilmoisture(Dataset):
 
     def __init__(self):
-        self.dir = os.path.join(DATA_DIR, 'ESA-CCI-Fire_burnedarea')
-        self.cube = iris.load_cube(os.path.join(
-                self.dir, 'MODIS_cci.BA.2001.2016.1440.720.365days.sum.nc'))
+        self.dir = os.path.join(DATA_DIR, 'ESA-CCI-SM_soilmoisture')
+        self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
 
     def get_monthly_data(self):
         raise NotImplementedError("Only yearly data available!")
 
 
+class ESA_CCI_Soilmoisture_Daily(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'soil-moisture', 'daily_files',
+                                'COMBINED')
+        # TODO: Loading like this takes ages
+        self.cube = iris.load(sorted(glob.glob(os.path.join(
+                self.dir, '**', '*.nc'))))
+        # TODO: Join up individual cubes
+
+    def get_monthly_data(self):
+        raise NotImplementedError()
 
 
 class GFEDv4s(Dataset):
@@ -252,12 +323,62 @@ class GFEDv4s(Dataset):
         return self.cube.data
 
 
+class GlobFluo_SIF(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'GlobFluo_SIF')
+        self.cube = iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))
+
+    def get_monthly_data(self):
+        raise NotImplementedError()
+
+
+class Liu_VOD(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'Liu_VOD')
+        self.cube = iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))
+
+    def get_monthly_data(self):
+        raise NotImplementedError()
+
+
+class MOD15A2H_LAI_fPAR(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'MOD15A2H_LAI-fPAR')
+        self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+
+    def get_monthly_data(self):
+        raise NotImplementedError()
+
+
+class Simard_canopyheight(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'Simard_canopyheight')
+        self.cube = iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))
+
+    def get_monthly_data(self):
+        raise NotImplementedError()
+
+
+class Thurner_AGB(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'Thurner_AGB')
+        self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+
+    def get_monthly_data(self):
+        raise NotImplementedError()
+
+
 if __name__ == '__main__':
-    # agb = AvitabileThurnerAGB()
+    agb = AvitabileThurnerAGB()
     # plt.close('all')
-    # plt.figure()
-    # qplt.contourf(agb.cube, 20)
-    # plt.gca().coastlines()
+    plt.figure()
+    qplt.contourf(agb.cube, 20)
+    plt.gca().coastlines()
     # new = agb.regrid()
     # plt.figure()
     # qplt.contourf(new, 20)
@@ -282,4 +403,14 @@ if __name__ == '__main__':
     # plt.gca().coastlines()
     # plt.title('ESA Fire')
 
+    # a = ESA_CCI_Landcover()
+    #
+    # a = ESA_CCI_Soilmoisture()
+    # a = Simard_canopyheight()
+    # plt.figure()
+    # qplt.contourf(a.cube[0], 20)
+    # plt.gca().coastlines()
+    # plt.title('ESA Fire')
 
+    # a = ESA_CCI_Soilmoisture_Daily()
+    a = Thurner_AGB()
