@@ -138,6 +138,42 @@ class ESA_CCI_Fire(Dataset):
         raise NotImplementedError("Only yearly data available!")
 
 
+class ESA_CCI_Landcover(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'ESA-CCI-LC_landcover',
+                                '0d25_landcover')
+        self.cube = iris.load_cube(os.path.join(
+                self.dir, 'MODIS_cci.BA.2001.2016.1440.720.365days.sum.nc'))
+
+    def get_monthly_data(self):
+        raise NotImplementedError("Only yearly data available!")
+
+
+class ESA_CCI_Landcover_PFT(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'ESA-CCI-Fire_burnedarea')
+        self.cube = iris.load_cube(os.path.join(
+                self.dir, 'MODIS_cci.BA.2001.2016.1440.720.365days.sum.nc'))
+
+    def get_monthly_data(self):
+        raise NotImplementedError("Only yearly data available!")
+
+
+class ESA_CCI_Soilmoisture(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'ESA-CCI-Fire_burnedarea')
+        self.cube = iris.load_cube(os.path.join(
+                self.dir, 'MODIS_cci.BA.2001.2016.1440.720.365days.sum.nc'))
+
+    def get_monthly_data(self):
+        raise NotImplementedError("Only yearly data available!")
+
+
+
+
 class GFEDv4s(Dataset):
 
     def __init__(self):
