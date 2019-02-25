@@ -18,7 +18,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-DATA_DIR = os.path.join(os.path.expanduser('~'), 'Data')
+DATA_DIR = os.path.join(os.path.expanduser('~'), 'FIREDATA')
+
 
 def get_centres(data):
     return (data[:-1] + data[1:]) / 2.
@@ -112,7 +113,29 @@ class AvitabileThurnerAGB(Dataset):
                 )
 
     def get_monthly_data(self, months=1):
-        pass
+        raise NotImplementedError()
+
+
+class CarvalhaisGPP(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'Carvalhais_VegC-TotalC-Tau')
+        self.cube = iris.load_cube(os.path.join(
+            self.dir, 'Carvalhais.gpp_50.360.720.1.nc'))
+
+    def get_monthly_data(self):
+        raise NotImplementedError("Only mean data available!")
+
+
+class ESA_CCI_Fire(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'ESA-CCI-Fire_burnedarea')
+        self.cube = iris.load_cube(os.path.join(
+                self.dir, 'MODIS_cci.BA.2001.2016.1440.720.365days.sum.nc'))
+
+    def get_monthly_data(self):
+        raise NotImplementedError("Only yearly data available!")
 
 
 class GFEDv4s(Dataset):
@@ -194,7 +217,7 @@ class GFEDv4s(Dataset):
 
 
 if __name__ == '__main__':
-    agb = AvitabileThurnerAGB()
+    # agb = AvitabileThurnerAGB()
     # plt.close('all')
     # plt.figure()
     # qplt.contourf(agb.cube, 20)
@@ -205,9 +228,22 @@ if __name__ == '__main__':
     # plt.gca().coastlines()
     # plt.show()
 
-    fire = GFEDv4s()
+    # fire = GFEDv4s()
 
-    fire.regrid()
-    agb.regrid()
+    # fire.regrid()
+    # agb.regrid()
 
-    agb_data = np.zeros_like(fire.get_data()) + agb.get_data()[None, ...]
+    # agb_data = np.zeros_like(fire.get_data()) + agb.get_data()[None, ...]
+
+    # plt.close('all')
+    # plt.figure()
+    # qplt.contourf(CarvalhaisGPP().cube[0], 20)
+    # plt.gca().coastlines()
+    # plt.title('Carvalhais GPP')
+
+    # plt.figure()
+    # qplt.contourf(ESA_CCI_Fire().cube[0], 20)
+    # plt.gca().coastlines()
+    # plt.title('ESA Fire')
+
+
