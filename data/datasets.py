@@ -237,8 +237,8 @@ class ESA_CCI_Soilmoisture_Daily(Dataset):
         self.dir = os.path.join(DATA_DIR, 'soil-moisture', 'daily_files',
                                 'COMBINED')
         # TODO: Loading like this takes ages
-        self.cube = iris.load(sorted(glob.glob(os.path.join(
-                self.dir, '**', '*.nc'))))
+        # self.cube = iris.load(sorted(glob.glob(os.path.join(
+        #         self.dir, '**', '*.nc'))))
         # TODO: Join up individual cubes
 
     def get_monthly_data(self):
@@ -374,11 +374,11 @@ class Thurner_AGB(Dataset):
 
 
 if __name__ == '__main__':
-    agb = AvitabileThurnerAGB()
+    # agb = AvitabileThurnerAGB()
     # plt.close('all')
-    plt.figure()
-    qplt.contourf(agb.cube, 20)
-    plt.gca().coastlines()
+    # plt.figure()
+    # qplt.contourf(agb.cube, 20)
+    # plt.gca().coastlines()
     # new = agb.regrid()
     # plt.figure()
     # qplt.contourf(new, 20)
