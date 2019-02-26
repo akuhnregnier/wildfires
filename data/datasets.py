@@ -404,6 +404,14 @@ class MOD15A2H_LAI_fPAR(Dataset):
         self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
 
     def get_monthly_data(self):
+        # TODO: monthly data seems to be available, so all that's left to
+        # do is to strip away to day information, possible by averaging
+        # over each month just to be sure, and then present that data
+
+        # TODO: Since the day in the month for which the data is provided
+        # is variable, take into account neighbouring months as well in a
+        # weighted average (depending on how many days away from the middle
+        # of the month these other samples are)?
         raise NotImplementedError()
 
 
@@ -414,7 +422,8 @@ class Simard_canopyheight(Dataset):
         self.cube = iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))
 
     def get_monthly_data(self):
-        raise NotImplementedError()
+        raise NotImplementedError(
+            "No time-varying information, only lat-lon values available.")
 
 
 class Thurner_AGB(Dataset):
