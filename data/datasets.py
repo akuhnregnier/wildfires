@@ -12,6 +12,7 @@ import cf_units
 import glob
 import h5py
 import iris
+import iris.coord_categorisation
 from iris.time import PartialDateTime
 import iris.quickplot as qplt
 import matplotlib.pyplot as plt
@@ -19,6 +20,20 @@ import numpy as np
 
 
 DATA_DIR = os.path.join(os.path.expanduser('~'), 'FIREDATA')
+
+
+def load_cubes(files, n=None):
+    """Similar to iris.load(), but seems to scale much better with the
+    number of files to load.
+
+    """
+    # TODO: Avoid double sorting
+    # Make sure files are sorted so that times increase.
+    files.sort()
+    l = iris.cube.CubeList()
+    for f in files[slice(0, n, 1)]:
+        l.extend(iris.load(f))
+    return l
 
 
 def get_centres(data):
@@ -32,7 +47,7 @@ class Dataset(ABC):
         self.cube = None
 
     def get_data(self):
-        return self.cube.data
+        return self.cube.lazy_data()
 
     def select_data(self, latitude_range=(-90, 90),
                     longitude_range=(-180, 180)):
@@ -121,7 +136,17 @@ class CarvalhaisGPP(Dataset):
             self.dir, 'Carvalhais.gpp_50.360.720.1.nc'))
 
     def get_monthly_data(self):
-        raise NotImplementedError("Only mean data available!")
+        return self.cube.lazy_data()
+
+
+class CRU(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'CRU')
+        self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+
+    def get_monthly_data(self):
+        raise NotImplementedError()
 
 
 class ESA_CCI_Fire(Dataset):
@@ -227,22 +252,51 @@ class ESA_CCI_Soilmoisture(Dataset):
         self.dir = os.path.join(DATA_DIR, 'ESA-CCI-SM_soilmoisture')
         self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
 
+        # Fix units for cloud cover.
+        if self.cubes[0].name == 'cloud cover':
+            self.cubes[0].units = cf_units.Unit('percent')
+
     def get_monthly_data(self):
-        raise NotImplementedError("Only yearly data available!")
+        return self.cubes[-1].core_data()
 
 
 class ESA_CCI_Soilmoisture_Daily(Dataset):
 
     def __init__(self):
+        raise Exception("Use ESA_CCI_Soilmoisture Dataset for monthly data!")
         self.dir = os.path.join(DATA_DIR, 'soil-moisture', 'daily_files',
                                 'COMBINED')
-        # TODO: Loading like this takes ages
-        # self.cube = iris.load(sorted(glob.glob(os.path.join(
-        #         self.dir, '**', '*.nc'))))
-        # TODO: Join up individual cubes
+        files = sorted(glob.glob(os.path.join(
+                self.dir, '**', '*.nc')))
+        raw_cubes = load_cubes(files, 100)
+
+        # Delete varying attributes.
+        for c in raw_cubes:
+            for attr in ['id', 'tracking_id', 'date_created']:
+                del c.attributes[attr]
+
+        # For the observation timestamp cubes, remove the 'valid_range'
+        # attribute, which varies from cube to cube. The values of this
+        # parameter are [-0.5, 0.5] for day 0, [0.5, 1.5] for day 1, etc...
+        for c in raw_cubes[7:None:8]:
+            del c.attributes['valid_range']
+
+        self.cubes = raw_cubes.concatenate()
+
+        for c in self.cubes:
+            iris.coord_categorisation.add_month_number(c, 'time')
+            iris.coord_categorisation.add_year(c, 'time')
+
+        # Perform averaging over months in each year.
+        self.monthly_means = iris.cube.CubeList()
+        for c in self.cubes:
+            self.monthly_means.append(c.aggregated_by(
+                ['month_number', 'year'],
+                iris.analysis.MEAN))
 
     def get_monthly_data(self):
-        raise NotImplementedError()
+        # TODO: Isolate actual soil moisture
+        return self.monthly_means
 
 
 class GFEDv4s(Dataset):
@@ -413,4 +467,5 @@ if __name__ == '__main__':
     # plt.title('ESA Fire')
 
     # a = ESA_CCI_Soilmoisture_Daily()
-    a = Thurner_AGB()
+    # a = Thurner_AGB()
+    a = ESA_CCI_Soilmoisture_Daily()
