@@ -142,7 +142,7 @@ class CRU(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'CRU')
-        # Ignore warning regarding cloud cover units (which are fixed below).
+        # Ignore warning regarding cloud cover units - they are fixed below.
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=(
                 "Ignoring netCDF variable 'cld' invalid units 'percentage'"))
@@ -153,9 +153,9 @@ class CRU(Dataset):
             # belongs to which data cube.
             self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
 
-            # TODO: For now, remove the 'stn' cubes (see above).
-            self.cubes = iris.cube.CubeList(
-                    [cube for cube in self.cubes if cube.name() != 'stn'])
+        # TODO: For now, remove the 'stn' cubes (see above).
+        self.cubes = iris.cube.CubeList(
+                [cube for cube in self.cubes if cube.name() != 'stn'])
 
         # Fix units for cloud cover.
         if self.cubes[0].name() == 'cloud cover':
@@ -276,7 +276,7 @@ class ESA_CCI_Soilmoisture(Dataset):
     def get_monthly_data(self, start=datetime(2000, 1, 1),
                          end=datetime(2000, 12, 1)):
         return self.cubes[-1].extract(iris.Constraint(
-            time=lambda t: end > t.point > start))
+            time=lambda t: end >= t.point >= start))
 
 
 class ESA_CCI_Soilmoisture_Daily(Dataset):
@@ -317,7 +317,7 @@ class ESA_CCI_Soilmoisture_Daily(Dataset):
                          end=datetime(2000, 12, 1)):
         # TODO: Isolate actual soil moisture
         return self.monthly_means.extract(iris.Constraint(
-            time=lambda t: end > t.point > start))
+            time=lambda t: end >= t.point >= start))
 
 
 class GFEDv4s(Dataset):
@@ -397,7 +397,7 @@ class GFEDv4s(Dataset):
     def get_monthly_data(self, start=datetime(2000, 1, 1),
                          end=datetime(2000, 12, 1)):
         return self.cube.extract(iris.Constraint(
-            time=lambda t: end > t.point > start))
+            time=lambda t: end >= t.point >= start))
 
 
 class GlobFluo_SIF(Dataset):
@@ -406,9 +406,30 @@ class GlobFluo_SIF(Dataset):
         self.dir = os.path.join(DATA_DIR, 'GlobFluo_SIF')
         self.cube = iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))
 
-    def get_monthly_data(self):
-        # TODO: Calendar needs to be converted due to ValueError?
-        raise NotImplementedError()
+        # Need to convert to time coordinate, as values are relative to
+        # 1582-10-14, which is not supported by the cf_units gregorian
+        # calendar (needs to start from 1582-10-15, I think).
+
+        # Get the original number of days relative to 1582-10-14 00:00:00.
+        days_since_1582_10_14 = self.cube.coords()[0].points
+        # Define new time unit relative to a supported date.
+        new_time_unit = cf_units.Unit('days since 1582-10-16 00:00:00',
+                                      calendar='gregorian')
+        # The corresponding number of days for the new time unit.
+        days_since_1582_10_16 = days_since_1582_10_14 - 2
+
+        self.cube.remove_coord('time')
+        new_time = iris.coords.DimCoord(
+                days_since_1582_10_16,
+                standard_name='time',
+                units=new_time_unit)
+        self.cube.add_dim_coord(new_time, 0)
+
+
+    def get_monthly_data(self, start=datetime(2000, 1, 1),
+                         end=datetime(2000, 12, 1)):
+        return self.cube.extract(iris.Constraint(
+            time=lambda t: end >= t.point >= start))
 
 
 class Liu_VOD(Dataset):
@@ -417,9 +438,29 @@ class Liu_VOD(Dataset):
         self.dir = os.path.join(DATA_DIR, 'Liu_VOD')
         self.cube = iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))
 
-    def get_monthly_data(self):
-        raise NotImplementedError()
+        # Need to convert to time coordinate, as values are relative to
+        # 1582-10-14, which is not supported by the cf_units gregorian
+        # calendar (needs to start from 1582-10-15, I think).
 
+        # Get the original number of days relative to 1582-10-14 00:00:00.
+        days_since_1582_10_14 = self.cube.coords()[0].points
+        # Define new time unit relative to a supported date.
+        new_time_unit = cf_units.Unit('days since 1582-10-16 00:00:00',
+                                      calendar='gregorian')
+        # The corresponding number of days for the new time unit.
+        days_since_1582_10_16 = days_since_1582_10_14 - 2
+
+        self.cube.remove_coord('time')
+        new_time = iris.coords.DimCoord(
+                days_since_1582_10_16,
+                standard_name='time',
+                units=new_time_unit)
+        self.cube.add_dim_coord(new_time, 0)
+
+    def get_monthly_data(self, start=datetime(2000, 1, 1),
+                         end=datetime(2000, 12, 1)):
+        return self.cube.extract(iris.Constraint(
+            time=lambda t: end >= t.point >= start))
 
 class MOD15A2H_LAI_fPAR(Dataset):
 
@@ -427,16 +468,21 @@ class MOD15A2H_LAI_fPAR(Dataset):
         self.dir = os.path.join(DATA_DIR, 'MOD15A2H_LAI-fPAR')
         self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
 
-    def get_monthly_data(self):
-        # TODO: monthly data seems to be available, so all that's left to
-        # do is to strip away to day information, possible by averaging
-        # over each month just to be sure, and then present that data
+        months = []
+        for i in range(self.cubes[-1].shape[0]):
+            months.append(self.cubes[-1].coords()[0].cell(i).point.month)
 
+        assert np.all(np.diff(np.where(np.diff(months) != 1)) == 12), (
+                "The year should increase every 12 samples!")
+
+    def get_monthly_data(self, start=datetime(2000, 1, 1),
+                         end=datetime(2000, 12, 1)):
         # TODO: Since the day in the month for which the data is provided
         # is variable, take into account neighbouring months as well in a
         # weighted average (depending on how many days away from the middle
         # of the month these other samples are)?
-        raise NotImplementedError()
+        return self.cube.extract(iris.Constraint(
+            time=lambda t: end >= t.point >= start))
 
 
 class Simard_canopyheight(Dataset):
@@ -454,10 +500,31 @@ class Thurner_AGB(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'Thurner_AGB')
-        self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+        # Ignore warning about units, which are fixed below.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=(
+                "Ignoring netCDF variable 'biomass\_totalag' invalid units"
+                " 'kg\[C\]\/m2'"))
+            warnings.filterwarnings("ignore", message=(
+                "Ignoring netCDF variable 'biomass\_branches' invalid units"
+                " 'kg\[C\]\/m2'"))
+            warnings.filterwarnings("ignore", message=(
+                "Ignoring netCDF variable 'biomass\_foliage' invalid units"
+                " 'kg\[C\]\/m2'"))
+            warnings.filterwarnings("ignore", message=(
+                "Ignoring netCDF variable 'biomass\_roots' invalid units"
+                " 'kg\[C\]\/m2'"))
+            warnings.filterwarnings("ignore", message=(
+                "Ignoring netCDF variable 'biomass\_stem' invalid units"
+                " 'kg\[C\]\/m2'"))
+
+            self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+
+        for cube in self.cubes:
+            cube.units = cf_units.Unit('kg(C)/m2')
 
     def get_monthly_data(self):
-        raise NotImplementedError()
+        raise NotImplementedError("Data is static.")
 
 
 if __name__ == '__main__':
@@ -502,6 +569,13 @@ if __name__ == '__main__':
     # a = ESA_CCI_Soilmoisture_Daily()
     # a = Thurner_AGB()
 
-    a = CRU().get_monthly_data()
-    b = ESA_CCI_Soilmoisture().get_monthly_data()
-    c = GFEDv4s().get_monthly_data()
+    a = CRU().get_monthly_data(
+            datetime(2008, 1, 1), datetime(2010, 1, 1))
+    b = ESA_CCI_Soilmoisture().get_monthly_data(
+            datetime(2008, 1, 1), datetime(2010, 1, 1))
+    c = GFEDv4s().get_monthly_data(
+            datetime(2008, 1, 1), datetime(2010, 1, 1))
+    d = GlobFluo_SIF().get_monthly_data(
+            datetime(2008, 1, 1), datetime(2010, 1, 1))
+    e = Liu_VOD().get_monthly_data(
+            datetime(2008, 1, 1), datetime(2010, 1, 1))
