@@ -5,8 +5,9 @@
 """
 
 from abc import ABC, abstractmethod
-import datetime
+from datetime import datetime
 import os
+import warnings
 
 import cf_units
 import glob
@@ -47,7 +48,7 @@ class Dataset(ABC):
         self.cube = None
 
     def get_data(self):
-        return self.cube.lazy_data()
+        return self.cube.core_data()
 
     def select_data(self, latitude_range=(-90, 90),
                     longitude_range=(-180, 180)):
@@ -111,10 +112,8 @@ class AvitabileAGB(Dataset):
                 # latitude_range=(0, 40)
                 )
 
-    def get_monthly_data(self, months=1):
-        data = self.get_data()
-        # TODO: Monthly padding/broadcasting depending on input argument.
-        pass
+    def get_monthly_data(self):
+        raise NotImplementedError("Data is static.")
 
 
 class AvitabileThurnerAGB(Dataset):
@@ -124,8 +123,8 @@ class AvitabileThurnerAGB(Dataset):
         self.cube = iris.load_cube(os.path.join(
             self.dir, 'Avi2015-Thu2014-merged_AGBtree.nc'))
 
-    def get_monthly_data(self, months=1):
-        raise NotImplementedError()
+    def get_monthly_data(self):
+        raise NotImplementedError("Data is static.")
 
 
 class CarvalhaisGPP(Dataset):
@@ -136,17 +135,39 @@ class CarvalhaisGPP(Dataset):
             self.dir, 'Carvalhais.gpp_50.360.720.1.nc'))
 
     def get_monthly_data(self):
-        return self.cube.lazy_data()
+        raise NotImplementedError("Data is static.")
 
 
 class CRU(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'CRU')
-        self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+        # Ignore warning regarding cloud cover units (which are fixed below).
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=(
+                "Ignoring netCDF variable 'cld' invalid units 'percentage'"))
 
-    def get_monthly_data(self):
-        raise NotImplementedError()
+            # TODO: In order to use the 'stn' variable - with information
+            # about the measurement stations, the files have to be handled
+            # individually so that we can keep track of which stn cube
+            # belongs to which data cube.
+            self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+
+            # TODO: For now, remove the 'stn' cubes (see above).
+            self.cubes = iris.cube.CubeList(
+                    [cube for cube in self.cubes if cube.name() != 'stn'])
+
+        # Fix units for cloud cover.
+        if self.cubes[0].name() == 'cloud cover':
+            self.cubes[0].units = cf_units.Unit('percent')
+
+        # NOTE: Measurement times are listed as being in the middle of the
+        # month, requiring no further intervention.
+
+    def get_monthly_data(self, start=datetime(2000, 1, 1),
+                         end=datetime(2000, 12, 1)):
+        return self.cubes.extract(iris.Constraint(
+            time=lambda t: end > t > start))
 
 
 class ESA_CCI_Fire(Dataset):
@@ -190,7 +211,7 @@ class ESA_CCI_Landcover(Dataset):
 
         for i in range(n_years):
             time = iris.coords.DimCoord(
-                    [cf_units.date2num(datetime.datetime(years[i], 1, 1),
+                    [cf_units.date2num(datetime(years[i], 1, 1),
                                        time_unit_str, calendar)],
                     standard_name='time',
                     units=time_unit)
@@ -252,12 +273,10 @@ class ESA_CCI_Soilmoisture(Dataset):
         self.dir = os.path.join(DATA_DIR, 'ESA-CCI-SM_soilmoisture')
         self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
 
-        # Fix units for cloud cover.
-        if self.cubes[0].name == 'cloud cover':
-            self.cubes[0].units = cf_units.Unit('percent')
-
-    def get_monthly_data(self):
-        return self.cubes[-1].core_data()
+    def get_monthly_data(self, start=datetime(2000, 1, 1),
+                         end=datetime(2000, 12, 1)):
+        return self.cubes[-1].extract(iris.Constraint(
+            time=lambda t: end > t.point > start))
 
 
 class ESA_CCI_Soilmoisture_Daily(Dataset):
@@ -294,15 +313,17 @@ class ESA_CCI_Soilmoisture_Daily(Dataset):
                 ['month_number', 'year'],
                 iris.analysis.MEAN))
 
-    def get_monthly_data(self):
+    def get_monthly_data(self, start=datetime(2000, 1, 1),
+                         end=datetime(2000, 12, 1)):
         # TODO: Isolate actual soil moisture
-        return self.monthly_means
+        return self.monthly_means.extract(iris.Constraint(
+            time=lambda t: end > t.point > start))
 
 
 class GFEDv4s(Dataset):
 
     def __init__(self):
-        self.dir = os.path.join(DATA_DIR, 'gfedv4', 'data')
+        self.dir = os.path.join(DATA_DIR, 'gfed4', 'data')
 
         filenames = glob.glob(os.path.join(self.dir, '*.hdf5'))
         filenames.sort()  # increasing years
@@ -349,7 +370,7 @@ class GFEDv4s(Dataset):
             year = (m // 12) + min(years)
             assert year <= max(years)
             num_times.append(cf_units.date2num(
-                datetime.datetime(year, month, 1),
+                datetime(year, month, 1),
                 time_unit_str, calendar))
 
         times = iris.coords.DimCoord(
@@ -373,8 +394,10 @@ class GFEDv4s(Dataset):
                 # latitude_range=(0, 40)
                 )
 
-    def get_monthly_data(self, months=1):
-        return self.cube.data
+    def get_monthly_data(self, start=datetime(2000, 1, 1),
+                         end=datetime(2000, 12, 1)):
+        return self.cube.extract(iris.Constraint(
+            time=lambda t: end > t.point > start))
 
 
 class GlobFluo_SIF(Dataset):
@@ -384,6 +407,7 @@ class GlobFluo_SIF(Dataset):
         self.cube = iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))
 
     def get_monthly_data(self):
+        # TODO: Calendar needs to be converted due to ValueError?
         raise NotImplementedError()
 
 
@@ -477,4 +501,7 @@ if __name__ == '__main__':
 
     # a = ESA_CCI_Soilmoisture_Daily()
     # a = Thurner_AGB()
-    a = ESA_CCI_Soilmoisture_Daily()
+
+    a = CRU().get_monthly_data()
+    b = ESA_CCI_Soilmoisture().get_monthly_data()
+    c = GFEDv4s().get_monthly_data()
