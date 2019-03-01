@@ -6,6 +6,7 @@
 
 from abc import ABC, abstractmethod
 from datetime import datetime
+import glob
 import logging
 import operator
 import os
@@ -13,7 +14,6 @@ import pickle
 import warnings
 
 import cf_units
-import glob
 import h5py
 import iris
 import iris.coord_categorisation
@@ -999,23 +999,3 @@ if __name__ == '__main__':
     plt.hexbin(endog_data, model_results.fittedvalues, bins='log')
     plt.xlabel('real data')
     plt.ylabel('prediction')
-
-    '''
-    # Filter out 0s in the burned area data.
-    mask = np.isclose(endog_data, 0)
-    endog_data = endog_data[~mask]
-    exog_data = exog_data[~mask]
-
-    import scipy.special
-
-    transformed_burned_area = scipy.special.logit(endog_data)
-    indices = list(range(len(exog_data.columns)))
-    for i in indices:
-        new_indices = indices[:]
-        new_indices.remove(i)
-        sm.graphics.plot_partregress(
-                transformed_burned_area,
-                exog_data[exog_data.columns[i]],
-                exog_data[exog_data.columns[new_indices]])
-        plt.title(exog_data.columns[i])
-    '''

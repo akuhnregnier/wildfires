@@ -1,0 +1,9 @@
+cf_units
+h5py  # reading hdf5 files (.hdf5)
+iris
+matplotlib
+netCDF4
+numpy
+pandas
+pyhdf  # reading hdf4 files (.hdf)
+statsmodels
