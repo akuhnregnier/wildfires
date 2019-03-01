@@ -6,7 +6,10 @@
 
 from abc import ABC, abstractmethod
 from datetime import datetime
+import logging
+import operator
 import os
+import pickle
 import warnings
 
 import cf_units
@@ -17,10 +20,50 @@ import iris.coord_categorisation
 from iris.time import PartialDateTime
 import iris.quickplot as qplt
 import matplotlib.pyplot as plt
+import netCDF4
 import numpy as np
+import pandas as pd
+import statsmodels.api as sm
+# import statsmodels.genmod.families.links as links
 
 
 DATA_DIR = os.path.join(os.path.expanduser('~'), 'FIREDATA')
+pickle_file = os.path.join(DATA_DIR, 'cubes.pickle')
+
+
+def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180),
+                       **kwargs):
+    assert len(data.shape) == 2
+    new_latitudes = get_centres(np.linspace(*lat_lims, data.shape[0] + 1))
+    new_longitudes = get_centres(np.linspace(*lon_lims, data.shape[1] + 1))
+    new_lat_coord = iris.coords.DimCoord(
+            new_latitudes, standard_name='latitude',
+            units='degrees')
+    new_lon_coord = iris.coords.DimCoord(
+            new_longitudes, standard_name='longitude',
+            units='degrees')
+
+    grid_coords = [
+        (new_lat_coord, 0),
+        (new_lon_coord, 1)
+        ]
+    return iris.cube.Cube(data, dim_coords_and_dims=grid_coords, **kwargs)
+
+
+def data_map_plot(data, lat_lims=(-90, 90), lon_lims=(-180, 180),
+                  **kwargs):
+    """Used to plot data or an iris.cube.Cube on a map with coastlines.
+
+    """
+    if isinstance(data, iris.cube.Cube):
+        cube = data
+    else:
+        cube = dummy_lat_lon_cube(data, lat_lims, lon_lims, **kwargs)
+
+    fig = plt.figure()
+    qplt.contourf(cube)
+    plt.gca().coastlines()
+    return fig
 
 
 def load_cubes(files, n=None):
@@ -29,6 +72,10 @@ def load_cubes(files, n=None):
 
     """
     # TODO: Avoid double sorting
+    # NOTE: The order in which iris.load() loads cubes into a CubeList is
+    # not constant but varies from one execution to the next (presumably
+    # due to a random seed of some sort)!
+
     # Make sure files are sorted so that times increase.
     files.sort()
     l = iris.cube.CubeList()
@@ -41,11 +88,114 @@ def get_centres(data):
     return (data[:-1] + data[1:]) / 2.
 
 
+def regrid(
+        cube, area_weighted=True,
+        new_latitudes=get_centres(np.linspace(-90, 90, 361)),
+        new_longitudes=get_centres(np.linspace(-180, 180, 721))):
+    """Keep time coordinate, but regrid latitudes and longitudes.
+
+    Note: Regarding caching AreaWeighted regridders - the creation of the
+    regridder does not seem to take much time, however, so this step is
+    almost inconsequential. Furthermore, as time coordinate differences may
+    exist between coordinates, iris does not support such differences with
+    cached regridders.
+
+    """
+    assert len(cube.shape) == 3, "Need time, lat, lon dimensions."
+
+    orig_shape = cube.shape
+    new_shape = (orig_shape[0], new_latitudes.size, new_longitudes.size)
+
+    if orig_shape == new_shape:
+        logging.info("Identical input and output shapes, returning input.")
+        return cube
+
+    if area_weighted:
+        for coord in cube.coords():
+            if not coord.has_bounds():
+                coord.guess_bounds()
+
+        new_latitudes = iris.coords.DimCoord(
+                new_latitudes, standard_name='latitude',
+                units='degrees')
+        new_longitudes = iris.coords.DimCoord(
+                new_longitudes, standard_name='longitude',
+                units='degrees')
+
+        grid_coords = [
+            (cube.coords()[0], 0),
+            (new_latitudes, 1),
+            (new_longitudes, 2)
+            ]
+
+        new_grid = iris.cube.Cube(
+                np.zeros([coord[0].points.size for coord in grid_coords]),
+                dim_coords_and_dims=grid_coords)
+
+        for coord in new_grid.coords():
+            if not coord.has_bounds():
+                coord.guess_bounds()
+
+        interpolated_cube = cube.regrid(
+                new_grid, iris.analysis.AreaWeighted())
+
+    else:
+        interp_points = [
+            ('time', cube.coords()[0]),
+            ('latitude', new_latitudes),
+            ('longitude', new_longitudes)
+            ]
+
+        interpolated_cube = cube.interpolate(
+                interp_points, iris.analysis.Linear())
+
+    return interpolated_cube
+
+
+def combine_masks(data, invalid_values=(0,)):
+    """Create a mask that shows where data is invalid.
+
+    NOTE: Calls data.data, so lazy data is realised here!
+
+    True - invalid data
+    False - valid data
+
+    Returns a boolean array with the same shape as the input data.
+
+    """
+    if hasattr(data, 'mask'):
+        mask = data.mask
+        data_arr = data.data
+    else:
+        mask = np.zeros_like(data, dtype=bool)
+        data_arr = data
+
+    for invalid_value in invalid_values:
+        mask |= (data_arr == invalid_value)
+
+    return mask
+
+
+def monthly_constraint(
+        t, time_range=(PartialDateTime(2000, 1), PartialDateTime(2010, 1)),
+        inclusive_lower=True, inclusive_upper=True):
+    """Constraint function which ignores the day and only considers the
+    year and month.
+
+    """
+    lower_op = operator.ge if inclusive_lower else operator.gt
+    upper_op = operator.le if inclusive_upper else operator.lt
+    comp_datetime = PartialDateTime(year=t.year, month=t.month)
+
+    return (lower_op(comp_datetime, time_range[0]) and
+            upper_op(comp_datetime, time_range[1]))
+
+
 class Dataset(ABC):
 
     def __init__(self):
         self.dir = None
-        self.cube = None
+        self.cubes = None
 
     def get_data(self):
         return self.cube.core_data()
@@ -53,53 +203,12 @@ class Dataset(ABC):
     def select_data(self, latitude_range=(-90, 90),
                     longitude_range=(-180, 180)):
         self.cube = (self.cube
-                .intersection(latitude=latitude_range)
-                .intersection(longitude=longitude_range))
+                     .intersection(latitude=latitude_range)
+                     .intersection(longitude=longitude_range))
 
     @abstractmethod
     def get_monthly_data(self):
         pass
-
-    def regrid(
-            self, area_weighted=True,
-            new_latitudes=get_centres(np.linspace(-90, 90, 200)),
-            new_longitudes=get_centres(np.linspace(-180, 180, 400))):
-
-        if area_weighted:
-            new_latitudes = iris.coords.DimCoord(
-                    new_latitudes, standard_name='latitude',
-                    units='degrees')
-            new_longitudes = iris.coords.DimCoord(
-                    new_longitudes, standard_name='longitude',
-                    units='degrees')
-
-            grid_coords = [
-                (new_latitudes, 0),
-                (new_longitudes, 1)
-                ]
-
-            new_grid = iris.cube.Cube(
-                    np.zeros([coord[0].points.size for coord in grid_coords]),
-                    dim_coords_and_dims=grid_coords)
-
-            for coord in new_grid.coords() + self.cube.coords():
-                if not coord.has_bounds():
-                    coord.guess_bounds()
-
-            # import ipdb; ipdb.set_trace()
-            interpolated_cube = self.cube.regrid(
-                    new_grid, iris.analysis.AreaWeighted())
-
-        else:
-            interp_points = [
-                ('latitude', new_latitudes),
-                ('longitude', new_longitudes)
-                ]
-
-            interpolated_cube = self.cube.interpolate(
-                    interp_points, iris.analysis.Linear())
-
-        self. cube = interpolated_cube
 
 
 class AvitabileAGB(Dataset):
@@ -108,9 +217,6 @@ class AvitabileAGB(Dataset):
         self.dir = os.path.join(DATA_DIR, 'Avitabile_AGB')
         self.cube = iris.load_cube(os.path.join(
             self.dir, 'Avitabile_AGB_Map_0d25.nc'))
-        self.select_data(
-                # latitude_range=(0, 40)
-                )
 
     def get_monthly_data(self):
         raise NotImplementedError("Data is static.")
@@ -120,8 +226,8 @@ class AvitabileThurnerAGB(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'AvitabileThurner-merged_AGB')
-        self.cube = iris.load_cube(os.path.join(
-            self.dir, 'Avi2015-Thu2014-merged_AGBtree.nc'))
+        self.cube = iris.cube.CubeList(iris.load_cube(os.path.join(
+            self.dir, 'Avi2015-Thu2014-merged_AGBtree.nc')))
 
     def get_monthly_data(self):
         raise NotImplementedError("Data is static.")
@@ -131,8 +237,8 @@ class CarvalhaisGPP(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'Carvalhais_VegC-TotalC-Tau')
-        self.cube = iris.load_cube(os.path.join(
-            self.dir, 'Carvalhais.gpp_50.360.720.1.nc'))
+        self.cubes = iris.cube.CubeList([iris.load_cube(
+            os.path.join(self.dir, 'Carvalhais.gpp_50.360.720.1.nc'))])
 
     def get_monthly_data(self):
         raise NotImplementedError("Data is static.")
@@ -158,24 +264,26 @@ class CRU(Dataset):
                 [cube for cube in self.cubes if cube.name() != 'stn'])
 
         # Fix units for cloud cover.
-        if self.cubes[0].name() == 'cloud cover':
-            self.cubes[0].units = cf_units.Unit('percent')
+        for cube in self.cubes:
+            if cube.name() == 'cloud cover':
+                cube.units = cf_units.Unit('percent')
+                break
 
         # NOTE: Measurement times are listed as being in the middle of the
         # month, requiring no further intervention.
 
-    def get_monthly_data(self, start=datetime(2000, 1, 1),
-                         end=datetime(2000, 12, 1)):
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
         return self.cubes.extract(iris.Constraint(
-            time=lambda t: end > t > start))
+            time=lambda t: end > t.point > start))
 
 
 class ESA_CCI_Fire(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'ESA-CCI-Fire_burnedarea')
-        self.cube = iris.load_cube(os.path.join(
-                self.dir, 'MODIS_cci.BA.2001.2016.1440.720.365days.sum.nc'))
+        self.cubes = iris.cube.CubeList([iris.load_cube(os.path.join(
+                self.dir, 'MODIS_cci.BA.2001.2016.1440.720.365days.sum.nc'))])
 
     def get_monthly_data(self):
         raise NotImplementedError("Only yearly data available!")
@@ -259,9 +367,12 @@ class ESA_CCI_Landcover_PFT(Dataset):
         assert time_coord.standard_name == 'time'
 
         # fix peculiar 'z' coordinate, which should be the number of years
-        for i in range(0, 2):
-            self.cubes[i].remove_coord('z')
-            self.cubes[i].add_dim_coord(time_coord, 0)
+        for cube in self.cubes:
+            coord_names = [coord.name() for coord in cube.coords()]
+            if 'z' in coord_names:
+                assert coord_names[0] == 'z'
+                cube.remove_coord('z')
+                cube.add_dim_coord(time_coord, 0)
 
     def get_monthly_data(self):
         raise NotImplementedError("Only yearly data available!")
@@ -273,10 +384,13 @@ class ESA_CCI_Soilmoisture(Dataset):
         self.dir = os.path.join(DATA_DIR, 'ESA-CCI-SM_soilmoisture')
         self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
 
-    def get_monthly_data(self, start=datetime(2000, 1, 1),
-                         end=datetime(2000, 12, 1)):
-        return self.cubes[-1].extract(iris.Constraint(
-            time=lambda t: end >= t.point >= start))
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        # First get the desired cube from the list, then select the desired
+        # timespan.
+        return (self.cubes.extract_strict(
+            iris.Constraint(name='Volumetric Soil Moisture Monthly Mean'))
+            .extract(iris.Constraint(time=lambda t: end >= t.point >= start)))
 
 
 class ESA_CCI_Soilmoisture_Daily(Dataset):
@@ -290,31 +404,31 @@ class ESA_CCI_Soilmoisture_Daily(Dataset):
         raw_cubes = load_cubes(files, 100)
 
         # Delete varying attributes.
-        for c in raw_cubes:
+        for cube in raw_cubes:
             for attr in ['id', 'tracking_id', 'date_created']:
-                del c.attributes[attr]
+                del cube.attributes[attr]
 
         # For the observation timestamp cubes, remove the 'valid_range'
         # attribute, which varies from cube to cube. The values of this
         # parameter are [-0.5, 0.5] for day 0, [0.5, 1.5] for day 1, etc...
-        for c in raw_cubes[7:None:8]:
-            del c.attributes['valid_range']
+        for cube in raw_cubes[7:None:8]:
+            del cube.attributes['valid_range']
 
         self.cubes = raw_cubes.concatenate()
 
-        for c in self.cubes:
-            iris.coord_categorisation.add_month_number(c, 'time')
-            iris.coord_categorisation.add_year(c, 'time')
+        for cube in self.cubes:
+            iris.coord_categorisation.add_month_number(cube, 'time')
+            iris.coord_categorisation.add_year(cube, 'time')
 
         # Perform averaging over months in each year.
         self.monthly_means = iris.cube.CubeList()
-        for c in self.cubes:
-            self.monthly_means.append(c.aggregated_by(
+        for cube in self.cubes:
+            self.monthly_means.append(cube.aggregated_by(
                 ['month_number', 'year'],
                 iris.analysis.MEAN))
 
-    def get_monthly_data(self, start=datetime(2000, 1, 1),
-                         end=datetime(2000, 12, 1)):
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
         # TODO: Isolate actual soil moisture
         return self.monthly_means.extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
@@ -373,30 +487,26 @@ class GFEDv4s(Dataset):
                 datetime(year, month, 1),
                 time_unit_str, calendar))
 
-        times = iris.coords.DimCoord(
+        time_coord = iris.coords.DimCoord(
                 num_times, standard_name='time',
                 units=time_unit)
 
-        for coord in (longitudes, latitudes, times):
+        for coord in (longitudes, latitudes, time_coord):
             coord.guess_bounds()
 
-        self.cube = iris.cube.Cube(
+        self.cubes = iris.cube.CubeList([iris.cube.Cube(
                 np.vstack(data), dim_coords_and_dims=[
-                    (times, 0),
+                    (time_coord, 0),
                     (latitudes, 1),
                     (longitudes, 2)
-                    ],
-                # standard_name='burned area fraction',
-                # units='fraction'
-                )
+                    ])])
 
-        self.select_data(
-                # latitude_range=(0, 40)
-                )
+        self.cubes[0].units = cf_units.Unit('percent')
+        self.cubes[0].var_name = 'Burnt_Area'
 
-    def get_monthly_data(self, start=datetime(2000, 1, 1),
-                         end=datetime(2000, 12, 1)):
-        return self.cube.extract(iris.Constraint(
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.cubes[0].extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
 
 
@@ -404,84 +514,254 @@ class GlobFluo_SIF(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'GlobFluo_SIF')
-        self.cube = iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))
+        self.cubes = iris.cube.CubeList(
+                [iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))])
 
         # Need to convert to time coordinate, as values are relative to
         # 1582-10-14, which is not supported by the cf_units gregorian
         # calendar (needs to start from 1582-10-15, I think).
 
         # Get the original number of days relative to 1582-10-14 00:00:00.
-        days_since_1582_10_14 = self.cube.coords()[0].points
+        days_since_1582_10_14 = self.cubes[0].coords()[0].points
         # Define new time unit relative to a supported date.
         new_time_unit = cf_units.Unit('days since 1582-10-16 00:00:00',
                                       calendar='gregorian')
         # The corresponding number of days for the new time unit.
         days_since_1582_10_16 = days_since_1582_10_14 - 2
 
-        self.cube.remove_coord('time')
+        self.cubes[0].remove_coord('time')
         new_time = iris.coords.DimCoord(
                 days_since_1582_10_16,
                 standard_name='time',
                 units=new_time_unit)
-        self.cube.add_dim_coord(new_time, 0)
+        self.cubes[0].add_dim_coord(new_time, 0)
 
-
-    def get_monthly_data(self, start=datetime(2000, 1, 1),
-                         end=datetime(2000, 12, 1)):
-        return self.cube.extract(iris.Constraint(
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.cubes[0].extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
+
+
+class GPW_v4_pop_dens(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'GPW_v4_pop_dens')
+        netcdf_dataset = netCDF4.Dataset(glob.glob(
+            os.path.join(self.dir, '*.nc'))[0])
+        data = netcdf_dataset['Population Density, v4.10 (2000, 2005, 2010,'
+                              ' 2015, 2020): 30 arc-minutes']
+
+        datetimes = [datetime(year, 1, 1) for year in
+                     [2000, 2005, 2010, 2015, 2020]]
+        time_unit_str = 'days since {:}'.format(
+                str(datetime(2000, 1, 1)))
+        time_unit = cf_units.Unit(time_unit_str, calendar='gregorian')
+        time = iris.coords.DimCoord(
+                cf_units.date2num(datetimes, time_unit_str,
+                                  calendar='gregorian'),
+                standard_name='time',
+                units=time_unit)
+
+        latitudes = iris.coords.DimCoord(
+                netcdf_dataset['latitude'][:], standard_name='latitude',
+                units='degrees')
+        longitudes = iris.coords.DimCoord(
+                netcdf_dataset['longitude'][:], standard_name='longitude',
+                units='degrees')
+
+        coords = [
+                (time, 0),
+                (latitudes, 1),
+                (longitudes, 2)
+                ]
+
+        self.cubes = iris.cube.CubeList([iris.cube.Cube(
+                data[:5],
+                long_name=data.long_name,
+                var_name='Population_Density',
+                units=cf_units.Unit('1/km2'),
+                dim_coords_and_dims=coords)])
+
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        """Linear interpolation onto the target months.
+
+        """
+        start_month = start.month
+        end_month = end.month
+        start_year = start.year
+        end_year = end.year
+
+        year = start_year
+        month = start_month
+
+        datetimes = []
+        while ((year != end_year) or (month != end_month)):
+            datetimes.append(datetime(year, month, 1))
+
+            month += 1
+            if month == 13:
+                month = 1
+                year += 1
+
+        # This is needed to include end month
+        datetimes.append(datetime(year, month, 1))
+
+        time_unit_str = 'days since {:}'.format(
+                str(datetime(2000, 1, 1)))
+        time_unit = cf_units.Unit(time_unit_str, calendar='gregorian')
+        time = iris.coords.DimCoord(
+                cf_units.date2num(datetimes, time_unit_str,
+                                  calendar='gregorian'),
+                standard_name='time',
+                units=time_unit)
+
+        interp_cubes = iris.cube.CubeList()
+        for i in range(time.points.size):
+            interp_points = [
+                    ('time', time[i].points),
+                    ]
+            interp_cubes.append(
+                    self.cubes[0].interpolate(
+                        interp_points,
+                        iris.analysis.Linear()))
+
+        final_cubelist = interp_cubes.concatenate()
+        assert len(final_cubelist) == 1
+        final_cube = final_cubelist[0]
+        return final_cube
+
+
+class LIS_OTD_Lightning(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'LIS_OTD_Lightning')
+        self.cubes = iris.cube.CubeList(
+                [iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+                 .extract_strict(iris.Constraint(
+                     name='Combined Flash Rate Monthly Climatology'))])
+
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        """'Broadcast' monthly climatology across the requested time
+        period.
+
+        NOTE: Not 'True' monthly data!!
+
+        This method ignores days.
+
+        """
+        # TODO: Make this work with lazy data?
+
+        cube = self.cubes[0]
+
+        start_month = start.month
+        end_month = end.month
+        start_year = start.year
+        end_year = end.year
+
+        year = start_year
+        month = start_month
+
+        output_arrs = []
+        datetimes = []
+
+        while ((year != end_year) or (month != end_month)):
+            output_arrs.append(cube[..., (month - 1)].data[np.newaxis])
+            datetimes.append(datetime(year, month, 1))
+
+            month += 1
+            if month == 13:
+                month = 1
+                year += 1
+
+        # This is needed to include end month
+        output_arrs.append(cube[..., (month - 1)].data[np.newaxis])
+        datetimes.append(datetime(year, month, 1))
+
+        output_data = np.vstack(output_arrs)
+
+        time_unit_str = 'days since {:}'.format(
+                str(datetime(start_year, start_month, 1)))
+        time_unit = cf_units.Unit(time_unit_str, calendar='gregorian')
+        time_coord = iris.coords.DimCoord(
+                cf_units.date2num(datetimes, time_unit_str,
+                                  calendar='gregorian'),
+                standard_name='time',
+                units=time_unit)
+
+        new_coords = [
+                (time_coord, 0),
+                (cube.coords()[0], 1),
+                (cube.coords()[1], 2)
+                ]
+
+        output_cube = iris.cube.Cube(
+                output_data,
+                dim_coords_and_dims=new_coords,
+                standard_name=cube.standard_name,
+                long_name=cube.long_name,
+                var_name=cube.var_name,
+                units=cube.units,
+                attributes=cube.attributes)
+
+        return output_cube
 
 
 class Liu_VOD(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'Liu_VOD')
-        self.cube = iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))
+        self.cubes = iris.cube.CubeList([iris.load_cube(
+            glob.glob(os.path.join(self.dir, '*.nc')))])
 
         # Need to convert to time coordinate, as values are relative to
         # 1582-10-14, which is not supported by the cf_units gregorian
         # calendar (needs to start from 1582-10-15, I think).
 
         # Get the original number of days relative to 1582-10-14 00:00:00.
-        days_since_1582_10_14 = self.cube.coords()[0].points
+        days_since_1582_10_14 = self.cubes[0].coords()[0].points
         # Define new time unit relative to a supported date.
         new_time_unit = cf_units.Unit('days since 1582-10-16 00:00:00',
                                       calendar='gregorian')
         # The corresponding number of days for the new time unit.
         days_since_1582_10_16 = days_since_1582_10_14 - 2
 
-        self.cube.remove_coord('time')
+        self.cubes[0].remove_coord('time')
         new_time = iris.coords.DimCoord(
                 days_since_1582_10_16,
                 standard_name='time',
                 units=new_time_unit)
-        self.cube.add_dim_coord(new_time, 0)
+        self.cubes[0].add_dim_coord(new_time, 0)
 
-    def get_monthly_data(self, start=datetime(2000, 1, 1),
-                         end=datetime(2000, 12, 1)):
-        return self.cube.extract(iris.Constraint(
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.cubes[0].extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
+
 
 class MOD15A2H_LAI_fPAR(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'MOD15A2H_LAI-fPAR')
-        self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+        self.cubes = iris.cube.CubeList(
+                [iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))])
+        assert len(self.cubes) == 1
 
         months = []
-        for i in range(self.cubes[-1].shape[0]):
-            months.append(self.cubes[-1].coords()[0].cell(i).point.month)
+        for i in range(self.cubes[0].shape[0]):
+            months.append(self.cubes[0].coords()[0].cell(i).point.month)
 
         assert np.all(np.diff(np.where(np.diff(months) != 1)) == 12), (
                 "The year should increase every 12 samples!")
 
-    def get_monthly_data(self, start=datetime(2000, 1, 1),
-                         end=datetime(2000, 12, 1)):
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
         # TODO: Since the day in the month for which the data is provided
         # is variable, take into account neighbouring months as well in a
         # weighted average (depending on how many days away from the middle
         # of the month these other samples are)?
-        return self.cube.extract(iris.Constraint(
+        return self.cube[0].extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
 
 
@@ -489,7 +769,8 @@ class Simard_canopyheight(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'Simard_canopyheight')
-        self.cube = iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))
+        self.cubes = iris.cube.CubeList(
+                [iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))])
 
     def get_monthly_data(self):
         raise NotImplementedError(
@@ -527,55 +808,214 @@ class Thurner_AGB(Dataset):
         raise NotImplementedError("Data is static.")
 
 
+def load_dataset_cubes():
+    a = CRU()
+    b = ESA_CCI_Soilmoisture()
+    c = GFEDv4s()
+    d = GlobFluo_SIF()
+    e = Liu_VOD()
+
+    # Join up all the cubes.
+    cubes = iris.cube.CubeList()
+    cubes.extend(a.cubes)
+    # For now, only use the monthly mean soil moisture data.
+    cubes.append(b.cubes.extract_strict(
+            iris.Constraint(name='Volumetric Soil Moisture Monthly Mean')))
+    cubes.extend(c.cubes)
+    cubes.extend(d.cubes)
+    cubes.extend(e.cubes)
+
+    min_times = [c.coords()[0].cell(0).point for c in cubes]
+    max_times = [c.coords()[0].cell(-1).point for c in cubes]
+
+    # This timespan will encompass all the datasets.
+    min_time = np.max(min_times)
+    max_time = np.min(max_times)
+
+    # This method returns a cube.
+    f = LIS_OTD_Lightning().get_monthly_data(min_time, max_time)
+    assert isinstance(f, iris.cube.Cube)
+    cubes.append(f)
+
+    g = GPW_v4_pop_dens().get_monthly_data(min_time, max_time)
+    assert isinstance(g, iris.cube.Cube)
+    cubes.append(g)
+
+    # Extract the common timespan.
+    # t is a Cell, t.point extracts the 'real_datetime' object which has
+    # the expected year and month attributes. This also leads to ignoring
+    # bounds, which, if they are not None, can cause these comparisons to
+    # fail.
+    cubes = cubes.extract(iris.Constraint(
+        time=lambda t: monthly_constraint(t.point, (min_time, max_time))))
+
+    # Regrid cubes to the same lat-lon grid.
+    for i in range(len(cubes)):
+        cubes[i] = regrid(
+            cubes[i],
+            area_weighted=True,
+            new_latitudes=get_centres(np.linspace(-90, 90, 361)),
+            new_longitudes=get_centres(np.linspace(-180, 180, 721)))
+
+    return cubes
+
+
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+
+    # TODO: Use iris cube long_name attribute to enter descriptive name
+    # which will be used throughout data analysis and plotting (eg. for
+    # selecting DataFrame columns).
+
     # agb = AvitabileThurnerAGB()
     # plt.close('all')
     # plt.figure()
     # qplt.contourf(agb.cube, 20)
     # plt.gca().coastlines()
-    # new = agb.regrid()
-    # plt.figure()
-    # qplt.contourf(new, 20)
-    # plt.gca().coastlines()
-    # plt.show()
 
-    # fire = GFEDv4s()
+    if os.path.isfile(pickle_file):
+        with open(pickle_file, 'rb') as f:
+            cubes = pickle.load(f)
+    else:
+        cubes = load_dataset_cubes()
+        with open(pickle_file, 'wb') as f:
+            pickle.dump(cubes, f, -1)
 
-    # fire.regrid()
-    # agb.regrid()
+    # Use masking to extract only the relevant data.
 
-    # agb_data = np.zeros_like(fire.get_data()) + agb.get_data()[None, ...]
+    # Accumulate the masks for each dataset into a global mask.
+    global_mask = np.zeros(cubes[0].shape, dtype=bool)
+    for cube in cubes:
+        global_mask |= combine_masks(cube.data, invalid_values=[])
 
-    # plt.close('all')
-    # plt.figure()
-    # qplt.contourf(CarvalhaisGPP().cube[0], 20)
-    # plt.gca().coastlines()
-    # plt.title('Carvalhais GPP')
+    # Apply the same mask for each latitude and longitude.
+    collapsed_global_mask = np.any(global_mask, axis=0)
+    global_mask = np.zeros_like(global_mask, dtype=bool)
+    global_mask += collapsed_global_mask[np.newaxis]
 
-    # plt.figure()
-    # qplt.contourf(ESA_CCI_Fire().cube[0], 20)
-    # plt.gca().coastlines()
-    # plt.title('ESA Fire')
+    # Use this mask to select each dataset
 
-    # a = ESA_CCI_Landcover()
-    #
-    # a = ESA_CCI_Soilmoisture()
-    # a = Simard_canopyheight()
-    # plt.figure()
-    # qplt.contourf(a.cube[0], 20)
-    # plt.gca().coastlines()
-    # plt.title('ESA Fire')
+    selected_datasets = []
+    for cube in cubes:
+        selected_data = cube.data[~global_mask]
+        if hasattr(selected_data, 'mask'):
+            assert not np.any(selected_data.mask)
+            selected_datasets.append((cube.name(), selected_data.data))
+        else:
+            selected_datasets.append((cube.name(), selected_data))
 
-    # a = ESA_CCI_Soilmoisture_Daily()
-    # a = Thurner_AGB()
+    dataset_names = [s[0] for s in selected_datasets]
 
-    a = CRU().get_monthly_data(
-            datetime(2008, 1, 1), datetime(2010, 1, 1))
-    b = ESA_CCI_Soilmoisture().get_monthly_data(
-            datetime(2008, 1, 1), datetime(2010, 1, 1))
-    c = GFEDv4s().get_monthly_data(
-            datetime(2008, 1, 1), datetime(2010, 1, 1))
-    d = GlobFluo_SIF().get_monthly_data(
-            datetime(2008, 1, 1), datetime(2010, 1, 1))
-    e = Liu_VOD().get_monthly_data(
-            datetime(2008, 1, 1), datetime(2010, 1, 1))
+    exog_name_map = {
+            'diurnal temperature range': 'diurnal temp range',
+            'near-surface temperature minimum': 'near-surface temp min',
+            'near-surface temperature': 'near-surface temp',
+            'near-surface temperature maximum': 'near-surface temp max',
+            'wet day frequency': 'wet day freq',
+            'Volumetric Soil Moisture Monthly Mean': 'soil moisture',
+            'SIF': 'SIF',
+            'VODorig': 'VOD',
+            'Combined Flash Rate Monthly Climatology': 'lightning rate',
+            ('Population Density, v4.10 (2000, 2005, 2010, 2015, 2020)'
+             ': 30 arc-minutes'): 'pop dens'
+            }
+
+    inclusion_names = {
+            'near-surface temperature maximum',
+            'Volumetric Soil Moisture Monthly Mean',
+            'SIF',
+            'VODorig',
+            'diurnal temperature range',
+            'wet day frequency',
+            'Combined Flash Rate Monthly Climatology',
+            ('Population Density, v4.10 (2000, 2005, 2010, 2015, 2020)'
+             ': 30 arc-minutes'),
+            }
+
+    exog_names = [exog_name_map.get(s[0], s[0]) for s in
+                  selected_datasets if s[0] in inclusion_names]
+    raw_exog_data = np.hstack(
+            [s[1].reshape(-1, 1) for s in selected_datasets
+             if s[0] in inclusion_names])
+
+    endog_name = selected_datasets[dataset_names.index('Burnt_Area')][0]
+    endog_data = selected_datasets[dataset_names.index('Burnt_Area')][1]
+
+    # lim = int(5e3)
+    lim = None
+    endog_data = endog_data[:lim]
+    raw_exog_data = raw_exog_data[:lim]
+
+    endog_data = pd.Series(endog_data, name='burned area')
+    exog_data = pd.DataFrame(
+            raw_exog_data,
+            columns=exog_names)
+
+    # TODO: Improve this by taking into account the number of days in each
+    # month
+
+    # Define dry days variable using the wet day variable.
+    exog_data['dry day freq'] = 31.5 - exog_data['wet day freq']
+    del exog_data['wet day freq']
+
+    # Carry out log transformation for select variables.
+    log_var_names = ['diurnal temp range',
+                     # There are problems with negative surface
+                     # temperatures here!
+                     # 'near-surface temp max',
+                     'dry day freq']
+
+    for name in log_var_names:
+        mod_data = exog_data[name] + 0.01
+        assert np.all(mod_data > 0.01)
+        exog_data['log ' + name] = np.log(mod_data)
+        del exog_data[name]
+
+    # Carry out square root transformation
+    sqrt_var_names = ['lightning rate', 'pop dens']
+    for name in sqrt_var_names:
+        exog_data['sqrt ' + name] = np.sqrt(exog_data[name])
+        del exog_data[name]
+
+    '''
+    # Available links for Gaussian:
+    [statsmodels.genmod.families.links.log,
+     statsmodels.genmod.families.links.identity,
+     statsmodels.genmod.families.links.inverse_power]
+
+    '''
+
+    model = sm.GLM(endog_data, exog_data,
+                   # family=sm.families.Gaussian(links.log)
+                   family=sm.families.Binomial()
+                   )
+
+    model_results = model.fit()
+
+    sm.graphics.plot_partregress_grid(model_results)
+    plt.tight_layout()
+
+    plt.figure()
+    plt.hexbin(endog_data, model_results.fittedvalues, bins='log')
+    plt.xlabel('real data')
+    plt.ylabel('prediction')
+
+    '''
+    # Filter out 0s in the burned area data.
+    mask = np.isclose(endog_data, 0)
+    endog_data = endog_data[~mask]
+    exog_data = exog_data[~mask]
+
+    import scipy.special
+
+    transformed_burned_area = scipy.special.logit(endog_data)
+    indices = list(range(len(exog_data.columns)))
+    for i in indices:
+        new_indices = indices[:]
+        new_indices.remove(i)
+        sm.graphics.plot_partregress(
+                transformed_burned_area,
+                exog_data[exog_data.columns[i]],
+                exog_data[exog_data.columns[new_indices]])
+        plt.title(exog_data.columns[i])
+    '''
