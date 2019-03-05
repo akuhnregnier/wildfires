@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import netCDF4
 import numpy as np
 import pandas as pd
+from pyhdf.SD import SD, SDC
 import statsmodels.api as sm
 # import statsmodels.genmod.families.links as links
 
@@ -197,6 +198,14 @@ class Dataset(ABC):
         self.dir = None
         self.cubes = None
 
+    @property
+    def min_time(self):
+        return self.cubes[0].coord('time').cell(0).point
+
+    @property
+    def max_time(self):
+        return self.cubes[0].coord('time').cell(-1).point
+
     def get_data(self):
         return self.cube.core_data()
 
@@ -205,6 +214,7 @@ class Dataset(ABC):
         self.cube = (self.cube
                      .intersection(latitude=latitude_range)
                      .intersection(longitude=longitude_range))
+        return self.cube
 
     @abstractmethod
     def get_monthly_data(self):
@@ -434,7 +444,83 @@ class ESA_CCI_Soilmoisture_Daily(Dataset):
             time=lambda t: end >= t.point >= start))
 
 
+class GFEDv4(Dataset):
+    """Without small fires.
+
+    """
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'gfed4', 'data')
+
+        filenames = glob.glob(os.path.join(self.dir, '*MQ*.hdf'))
+        filenames.sort()  # increasing months & years
+
+        datetimes = []
+        data = []
+
+        for f in filenames:
+            hdf = SD(f, SDC.READ)
+            # TODO: Use 'BurnedAreaUncertainty' dataset, and maybe others,
+            # like 'FirePersistence' (viewed using hdf.datasets()).
+            burned_area = hdf.select('BurnedArea')
+
+            # TODO: Use attributes['scale_factor'] (this stays
+            # constant from file to file)!
+            attributes = burned_area.attributes()
+
+            split_f = os.path.split(f)[1]
+            year = int(split_f[11:15])
+            month = int(split_f[15:17])
+
+            assert 1990 < year < 2030
+            assert 0 < month < 13
+
+            datetimes.append(datetime(year, month, 1))
+            data.append(burned_area[:][np.newaxis])
+
+        data = np.vstack(data)
+
+        unit = cf_units.Unit(attributes['units'])
+        long_name = attributes['long_name']
+
+        calendar = 'gregorian'
+        time_unit_str = 'days since 1970-01-01 00:00:00'
+        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
+        time_coord = iris.coords.DimCoord(
+                [cf_units.date2num(dt, time_unit_str, calendar)
+                 for dt in datetimes],
+                standard_name='time',
+                units=time_unit)
+
+        latitudes = iris.coords.DimCoord(
+                get_centres(np.linspace(90, -90, 721)),
+                standard_name='latitude',
+                units='degrees')
+        longitudes = iris.coords.DimCoord(
+                get_centres(np.linspace(-180, 180, 1441)),
+                standard_name='longitude',
+                units='degrees')
+
+        self.cubes = iris.cube.CubeList([
+            iris.cube.Cube(
+                data,
+                long_name=long_name,
+                units=unit,
+                dim_coords_and_dims=[
+                    (time_coord, 0),
+                    (latitudes, 1),
+                    (longitudes, 2)
+                    ])])
+
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.cubes[0].extract(iris.Constraint(
+            time=lambda t: end >= t.point >= start))
+
+
 class GFEDv4s(Dataset):
+    """Includes small fires.
+
+    """
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'gfed4', 'data')
@@ -632,10 +718,10 @@ class GPW_v4_pop_dens(Dataset):
         return final_cube
 
 
-class LIS_OTD_Lightning(Dataset):
+class LIS_OTD_lightning_climatology(Dataset):
 
     def __init__(self):
-        self.dir = os.path.join(DATA_DIR, 'LIS_OTD_Lightning')
+        self.dir = os.path.join(DATA_DIR, 'LIS_OTD_lightning_climatology')
         self.cubes = iris.cube.CubeList(
                 [iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
                  .extract_strict(iris.Constraint(
@@ -706,6 +792,19 @@ class LIS_OTD_Lightning(Dataset):
                 attributes=cube.attributes)
 
         return output_cube
+
+
+class LIS_OTD_lightning_time_series(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'LIS_OTD_lightning_time_series')
+        # self.cubes = iris.cube.CubeList(
+        #         [iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))])
+        self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+
+    def get_monthly_data(self):
+        # TODO: Transform daily data into monthly data.
+        pass
 
 
 class Liu_VOD(Dataset):
@@ -833,7 +932,7 @@ def load_dataset_cubes():
     max_time = np.min(max_times)
 
     # This method returns a cube.
-    f = LIS_OTD_Lightning().get_monthly_data(min_time, max_time)
+    f = LIS_OTD_lightning_climatology().get_monthly_data(min_time, max_time)
     assert isinstance(f, iris.cube.Cube)
     cubes.append(f)
 
@@ -861,6 +960,10 @@ def load_dataset_cubes():
 
 
 if __name__ == '__main__':
+    a = GFEDv4()
+
+
+if __name__ == '__main__2':
     logging.basicConfig(level=logging.INFO)
 
     # TODO: Use iris cube long_name attribute to enter descriptive name
