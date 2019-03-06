@@ -15,6 +15,7 @@ import pickle
 import warnings
 
 import cf_units
+from git import Repo
 import h5py
 import iris
 import iris.coord_categorisation
@@ -32,6 +33,9 @@ from tqdm import tqdm
 
 DATA_DIR = os.path.join(os.path.expanduser('~'), 'FIREDATA')
 pickle_file = os.path.join(DATA_DIR, 'cubes.pickle')
+
+repo_dir = os.path.join(os.path.dirname(__file__), os.pardir)
+repo = Repo(repo_dir)
 
 
 def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180),
@@ -231,6 +235,15 @@ class Dataset(ABC):
             logging.info("File exists, not overwriting:'{:}'"
                          .format(self.cache_filename))
         else:
+            assert (not repo.untracked_files) and (not repo.is_dirty()), (
+                    "All changes must be committed and all files must be "
+                    "tracked.")
+
+            # Note down the commit sha hash so that the code used to
+            # generate the cached data can be retrieved easily later on.
+            for cube in self.cubes:
+                cube.attributes['commit'] = repo.head.ref.commit.hexsha
+
             if not os.path.isdir(os.path.dirname(self.cache_filename)):
                 os.makedirs(os.path.dirname(self.cache_filename))
             logging.info("Saving cubes to:'{:}'".format(self.cache_filename))
@@ -239,11 +252,15 @@ class Dataset(ABC):
     def read_cache(self):
         if os.path.isfile(self.cache_filename):
             self.cubes = iris.load(self.cache_filename)
+            commit_hashes = [cube.attributes['commit'] for cube in self.cubes]
+            assert len(set(commit_hashes)) == 1, (
+                    "Cubes should all stem from the same commit.")
             logging.info(
                     "File exists, returning cubes from:'{:}'"
-                    " -> Dataset timespan {:} -- {:}"
+                    " -> Dataset timespan {:} -- {:}. Generated using "
+                    "commit {:}."
                     .format(self.cache_filename, self.min_time,
-                            self.max_time))
+                            self.max_time, commit_hashes[0]))
             return self.cubes
         else:
             logging.info("File does not exist:'{:}'"
@@ -1102,22 +1119,8 @@ def load_dataset_cubes():
 
 
 if __name__ == '__main__':
-    # logging.basicConfig(level=logging.INFO)
-    # a = LIS_OTD_lightning_time_series()
-
-    from git import Repo
-    print('file:', __file__)
-    repo_dir = os.path.join(os.path.dirname(__file__), os.pardir)
-    print(repo_dir)
-
-    repo = Repo(repo_dir)
-
-    # Check that the repository is not dirty and that no untracked files
-    # are present.
-    assert (not repo.untracked_files) and (not repo.is_dirty()), (
-            "All changes must be committed and all files must be tracked.")
-
-    commit_sha = repo.head.ref.commit.hexsha
+    logging.basicConfig(level=logging.INFO)
+    a = LIS_OTD_lightning_time_series()
 
 
 if __name__ == '__main__2':
