@@ -925,7 +925,7 @@ class LIS_OTD_lightning_time_series(Dataset):
         self.cubes = self.read_cache()
         # Exit __init__ if we have loaded the data.
         if self.cubes:
-            return None
+            return
 
         # Otherwise keep loading the data.
         raw_cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
@@ -948,22 +948,36 @@ class LIS_OTD_lightning_time_series(Dataset):
         # coordinates and corresponding data (both simply
         # reshaped/reordered) are assigned.
 
-        new_data = None
-        new_coords = []
+        new_coords = [
+                (monthly_cubes[0].coord('time'), 0),
+                (monthly_cubes[0].coord('latitude'), 1),
+                (monthly_cubes[0].coord('longitude'), 2)
+                ]
 
-        self.cubes = []
-        # TODO: finish this
+        self.cubes = iris.cube.CubeList([])
         for cube in monthly_cubes:
+            # NOTE: This does not use any lazy data whatsoever, starting
+            # with the monthly aggregation above.
+            assert cube.shape[-1] == len(cube.coord('time').points), (
+                    "Old and new time dimension should have the same length")
+            data_arrs = []
+            for time_index in range(cube.shape[-1]):
+                data_arrs.append(cube.data[..., time_index][np.newaxis])
+
+            new_data = np.ma.vstack(data_arrs)
+
             new_cube = iris.cube.Cube(
                     new_data,
                     dim_coords_and_dims=new_coords)
             new_cube.metadata = deepcopy(cube.metadata)
+            self.cubes.append(new_cube)
 
         self.write_cache()
 
-    def get_monthly_data(self):
-        # TODO: Transform daily data into monthly data.
-        pass
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.cubes.extract(iris.Constraint(
+            time=lambda t: end > t.point > start))
 
 
 class Liu_VOD(Dataset):
