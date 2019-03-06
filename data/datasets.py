@@ -5,6 +5,7 @@
 """
 
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from datetime import datetime
 import glob
 import logging
@@ -25,6 +26,7 @@ import numpy as np
 import pandas as pd
 from pyhdf.SD import SD, SDC
 import statsmodels.api as sm
+from tqdm import tqdm
 # import statsmodels.genmod.families.links as links
 
 
@@ -195,8 +197,9 @@ def monthly_constraint(
 class Dataset(ABC):
 
     def __init__(self):
-        self.dir = None
-        self.cubes = None
+        # self.dir = None
+        # self.cubes = None
+        raise NotImplementedError()
 
     @property
     def min_time(self):
@@ -207,7 +210,44 @@ class Dataset(ABC):
         return self.cubes[0].coord('time').cell(-1).point
 
     def get_data(self):
+        """Returns either lazy data (dask array) or a numpy array.
+
+        """
         return self.cube.core_data()
+
+    @property
+    def cache_filename(self):
+        return os.path.join(DATA_DIR, 'cache', type(self).__name__ + '.nc')
+
+    def write_cache(self):
+        """Write list of cubes to disk as a NetCDF file using iris.
+
+        Also record the git commit id that the data was generated with,
+        making sure that there are no uncommitted changes in the repository
+        at the time.
+
+        """
+        if os.path.isfile(self.cache_filename):
+            logging.info("File exists, not overwriting:'{:}'"
+                         .format(self.cache_filename))
+        else:
+            if not os.path.isdir(os.path.dirname(self.cache_filename)):
+                os.makedirs(os.path.dirname(self.cache_filename))
+            logging.info("Saving cubes to:'{:}'".format(self.cache_filename))
+            iris.save(self.cubes, self.cache_filename)
+
+    def read_cache(self):
+        if os.path.isfile(self.cache_filename):
+            self.cubes = iris.load(self.cache_filename)
+            logging.info(
+                    "File exists, returning cubes from:'{:}'"
+                    " -> Dataset timespan {:} -- {:}"
+                    .format(self.cache_filename, self.min_time,
+                            self.max_time))
+            return self.cubes
+        else:
+            logging.info("File does not exist:'{:}'"
+                         .format(self.cache_filename))
 
     def select_data(self, latitude_range=(-90, 90),
                     longitude_range=(-180, 180)):
@@ -421,6 +461,9 @@ class ESA_CCI_Soilmoisture_Daily(Dataset):
         # For the observation timestamp cubes, remove the 'valid_range'
         # attribute, which varies from cube to cube. The values of this
         # parameter are [-0.5, 0.5] for day 0, [0.5, 1.5] for day 1, etc...
+        #
+        # TODO: This seems to work but seems kind of hacky - is it really
+        # guaranteed that the ordering of the cubes is constant?
         for cube in raw_cubes[7:None:8]:
             del cube.attributes['valid_range']
 
@@ -439,7 +482,7 @@ class ESA_CCI_Soilmoisture_Daily(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        # TODO: Isolate actual soil moisture
+        # TODO: Isolate actual soil moisture.
         return self.monthly_means.extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
 
@@ -718,6 +761,69 @@ class GPW_v4_pop_dens(Dataset):
         return final_cube
 
 
+class GSMaP_precipitation(Dataset):
+
+    def __init__(self, times='00Z-23Z'):
+        self.dir = os.path.join(
+                DATA_DIR, 'GSMaP_Precipitation', 'hokusai.eorc.jaxa.jp',
+                'realtime_ver', 'v6', 'daily_G', times)
+
+        # Sort so that time is increasing.
+        filenames = sorted(glob.glob(os.path.join(self.dir, '**', '*.nc')))
+
+        calendar = 'gregorian'
+        time_unit_str = 'days since 1970-01-01 00:00:00'
+        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
+
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
+        monthly_average_cubes = iris.cube.CubeList([])
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=(
+                "Collapsing a non-contiguous coordinate. Metadata may not "
+                "be fully descriptive for 'time'."))
+            for f in filenames:
+                raw_cube = iris.load_cube(f)[..., 1:1441]
+                monthly_cube = raw_cube.collapsed('time',
+                                                  iris.analysis.MEAN)
+
+                longitude_points = monthly_cube.coord('longitude').points
+                assert np.min(longitude_points) == 0.125
+                assert np.max(longitude_points) == 359.875
+
+                # Modify the time coordinate such that it is recorded with
+                # respect to a common date, as opposed to relative to the
+                # beginning of the respective month as is the case for the
+                # cube loaded above.
+                centre_datetime = monthly_cube.coord('time').cell(0).point
+                new_time = cf_units.date2num(centre_datetime,
+                                             time_unit_str, calendar)
+                monthly_cube.coord('time').bounds = None
+                monthly_cube.coord('time').points = [new_time]
+                monthly_cube.coord('time').units = time_unit
+
+                monthly_average_cubes.append(monthly_cube)
+
+        merged_cube = monthly_average_cubes.merge_cube()
+        merged_cube.units = cf_units.Unit('mm/hr')
+
+        # The cube still has lazy data at this point. So accessing the
+        # 'data' attribute will involve averaging data and concatenating
+        # it, which will take much longer than anything that is being
+        # achieved above!
+
+        self.cubes = iris.cube.CubeList([merged_cube])
+        self.write_cache()
+
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.cubes[0].extract(iris.Constraint(
+            time=lambda t: end >= t.point >= start))
+
+
 class LIS_OTD_lightning_climatology(Dataset):
 
     def __init__(self):
@@ -798,9 +904,45 @@ class LIS_OTD_lightning_time_series(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'LIS_OTD_lightning_time_series')
-        # self.cubes = iris.cube.CubeList(
-        #         [iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))])
-        self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+
+        self.cubes = self.read_cache()
+        # Exit __init__ if we have loaded the data.
+        if self.cubes:
+            return None
+
+        # Otherwise keep loading the data.
+        raw_cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+        # TODO: Use other attributes as well? Eg. separate LIS / OTD data,
+        # grid cell area, or Time Series Sampling (km^2 / day)?
+
+        # Isolate single combined flash rate.
+        raw_cubes = raw_cubes.extract(iris.Constraint(name='Combined Flash Rate Time Series'))
+
+        for cube in raw_cubes:
+            iris.coord_categorisation.add_month_number(cube, 'time')
+            iris.coord_categorisation.add_year(cube, 'time')
+
+        monthly_cubes = [cube.aggregated_by(['month_number', 'year'],
+                                            iris.analysis.MEAN)
+                         for cube in raw_cubes]
+
+        # Create new cube(s) where the time dimension is the first
+        # dimension. To do this, the cube metadata can be copied, while new
+        # coordinates and corresponding data (both simply
+        # reshaped/reordered) are assigned.
+
+        new_data = None
+        new_coords = []
+
+        self.cubes = []
+        # TODO: finish this
+        for cube in monthly_cubes:
+            new_cube = iris.cube.Cube(
+                    new_data,
+                    dim_coords_and_dims=new_coords)
+            new_cube.metadata = deepcopy(cube.metadata)
+
+        self.write_cache()
 
     def get_monthly_data(self):
         # TODO: Transform daily data into monthly data.
@@ -960,7 +1102,22 @@ def load_dataset_cubes():
 
 
 if __name__ == '__main__':
-    a = GFEDv4()
+    # logging.basicConfig(level=logging.INFO)
+    # a = LIS_OTD_lightning_time_series()
+
+    from git import Repo
+    print('file:', __file__)
+    repo_dir = os.path.join(os.path.dirname(__file__), os.pardir)
+    print(repo_dir)
+
+    repo = Repo(repo_dir)
+
+    # Check that the repository is not dirty and that no untracked files
+    # are present.
+    assert (not repo.untracked_files) and (not repo.is_dirty()), (
+            "All changes must be committed and all files must be tracked.")
+
+    commit_sha = repo.head.ref.commit.hexsha
 
 
 if __name__ == '__main__2':
