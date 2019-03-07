@@ -293,6 +293,7 @@ class Dataset(ABC):
         if os.path.isfile(target_filename):
             cubes = iris.load(target_filename)
             if not cubes:
+                os.remove(target_filename)
                 logging.warning("No cubes were found. Deleted file:{:}"
                                 .format(target_filename))
                 return
