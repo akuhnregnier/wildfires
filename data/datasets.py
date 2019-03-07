@@ -430,7 +430,7 @@ class CHELSA(Dataset):
             assert len(commit_hashes) == 1, (
                     "All loaded data should be from the same commit.")
 
-        for f in files[:5]:
+        for f in files[:3]:
             # If this file has been regridded already and saved as a NetCDF
             # file, then do not redo this.
             cubes = self.read_data(f.replace('.tif', '.nc'))
@@ -1342,8 +1342,6 @@ def load_dataset_cubes():
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
-    print('Running')
-    logging.info('INFO test')
     a = CHELSA()
 
 
