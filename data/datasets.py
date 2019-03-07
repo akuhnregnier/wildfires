@@ -284,6 +284,7 @@ class Dataset(ABC):
                 os.makedirs(os.path.dirname(target_filename))
             logging.info("Saving cubes to:'{:}'".format(target_filename))
             iris.save(cache_data, target_filename)
+            return cube.attributes['commit']
 
     @staticmethod
     def read_data(target_filename):
