@@ -12,6 +12,7 @@ import logging
 import operator
 import os
 import pickle
+import re
 import warnings
 
 import cf_units
@@ -26,6 +27,7 @@ import netCDF4
 import numpy as np
 import pandas as pd
 from pyhdf.SD import SD, SDC
+import rasterio
 import statsmodels.api as sm
 from tqdm import tqdm
 # import statsmodels.genmod.families.links as links
@@ -97,28 +99,39 @@ def get_centres(data):
 
 def regrid(
         cube, area_weighted=True,
-        new_latitudes=get_centres(np.linspace(-90, 90, 361)),
-        new_longitudes=get_centres(np.linspace(-180, 180, 721))):
-    """Keep time coordinate, but regrid latitudes and longitudes.
+        new_latitudes=get_centres(np.linspace(-90, 90, 721)),
+        new_longitudes=get_centres(np.linspace(-180, 180, 1441))):
+    """Keep (optional) time coordinate, but regrid latitudes and longitudes.
 
-    Note: Regarding caching AreaWeighted regridders - the creation of the
+    Expects either (time, lat, lon) or (lat, lon) coordinates.
+
+    NOTE: Regarding caching AreaWeighted regridders - the creation of the
     regridder does not seem to take much time, however, so this step is
     almost inconsequential. Furthermore, as time coordinate differences may
     exist between coordinates, iris does not support such differences with
     cached regridders.
 
     """
-    assert len(cube.shape) == 3, "Need time, lat, lon dimensions."
+    n_dim = len(cube.shape)
+    assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
 
     orig_shape = cube.shape
-    new_shape = (orig_shape[0], new_latitudes.size, new_longitudes.size)
+    # If there is a time dimension, n_dim = 3, and so new_shape will have 3
+    # entries. However, if there is no time dimension, n_dim = 2, and the
+    # first value will be clipped.
+    new_shape = (orig_shape[0], new_latitudes.size,
+                 new_longitudes.size)[3 - n_dim:]
 
     if orig_shape == new_shape:
+        # TODO: Is this really always applicable? Ie. flipped coordinates
+        # are same number of steps but different ranges? Need to compare
+        # individual coordinates for equality.
         logging.info("Identical input and output shapes, returning input.")
         return cube
 
     if area_weighted:
-        for coord in cube.coords():
+        for coord in [c for c in cube.coords() if c.name() in
+                      ['time', 'latitude', 'longitude'][3 - n_dim:]]:
             if not coord.has_bounds():
                 coord.guess_bounds()
 
@@ -129,11 +142,13 @@ def regrid(
                 new_longitudes, standard_name='longitude',
                 units='degrees')
 
+        # If n_dim = 2, lats and lons are at positions 0 and 1, not 1 and 2
+        # (using the modulo operator).
         grid_coords = [
             (cube.coords()[0], 0),
-            (new_latitudes, 1),
-            (new_longitudes, 2)
-            ]
+            (new_latitudes, 1 - (3 % n_dim)),
+            (new_longitudes, 2 - (3 % n_dim))
+            ][3 - n_dim:]
 
         new_grid = iris.cube.Cube(
                 np.zeros([coord[0].points.size for coord in grid_coords]),
@@ -151,7 +166,7 @@ def regrid(
             ('time', cube.coords()[0]),
             ('latitude', new_latitudes),
             ('longitude', new_longitudes)
-            ]
+            ][3 - n_dim:]
 
         interpolated_cube = cube.interpolate(
                 interp_points, iris.analysis.Linear())
@@ -223,6 +238,71 @@ class Dataset(ABC):
     def cache_filename(self):
         return os.path.join(DATA_DIR, 'cache', type(self).__name__ + '.nc')
 
+    @staticmethod
+    def save_data(cache_data, target_filename):
+        """Save as NetCDF file.
+
+        Args:
+            cache_data (iris.cube.Cube or iris.cube.CubeList): This will be
+                saved as a NetCDF file.
+            target_filename (str): The filename that the data will be saved
+                to. Must end in '.nc', since the data is meant to be saved
+                as a NetCDF file.
+
+        """
+        assert target_filename[-3:] == '.nc', (
+                "Data must be saved as a NetCDF file, got:'{:}'"
+                .format(target_filename))
+        assert isinstance(cache_data, (iris.cube.Cube, iris.cube.CubeList)), (
+                "Data to be saved must either be a Cube or a CubeList. "
+                "Got:{:}".format(cache_data))
+
+        if isinstance(cache_data, iris.cube.Cube):
+            cache_data = iris.cube.CubeList([cache_data])
+
+        if os.path.isfile(target_filename):
+            # TODO: Want to overwrite if the commit hash is different?
+            # Maybe add a flag to do this.
+            logging.info("File exists, not overwriting:'{:}'"
+                         .format(target_filename))
+        else:
+            assert (not repo.untracked_files) and (not repo.is_dirty()), (
+                    "All changes must be committed and all files must be "
+                    "tracked.")
+
+            # Note down the commit sha hash so that the code used to
+            # generate the cached data can be retrieved easily later on.
+            for cube in cache_data:
+                cube.attributes['commit'] = repo.head.ref.commit.hexsha
+
+            if not os.path.isdir(os.path.dirname(target_filename)):
+                os.makedirs(os.path.dirname(target_filename))
+            logging.info("Saving cubes to:'{:}'".format(target_filename))
+            iris.save(cache_data, target_filename)
+
+    @staticmethod
+    def read_data(target_filename):
+        """Read from NetCDF file.
+
+        Args:
+            target_filename (str): The filename that the data will be saved
+                to. Must end in '.nc', since the data is meant to be saved
+                as a NetCDF file.
+
+        """
+        if os.path.isfile(target_filename):
+            cubes = iris.load(target_filename)
+            commit_hashes = [cube.attributes['commit'] for cube in cubes]
+            assert len(set(commit_hashes)) == 1, (
+                    "Cubes should all stem from the same commit.")
+            logging.debug(
+                    "File exists, returning cubes from:'{:}'"
+                    .format(target_filename))
+            return cubes
+        else:
+            logging.info("File does not exist:'{:}'"
+                         .format(target_filename))
+
     def write_cache(self):
         """Write list of cubes to disk as a NetCDF file using iris.
 
@@ -231,40 +311,18 @@ class Dataset(ABC):
         at the time.
 
         """
-        if os.path.isfile(self.cache_filename):
-            logging.info("File exists, not overwriting:'{:}'"
-                         .format(self.cache_filename))
-        else:
-            assert (not repo.untracked_files) and (not repo.is_dirty()), (
-                    "All changes must be committed and all files must be "
-                    "tracked.")
-
-            # Note down the commit sha hash so that the code used to
-            # generate the cached data can be retrieved easily later on.
-            for cube in self.cubes:
-                cube.attributes['commit'] = repo.head.ref.commit.hexsha
-
-            if not os.path.isdir(os.path.dirname(self.cache_filename)):
-                os.makedirs(os.path.dirname(self.cache_filename))
-            logging.info("Saving cubes to:'{:}'".format(self.cache_filename))
-            iris.save(self.cubes, self.cache_filename)
+        self.save_data(self.cubes, self.cache_filename)
 
     def read_cache(self):
-        if os.path.isfile(self.cache_filename):
-            self.cubes = iris.load(self.cache_filename)
-            commit_hashes = [cube.attributes['commit'] for cube in self.cubes]
-            assert len(set(commit_hashes)) == 1, (
-                    "Cubes should all stem from the same commit.")
+        cubes = self.read_data(self.cache_filename)
+        if cubes:
+            self.cubes = cubes
             logging.info(
-                    "File exists, returning cubes from:'{:}'"
-                    " -> Dataset timespan {:} -- {:}. Generated using "
-                    "commit {:}."
+                    "File exists, returning cubes from:'{:}' -> Dataset "
+                    "timespan {:} -- {:}. Generated using commit {:}"
                     .format(self.cache_filename, self.min_time,
-                            self.max_time, commit_hashes[0]))
+                            self.max_time, self.cubes[0].attributes['commit']))
             return self.cubes
-        else:
-            logging.info("File does not exist:'{:}'"
-                         .format(self.cache_filename))
 
     def select_data(self, latitude_range=(-90, 90),
                     longitude_range=(-180, 180)):
@@ -309,6 +367,117 @@ class CarvalhaisGPP(Dataset):
 
     def get_monthly_data(self):
         raise NotImplementedError("Data is static.")
+
+
+class CHELSA(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'CHELSA')
+        files = glob.glob(os.path.join(self.dir, '**', '*.tif'),
+                          recursive=True)
+        files.sort()
+
+        mapping = {
+                'prec': {
+                    'scale': 1,
+                    'unit': cf_units.Unit('mm/month'),
+                    'long_name': 'monthly precipitation',
+                    },
+                'tmax': {
+                    'scale': 0.1,
+                    'unit': cf_units.Unit('degrees Celsius'),
+                    'long_name': 'maximum temperature',
+                    },
+                'tmean': {
+                    'scale': 0.1,
+                    'unit': cf_units.Unit('degrees Celsius'),
+                    'long_name': 'mean temperature',
+                    },
+                'tmin': {
+                    'scale': 0.1,
+                    'unit': cf_units.Unit('degrees Celsius'),
+                    'long_name': 'minimum temperature',
+                    }
+                }
+
+        year_pattern = re.compile(r'_(\d{4})_')
+        month_pattern = re.compile(r'_(\d{2})_')
+
+        time_unit_str = 'hours since 1970-01-01 00:00:00'
+        calendar = 'gregorian'
+        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
+
+        for f in files[:2]:
+            # If this file has been regridded already and saved as a NetCDF
+            # file, then do not redo this.
+            if self.read_data(f.replace('.tif', '.nc')):
+                continue
+
+            with rasterio.open(f) as dataset:
+                # NOTE: Since data is are stored as unsigned 16 bit
+                # integers, with temperature (in degrees Celsius) scaled by
+                # a factor x10, space can be saved by saving data in
+                # float16 format.
+                #
+                # TODO: How does the dtype of individual cubes affect the
+                # outcome of aggregations, like the mean? -> solution: use
+                # AreaWeighted regridding first, then save resulting cube
+                # at float64 resolution.
+                variable_key = os.path.split(os.path.split(f)[0])[1]
+                assert dataset.count == 1, "There should only be one band."
+                data = dataset.read(1).astype('float16')
+                data = np.ma.MaskedArray(data * mapping[variable_key]['scale'],
+                                         np.isinf(data), dtype=data.dtype)
+
+                latitudes = iris.coords.DimCoord(
+                        get_centres(np.linspace(
+                            dataset.bounds.top,
+                            dataset.bounds.bottom,
+                            dataset.shape[0] + 1)),
+                        standard_name='latitude',
+                        units='degrees')
+                longitudes = iris.coords.DimCoord(
+                        get_centres(np.linspace(
+                            dataset.bounds.left,
+                            dataset.bounds.right,
+                            dataset.shape[1] + 1)),
+                        standard_name='longitude',
+                        units='degrees')
+
+            grid_coords = [
+                (latitudes, 0),
+                (longitudes, 1)
+                ]
+
+            split_f = os.path.split(f)[1]
+            time_coord = iris.coords.DimCoord(
+                    cf_units.date2num(
+                        datetime(
+                            int(year_pattern.search(split_f).group(1)),
+                            int(month_pattern.search(split_f).group(1)),
+                            1),
+                        time_unit_str,
+                        calendar),
+                    standard_name='time',
+                    units=time_unit)
+
+            cube = iris.cube.Cube(
+                    data, dim_coords_and_dims=grid_coords,
+                    units=mapping[variable_key]['unit'],
+                    var_name=variable_key,
+                    long_name=mapping[variable_key]['long_name'],
+                    aux_coords_and_dims=[(time_coord, None)])
+
+            # Regrid cubes to the same lat-lon grid.
+            # TODO: change lat and lon limits and also the number of points!!
+            # Always work in 0.25 degree steps? From the same starting point?
+            regrid_cube = regrid(cube)
+            self.save_data(regrid_cube, f.replace('.tif', '.nc'))
+
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.cubes.extract(iris.Constraint(
+            time=lambda t: end > t.point > start))
 
 
 class CRU(Dataset):
@@ -1122,6 +1291,8 @@ def load_dataset_cubes():
         time=lambda t: monthly_constraint(t.point, (min_time, max_time))))
 
     # Regrid cubes to the same lat-lon grid.
+    # TODO: change lat and lon limits and also the number of points!!
+    # Always work in 0.25 degree steps? From the same starting point?
     for i in range(len(cubes)):
         cubes[i] = regrid(
             cubes[i],
@@ -1134,7 +1305,8 @@ def load_dataset_cubes():
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
-    a = LIS_OTD_lightning_time_series()
+    a = CHELSA()
+    cube2 = regrid(a.cube)
 
 
 if __name__ == '__main__2':
