@@ -292,6 +292,11 @@ class Dataset(ABC):
         """
         if os.path.isfile(target_filename):
             cubes = iris.load(target_filename)
+            if not cubes:
+                logging.warning("No cubes were found. Deleted file:{:}"
+                                .format(target_filename))
+                return
+
             commit_hashes = [cube.attributes['commit'] for cube in cubes]
             assert len(set(commit_hashes)) == 1, (
                     "Cubes should all stem from the same commit.")
@@ -472,6 +477,10 @@ class CHELSA(Dataset):
             # TODO: change lat and lon limits and also the number of points!!
             # Always work in 0.25 degree steps? From the same starting point?
             regrid_cube = regrid(cube)
+
+            # Need to save as float64 or float32, choose float64 for future
+            # interoperability.
+            regrid_cube.data = regrid_cube.data.astype('float64')
             self.save_data(regrid_cube, f.replace('.tif', '.nc'))
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
