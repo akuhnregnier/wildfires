@@ -289,6 +289,10 @@ class Dataset(ABC):
                 to. Must end in '.nc', since the data is meant to be saved
                 as a NetCDF file.
 
+        Raises:
+            AssertionError: If the commit hashes of the cubes that are
+                loaded do not match.
+
         """
         if os.path.isfile(target_filename):
             cubes = iris.load(target_filename)
@@ -413,10 +417,16 @@ class CHELSA(Dataset):
         calendar = 'gregorian'
         time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
 
-        for f in files[:2]:
+        commit_hashes = []
+        for f in files[:5]:
             # If this file has been regridded already and saved as a NetCDF
             # file, then do not redo this.
-            if self.read_data(f.replace('.tif', '.nc')):
+            cubes = self.read_data(f.replace('.tif', '.nc'))
+            if cubes:
+                commit_hashes.append(cubes[0].attributes['commit'])
+                if len(commit_hashes) > 1:
+                    assert len(set(commit_hashes)) == 1, (
+                            "All loaded data should be from the same commit.")
                 continue
 
             with rasterio.open(f) as dataset:
@@ -1316,7 +1326,6 @@ def load_dataset_cubes():
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     a = CHELSA()
-    cube2 = regrid(a.cube)
 
 
 if __name__ == '__main__2':
