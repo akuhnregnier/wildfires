@@ -249,6 +249,11 @@ class Dataset(ABC):
                 to. Must end in '.nc', since the data is meant to be saved
                 as a NetCDF file.
 
+        Returns:
+            str or None: The current hex commit sha hash of the repo if a
+            new file was created. Otherwise, if the file was already there
+            and not overwritten, None is returned.
+
         """
         assert target_filename[-3:] == '.nc', (
                 "Data must be saved as a NetCDF file, got:'{:}'"
@@ -417,16 +422,19 @@ class CHELSA(Dataset):
         calendar = 'gregorian'
         time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
 
-        commit_hashes = []
+        commit_hashes = set()
+
+        def update_hashes(commit_hash):
+            commit_hashes.update([commit_hash])
+            assert len(commit_hashes) == 1, (
+                    "All loaded data should be from the same commit.")
+
         for f in files[:5]:
             # If this file has been regridded already and saved as a NetCDF
             # file, then do not redo this.
             cubes = self.read_data(f.replace('.tif', '.nc'))
             if cubes:
-                commit_hashes.append(cubes[0].attributes['commit'])
-                if len(commit_hashes) > 1:
-                    assert len(set(commit_hashes)) == 1, (
-                            "All loaded data should be from the same commit.")
+                update_hashes(cubes[0].attributes['commit'])
                 continue
 
             with rasterio.open(f) as dataset:
@@ -492,7 +500,15 @@ class CHELSA(Dataset):
             # Need to save as float64 or float32, choose float64 for future
             # interoperability.
             regrid_cube.data = regrid_cube.data.astype('float64')
-            self.save_data(regrid_cube, f.replace('.tif', '.nc'))
+            commit_hash = self.save_data(regrid_cube, f.replace('.tif', '.nc'))
+
+            # If None is returned, then the file already exists and is not
+            # being overwritten, which should not happen, as we check for
+            # the existence of the file above, loading the data in that
+            # case.
+            assert commit_hash is not None, (
+                "Data should have been loaded before, since the file exists.")
+            update_hashes(commit_hash)
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
