@@ -387,7 +387,7 @@ class CarvalhaisGPP(Dataset):
 
 class CHELSA(Dataset):
 
-    def __init__(self):
+    def __init__(self, process_slice=slice(None)):
         self.dir = os.path.join(DATA_DIR, 'CHELSA')
         files = glob.glob(os.path.join(self.dir, '**', '*.tif'),
                           recursive=True)
@@ -430,7 +430,7 @@ class CHELSA(Dataset):
             assert len(commit_hashes) == 1, (
                     "All loaded data should be from the same commit.")
 
-        for f in files[:3]:
+        for f in files[process_slice]:
             # If this file has been regridded already and saved as a NetCDF
             # file, then do not redo this.
             cubes = self.read_data(f.replace('.tif', '.nc'))
