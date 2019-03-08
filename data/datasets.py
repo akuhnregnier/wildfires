@@ -122,11 +122,15 @@ def regrid(
     new_shape = (orig_shape[0], new_latitudes.size,
                  new_longitudes.size)[3 - n_dim:]
 
-    if orig_shape == new_shape:
+    orig_coord_dict = dict(
+            [name, tuple(cube.coord(name).points) for name in ['time',
+            'latitude', 'longitude']
+
+    if orig_coord_dict == new_coord_dict:
         # TODO: Is this really always applicable? Ie. flipped coordinates
         # are same number of steps but different ranges? Need to compare
         # individual coordinates for equality.
-        logging.info("Identical input and output shapes, returning input.")
+        logging.info("Identical input and output coordinates, returning input.")
         return cube
 
     if area_weighted:
