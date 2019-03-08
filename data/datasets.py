@@ -479,7 +479,7 @@ class CHELSA(Dataset):
                         os.path.join(DATA_DIR, 'CHELSA'),
                         'https://www.wsl.ch/lud/chelsa')
 
-                command = ("curl --conect-timeout 20 -L -o {:} {:}"
+                command = ("curl --connect-timeout 20 -L -o {:} {:}"
                            .format(f, url))
                 logging.debug('Executing:{:}'.format(command))
 
