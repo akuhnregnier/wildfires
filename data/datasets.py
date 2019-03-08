@@ -877,6 +877,11 @@ class GFEDv4s(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'gfed4', 'data')
 
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
         filenames = glob.glob(os.path.join(self.dir, '*.hdf5'))
         filenames.sort()  # increasing years
 
@@ -941,6 +946,7 @@ class GFEDv4s(Dataset):
 
         self.cubes[0].units = cf_units.Unit('percent')
         self.cubes[0].var_name = 'Burnt_Area'
+        self.write_cache()
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
