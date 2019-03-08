@@ -29,7 +29,7 @@ import pandas as pd
 from pyhdf.SD import SD, SDC
 import rasterio
 import statsmodels.api as sm
-from tqdm import tqdm
+# from tqdm import tqdm
 # import statsmodels.genmod.families.links as links
 
 
@@ -388,7 +388,21 @@ class CarvalhaisGPP(Dataset):
 class CHELSA(Dataset):
 
     def __init__(self, process_slice=slice(None)):
+        """Initialise the cubes.
+
+        Args:
+            process_slice (slice): Used to limit the loading/processing of
+                raw data .tif data files. Slices resulting in single
+                elements (eg. slice(i, i+1)) can be provided with i being
+                the PBS array job index to quickly generate all the
+                required .nc files from the .tif files.
+
+        """
         self.dir = os.path.join(DATA_DIR, 'CHELSA')
+
+        # TODO: Read (and write) cached cubes constructed from the
+        # processed NetCDF files.
+
         files = glob.glob(os.path.join(self.dir, '**', '*.tif'),
                           recursive=True)
         files.sort()
@@ -443,11 +457,6 @@ class CHELSA(Dataset):
                 # integers, with temperature (in degrees Celsius) scaled by
                 # a factor x10, space can be saved by saving data in
                 # float16 format.
-                #
-                # TODO: How does the dtype of individual cubes affect the
-                # outcome of aggregations, like the mean? -> solution: use
-                # AreaWeighted regridding first, then save resulting cube
-                # at float64 resolution.
                 variable_key = os.path.split(os.path.split(f)[0])[1]
                 assert dataset.count == 1, "There should only be one band."
                 data = dataset.read(1).astype('float16')
@@ -567,6 +576,12 @@ class ESA_CCI_Landcover(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'ESA-CCI-LC_landcover',
                                 '0d25_landcover')
+
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
         filenames = glob.glob(os.path.join(self.dir, '*.nc'))
         filenames.sort()  # increasing years
         self.raw_cubes = iris.load(filenames)
@@ -625,6 +640,8 @@ class ESA_CCI_Landcover(Dataset):
         self.cubes = iris.cube.CubeList([])
         for cube_list in cube_lists:
             self.cubes.append(cube_list.concatenate_cube())
+
+        self.write_cache()
 
     def get_monthly_data(self):
         raise NotImplementedError("Only yearly data available!")
@@ -717,6 +734,11 @@ class GFEDv4(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'gfed4', 'data')
 
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
         filenames = glob.glob(os.path.join(self.dir, '*MQ*.hdf'))
         filenames.sort()  # increasing months & years
 
@@ -729,8 +751,6 @@ class GFEDv4(Dataset):
             # like 'FirePersistence' (viewed using hdf.datasets()).
             burned_area = hdf.select('BurnedArea')
 
-            # TODO: Use attributes['scale_factor'] (this stays
-            # constant from file to file)!
             attributes = burned_area.attributes()
 
             split_f = os.path.split(f)[1]
@@ -741,7 +761,9 @@ class GFEDv4(Dataset):
             assert 0 < month < 13
 
             datetimes.append(datetime(year, month, 1))
-            data.append(burned_area[:][np.newaxis])
+            data.append(
+                    burned_area[:][np.newaxis].astype('float64')
+                    * attributes['scale_factor'])
 
         data = np.vstack(data)
 
@@ -766,8 +788,10 @@ class GFEDv4(Dataset):
                 standard_name='longitude',
                 units='degrees')
 
-        self.cubes = iris.cube.CubeList([
-            iris.cube.Cube(
+        latitudes.guess_bounds()
+        longitudes.guess_bounds()
+
+        burned_area_cube = iris.cube.Cube(
                 data,
                 long_name=long_name,
                 units=unit,
@@ -775,7 +799,18 @@ class GFEDv4(Dataset):
                     (time_coord, 0),
                     (latitudes, 1),
                     (longitudes, 2)
-                    ])])
+                    ])
+
+        # Normalise using the areas, divide by 10000 to convert from m2 to
+        # hectares (the burned areas are in hectares originally).
+        # NOTE: Some burned area percentages may be above 1!
+        burned_area_cube.data /= (
+                iris.analysis.cartography.area_weights(burned_area_cube)
+                / 10000)
+        burned_area_cube.units = cf_units.Unit('percent')
+
+        self.cubes = iris.cube.CubeList([burned_area_cube])
+        self.write_cache()
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
@@ -991,17 +1026,17 @@ class GSMaP_precipitation(Dataset):
                 DATA_DIR, 'GSMaP_Precipitation', 'hokusai.eorc.jaxa.jp',
                 'realtime_ver', 'v6', 'daily_G', times)
 
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
         # Sort so that time is increasing.
         filenames = sorted(glob.glob(os.path.join(self.dir, '**', '*.nc')))
 
         calendar = 'gregorian'
         time_unit_str = 'days since 1970-01-01 00:00:00'
         time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
-
-        self.cubes = self.read_cache()
-        # If a CubeList has been loaded successfully, exit __init__
-        if self.cubes:
-            return
 
         monthly_average_cubes = iris.cube.CubeList([])
         with warnings.catch_warnings():
@@ -1139,7 +1174,8 @@ class LIS_OTD_lightning_time_series(Dataset):
         # grid cell area, or Time Series Sampling (km^2 / day)?
 
         # Isolate single combined flash rate.
-        raw_cubes = raw_cubes.extract(iris.Constraint(name='Combined Flash Rate Time Series'))
+        raw_cubes = raw_cubes.extract(
+                iris.Constraint(name='Combined Flash Rate Time Series'))
 
         for cube in raw_cubes:
             iris.coord_categorisation.add_month_number(cube, 'time')
@@ -1342,7 +1378,8 @@ def load_dataset_cubes():
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
-    a = CHELSA()
+    # a = CHELSA()
+    a = GFEDv4()
 
 
 if __name__ == '__main__2':
