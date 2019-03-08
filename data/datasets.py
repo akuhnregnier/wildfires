@@ -482,11 +482,7 @@ class CHELSA(Dataset):
                 command = ("curl --connect-timeout 20 -L -o {:} {:}"
                            .format(f, url))
                 logging.debug('Executing:{:}'.format(command))
-
-                # os.system(command)
-
-                import ipdb; ipdb.set_trace()
-
+                os.system(command)
 
             with rasterio.open(f) as dataset:
                 # NOTE: Since data is are stored as unsigned 16 bit
