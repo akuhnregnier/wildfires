@@ -441,13 +441,28 @@ class CHELSA(Dataset):
 
         def update_hashes(commit_hash):
             commit_hashes.update([commit_hash])
+            # TODO: Need to reinstate this constraint!!!!
+            '''
             assert len(commit_hashes) == 1, (
                     "All loaded data should be from the same commit.")
+            '''
 
         for f in files[process_slice]:
             # If this file has been regridded already and saved as a NetCDF
             # file, then do not redo this.
-            cubes = self.read_data(f.replace('.tif', '.nc'))
+            nc_file = f.replace('.tif', '.nc')
+            try:
+                cubes = self.read_data(nc_file)
+            except:
+                # Try again, removing a potentially corrupt file
+                # beforehand.
+                logging.exception("Read failed, recreating:'{:}'".format(nc_file))
+                cubes = None
+                try:
+                    os.remove(nc_file)
+                except:
+                    logging.exception("File did not exist:'{:}'".format(nc_file))
+
             if cubes:
                 update_hashes(cubes[0].attributes['commit'])
                 continue
@@ -510,7 +525,7 @@ class CHELSA(Dataset):
             # Need to save as float64 or float32, choose float64 for future
             # interoperability.
             regrid_cube.data = regrid_cube.data.astype('float64')
-            commit_hash = self.save_data(regrid_cube, f.replace('.tif', '.nc'))
+            commit_hash = self.save_data(regrid_cube, nc_file)
 
             # If None is returned, then the file already exists and is not
             # being overwritten, which should not happen, as we check for
