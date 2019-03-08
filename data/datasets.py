@@ -456,16 +456,37 @@ class CHELSA(Dataset):
             except:
                 # Try again, removing a potentially corrupt file
                 # beforehand.
-                logging.exception("Read failed, recreating:'{:}'".format(nc_file))
+                logging.exception("Read failed, recreating:'{:}'"
+                                  .format(nc_file))
                 cubes = None
                 try:
                     os.remove(nc_file)
                 except:
-                    logging.exception("File did not exist:'{:}'".format(nc_file))
+                    logging.exception("File did not exist:'{:}'"
+                                      .format(nc_file))
 
             if cubes:
                 update_hashes(cubes[0].attributes['commit'])
                 continue
+
+            try:
+                with rasterio.open(f) as dataset:
+                    pass
+            except rasterio.RasterioIOError as e:
+                logging.exception("Corrupted file.")
+                # Try to download file again.
+                url = f.replace(
+                        os.path.join(DATA_DIR, 'CHELSA'),
+                        'https://www.wsl.ch/lud/chelsa')
+
+                command = ("curl --conect-timeout 20 -L -o {:} {:}"
+                           .format(f, url))
+                logging.debug('Executing:{:}'.format(command))
+
+                # os.system(command)
+
+                import ipdb; ipdb.set_trace()
+
 
             with rasterio.open(f) as dataset:
                 # NOTE: Since data is are stored as unsigned 16 bit

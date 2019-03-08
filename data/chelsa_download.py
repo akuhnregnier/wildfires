@@ -7,7 +7,6 @@ from datasets import DATA_DIR
 
 def download(dataset, year, month, ignore_existing=True,
              size_threshold=8.8e7):
-    """Downloads to current directory."""
 
     url = ("https://www.wsl.ch/lud/chelsa/data/timeseries/{:}/"
            "CHELSA_{:}_{:}_{:02d}_V1.2.1.tif").format(
