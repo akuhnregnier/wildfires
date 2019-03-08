@@ -1044,6 +1044,8 @@ class GSMaP_precipitation(Dataset):
                 "Collapsing a non-contiguous coordinate. Metadata may not "
                 "be fully descriptive for 'time'."))
             for f in filenames:
+                # Clip outer values which are duplicated in the data
+                # selection below and not needed here.
                 raw_cube = iris.load_cube(f)[..., 1:1441]
                 monthly_cube = raw_cube.collapsed('time',
                                                   iris.analysis.MEAN)
@@ -1377,9 +1379,9 @@ def load_dataset_cubes():
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
-    # a = CHELSA()
-    a = GFEDv4()
+    logging.basicConfig(level=logging.DEBUG)
+    a = CHELSA()
+    # a = GFEDv4()
 
 
 if __name__ == '__main__2':
