@@ -577,6 +577,40 @@ class CHELSA(Dataset):
             time=lambda t: end > t.point > start))
 
 
+class Copernicus_SWI(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'Copernicus_SWI')
+
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
+        # The raw data is daily data, which has to be averaged to yield
+        # monthly data.
+        files = glob.glob(
+            os.path.join(self.dir, '**', '*.nc'), recursive=True)[:3]
+
+        raw_cubes = iris.load(files)
+
+        for cube in raw_cubes:
+            iris.coord_categorisation.add_month_number(cube, 'time')
+            iris.coord_categorisation.add_year(cube, 'time')
+
+        monthly_cubes = [cube.aggregated_by(['month_number', 'year'],
+                                            iris.analysis.MEAN)
+                         for cube in raw_cubes]
+
+        from ipdb import set_trace; set_trace()
+
+
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.cubes.extract(iris.Constraint(
+            time=lambda t: end > t.point > start))
+
+
 class CRU(Dataset):
 
     def __init__(self):
@@ -1437,8 +1471,9 @@ def load_dataset_cubes():
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
-    a = CHELSA()
+    # a = CHELSA()
     # a = GFEDv4()
+    a = Copernicus_SWI()
 
 
 if __name__ == '__main__2':
