@@ -400,6 +400,11 @@ class CHELSA(Dataset):
         """
         self.dir = os.path.join(DATA_DIR, 'CHELSA')
 
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
         # TODO: Read (and write) cached cubes constructed from the
         # processed NetCDF files.
 
@@ -438,6 +443,7 @@ class CHELSA(Dataset):
         time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
 
         commit_hashes = set()
+        cube_list = iris.cube.CubeList([])
 
         def update_hashes(commit_hash):
             commit_hashes.update([commit_hash])
@@ -467,6 +473,7 @@ class CHELSA(Dataset):
 
             if cubes:
                 update_hashes(cubes[0].attributes['commit'])
+                cube_list.extend(cubes)
                 continue
 
             try:
@@ -551,6 +558,18 @@ class CHELSA(Dataset):
             assert commit_hash is not None, (
                 "Data should have been loaded before, since the file exists.")
             update_hashes(commit_hash)
+            cube_list.append(regrid_cube)
+
+        # TODO: TEMPORARY, in order to allow merging of data from different
+        # commits!!
+        for cube in cube_list:
+            del cube.attributes['commit']
+
+        self.cubes = cube_list.merge()
+        assert len(self.cubes) == 4, (
+            "There should be 4 variables.")
+
+        self.write_cache()
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
