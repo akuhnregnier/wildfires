@@ -283,7 +283,7 @@ class Dataset(ABC):
             if not os.path.isdir(os.path.dirname(target_filename)):
                 os.makedirs(os.path.dirname(target_filename))
             logging.info("Saving cubes to:'{:}'".format(target_filename))
-            iris.save(cache_data, target_filename)
+            iris.save(cache_data, target_filename, zlib=True)
             return cube.attributes['commit']
 
     @staticmethod
@@ -386,6 +386,15 @@ class CarvalhaisGPP(Dataset):
 
 
 class CHELSA(Dataset):
+    """For primary analysis, it is advisable to use hpc
+    (cx1_scipts/run_chelsa_script.sh) in order to process the tif files
+    into nc files as a series of jobs, which would take an incredibly long
+    time otherwise (on the order of days).
+
+    Once that script has been run, the resulting nc files can be used to
+    easily construct a large iris Cube containing all the data.
+
+    """
 
     def __init__(self, process_slice=slice(None)):
         """Initialise the cubes.
@@ -404,9 +413,6 @@ class CHELSA(Dataset):
         # If a CubeList has been loaded successfully, exit __init__
         if self.cubes:
             return
-
-        # TODO: Read (and write) cached cubes constructed from the
-        # processed NetCDF files.
 
         files = glob.glob(os.path.join(self.dir, '**', '*.tif'),
                           recursive=True)
