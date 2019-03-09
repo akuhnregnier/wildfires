@@ -593,7 +593,9 @@ class CHELSA(Dataset):
         assert len(self.cubes) == 4, (
             "There should be 4 variables.")
 
-        self.write_cache()
+        # If all the data has been processed, not just a subset.
+        if process_slice == slice(None):
+            self.write_cache()
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
@@ -628,6 +630,7 @@ class Copernicus_SWI(Dataset):
 
         """
         self.dir = os.path.join(DATA_DIR, 'Copernicus_SWI')
+        monthly_dir = os.path.join(self.dir, 'monthly')
 
         self.cubes = self.read_cache()
         # If a CubeList has been loaded successfully, exit __init__
@@ -639,12 +642,22 @@ class Copernicus_SWI(Dataset):
         files = glob.glob(
             os.path.join(self.dir, '**', '*.nc'), recursive=True)
 
+        daily_files = []
+        monthly_files = []
+        for f in files:
+            if 'monthly' in f:
+                monthly_files.append(f)
+            else:
+                daily_files.append(f)
+
         # Get times from the filenames, instead of having to load the cubes
         # and look at the time coordinate that way.
         pattern = re.compile(r'(\d{4})(\d{2})(\d{2})')
         datetimes = [datetime(*map(int, pattern.search(f).groups()))
                      for f in files]
 
+        # Isolate the year and month of each file only, and only in the
+        # times of the requested slice.
         year_months = sorted(list(set(
             [datetime(dt.year, dt.month, 1)
              for dt in datetimes])))[process_slice]
@@ -652,37 +665,99 @@ class Copernicus_SWI(Dataset):
         start_year_month = year_months[0]
         end_year_month = year_months[-1] + relativedelta(months=+1)
 
-        selected_files = [
-                files[i] for i, dt in enumerate(datetimes)
-                if start_year_month <= dt < end_year_month]
+        selected_daily_files = []
+        selected_monthly_files = []
 
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=(
-                "Skipping global attribute 'long_name': 'long_name' is not "
-                "a permitted attribute"))
-            raw_cubes = load_cubes(selected_files)
-            for cube in raw_cubes:
+        # TODO: Avoid loading daily files if the corresponding monthly
+        # files are present!!!
+
+        for i, dt in enumerate(datetimes):
+            if start_year_month <= dt < end_year_month:
+                f = files[i]
+                # Prevent loading monthly files into the daily file list
+                # which will get processed into monthly data.
+                if 'monthly' in f:
+                    selected_monthly_files.append(f)
+                else:
+                    selected_daily_files.append(f)
+
+        commit_hashes = set()
+        monthly_cubes = iris.cube.CubeList([])
+
+        def update_hashes(commit_hash):
+            commit_hashes.update([commit_hash])
+            # TODO: Need to reinstate this constraint!!!!
+            '''
+            assert len(commit_hashes) == 1, (
+                    "All loaded data should be from the same commit.")
+            '''
+
+        # Process the daily files here first, then combine with the already
+        # processed monthly data later. Processing involves regridding to a
+        # 0.25 degree resolution and averaging over months.
+        if selected_daily_files:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=(
+                    "Skipping global attribute 'long_name': 'long_name' is "
+                    "not a permitted attribute"))
+                daily_cubes = load_cubes(selected_daily_files)
+
+            for cube in daily_cubes:
                 # Make metadata uniform so they can be concatenated.
                 del cube.attributes['identifier']
                 del cube.attributes['title']
                 del cube.attributes['time_coverage_start']
                 del cube.attributes['time_coverage_end']
 
-        raw_cubes = raw_cubes.concatenate()
+            # Concatenate daily cubes into larger cubes with the same
+            # information (but with longer time coordinates).
+            raw_cubes = daily_cubes.concatenate()
 
-        for cube in raw_cubes:
-            iris.coord_categorisation.add_month_number(cube, 'time')
-            iris.coord_categorisation.add_year(cube, 'time')
+            for i in range(len(raw_cubes)):
+                raw_cubes[i] = regrid(raw_cubes[i])
+                iris.coord_categorisation.add_month_number(raw_cubes[i],
+                                                           'time')
+                iris.coord_categorisation.add_year(raw_cubes[i], 'time')
+                monthly_cubes.append(raw_cubes[i].aggregated_by(
+                    ['month_number', 'year'], iris.analysis.MEAN))
 
-        self.cubes = [cube.aggregated_by(['month_number', 'year'],
-                                            iris.analysis.MEAN)
-                      for cube in raw_cubes]
+                # Save these monthly files separately.
+                dt = raw_cubes[i].coord('time').cell(0).point
+                year, month, day = dt.year, dt.month, dt.day
+                commit_hash = self.save_data(
+                        raw_cubes[i],
+                        os.path.join(
+                            monthly_dir,
+                            ("c_gls_SWI_{:04d}{:02d}{:02d}_monthly"
+                             "_GLOBE_ASCAT_V3.1.1.nc").format(
+                                 year, month, day)))
+
+                # If None is returned, then the file already exists and is not
+                # being overwritten, which should not happen, as we check for
+                # the existence of the file above, loading the data in that
+                # case.
+                assert commit_hash is not None, (
+                    "Data should have been loaded before, "
+                    "since the file exists.")
+                update_hashes(commit_hash)
+
+        if selected_monthly_files:
+            monthly_cubes.extend(load_cubes(selected_monthly_files))
+
+        # TODO: TEMPORARY, in order to allow merging of data from different
+        # commits!!
+        for cube in monthly_cubes:
+            del cube.attributes['commit']
+
+        # TODO: Verify that this works as expected.
+        self.cubes = monthly_cubes.concatenate()
 
         # TODO: Caching!! Probably need to iterate over months beforehand
         # and do selective caching just like for CHELSA data.
-        # If all the data is being loaded
-        # if process_slice == slice(None):
 
+        # If all the data has been processed, not just a subset.
+        if process_slice == slice(None):
+            self.write_cache()
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
