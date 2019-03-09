@@ -94,6 +94,17 @@ def load_cubes(files, n=None):
 
 
 def get_centres(data):
+    """Get the elements between elements of an array.
+
+    Examples:
+        >>> from wildfires.data.datasets import get_centres
+        >>> import numpy as np
+        >>> a = np.array([1,2,3])
+        >>> b = get_centres(a)
+        >>> np.all(np.isclose(b, np.array([1.5, 2.5])))
+        True
+
+    """
     return (data[:-1] + data[1:]) / 2.
 
 
@@ -120,12 +131,15 @@ def regrid(
         if not coord.has_bounds():
             coord.guess_bounds()
 
+    # Using getattr allows the input coordinates to be both
+    # iris.coords.DimCoord (with a 'points' attribute) as well as normal
+    # numpy arrays.
     new_latitudes = iris.coords.DimCoord(
-            new_latitudes, standard_name='latitude',
-            units='degrees')
+            getattr(new_latitudes, 'points', new_latitudes),
+            standard_name='latitude', units='degrees')
     new_longitudes = iris.coords.DimCoord(
-            new_longitudes, standard_name='longitude',
-            units='degrees')
+            getattr(new_longitudes, 'points', new_longitudes),
+            standard_name='longitude', units='degrees')
 
     # If there is a time dimension, n_dim = 3, and so there will be 3
     # entries. However, if there is no time dimension, n_dim = 2, and the
