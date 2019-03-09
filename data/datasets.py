@@ -419,8 +419,9 @@ class CHELSA(Dataset):
             process_slice (slice): Used to limit the loading/processing of
                 raw data .tif data files. Slices resulting in single
                 elements (eg. slice(i, i+1)) can be provided with i being
-                the PBS array job index to quickly generate all the
-                required .nc files from the .tif files.
+                the PBS array job index (for example) to quickly generate
+                all the required .nc files from the .tif files using array
+                jobs on the hpc.
 
         """
         self.dir = os.path.join(DATA_DIR, 'CHELSA')
@@ -600,8 +601,31 @@ class CHELSA(Dataset):
 
 
 class Copernicus_SWI(Dataset):
+    """For primary analysis, it is advisable to use hpc
+    (cx1_scipts/run_swi_script.sh) in order to process the daily nc files
+    into monthly nc files as a series of jobs, which would take an
+    incredibly long time and large amounts of RAM ontherwise (on the order
+    of days).
 
-    def __init__(self):
+    Once that script has been run, the resulting nc files can be used to
+    easily construct a large iris Cube containing all the desired monthly
+    data.
+
+    """
+
+    def __init__(self, process_slice=slice(None)):
+        """Initialise the cubes.
+
+        Args:
+            process_slice (slice): Used to limit the loading/processing of
+                raw daily .nc files. Slices resulting in single elements
+                (eg. slice(i, i+1)) will select a MONTH of data. For
+                example, this can be done with i being the PBS array job
+                index (for example) to quickly generate all the required
+                monthly .nc files from the daily files using array jobs on
+                the hpc.
+
+        """
         self.dir = os.path.join(DATA_DIR, 'Copernicus_SWI')
 
         self.cubes = self.read_cache()
