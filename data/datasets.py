@@ -7,6 +7,7 @@
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 import glob
 import logging
 import operator
@@ -29,7 +30,7 @@ import pandas as pd
 from pyhdf.SD import SD, SDC
 import rasterio
 import statsmodels.api as sm
-# from tqdm import tqdm
+from tqdm import tqdm
 # import statsmodels.genmod.families.links as links
 
 
@@ -88,7 +89,7 @@ def load_cubes(files, n=None):
     # Make sure files are sorted so that times increase.
     files.sort()
     l = iris.cube.CubeList()
-    for f in files[slice(0, n, 1)]:
+    for f in tqdm(files[slice(0, n, 1)]):
         l.extend(iris.load(f))
     return l
 
@@ -636,19 +637,51 @@ class Copernicus_SWI(Dataset):
         # The raw data is daily data, which has to be averaged to yield
         # monthly data.
         files = glob.glob(
-            os.path.join(self.dir, '**', '*.nc'), recursive=True)[:3]
+            os.path.join(self.dir, '**', '*.nc'), recursive=True)
 
-        raw_cubes = iris.load(files)
+        # Get times from the filenames, instead of having to load the cubes
+        # and look at the time coordinate that way.
+        pattern = re.compile(r'(\d{4})(\d{2})(\d{2})')
+        datetimes = [datetime(*map(int, pattern.search(f).groups()))
+                     for f in files]
+
+        year_months = sorted(list(set(
+            [datetime(dt.year, dt.month, 1)
+             for dt in datetimes])))[process_slice]
+
+        start_year_month = year_months[0]
+        end_year_month = year_months[-1] + relativedelta(months=+1)
+
+        selected_files = [
+                files[i] for i, dt in enumerate(datetimes)
+                if start_year_month <= dt < end_year_month]
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=(
+                "Skipping global attribute 'long_name': 'long_name' is not "
+                "a permitted attribute"))
+            raw_cubes = load_cubes(selected_files)
+            for cube in raw_cubes:
+                # Make metadata uniform so they can be concatenated.
+                del cube.attributes['identifier']
+                del cube.attributes['title']
+                del cube.attributes['time_coverage_start']
+                del cube.attributes['time_coverage_end']
+
+        raw_cubes = raw_cubes.concatenate()
 
         for cube in raw_cubes:
             iris.coord_categorisation.add_month_number(cube, 'time')
             iris.coord_categorisation.add_year(cube, 'time')
 
-        monthly_cubes = [cube.aggregated_by(['month_number', 'year'],
+        self.cubes = [cube.aggregated_by(['month_number', 'year'],
                                             iris.analysis.MEAN)
-                         for cube in raw_cubes]
+                      for cube in raw_cubes]
 
-        from ipdb import set_trace; set_trace()
+        # TODO: Caching!! Probably need to iterate over months beforehand
+        # and do selective caching just like for CHELSA data.
+        # If all the data is being loaded
+        # if process_slice == slice(None):
 
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
@@ -1519,7 +1552,7 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
     # a = CHELSA()
     # a = GFEDv4()
-    a = Copernicus_SWI()
+    a = Copernicus_SWI(slice(0, 3))
 
 
 if __name__ == '__main__2':
