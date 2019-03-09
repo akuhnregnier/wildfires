@@ -115,36 +115,40 @@ def regrid(
     n_dim = len(cube.shape)
     assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
 
-    orig_shape = cube.shape
-    # If there is a time dimension, n_dim = 3, and so new_shape will have 3
+    for coord in [c for c in cube.coords() if c.name() in
+                  ['time', 'latitude', 'longitude'][3 - n_dim:]]:
+        if not coord.has_bounds():
+            coord.guess_bounds()
+
+    new_latitudes = iris.coords.DimCoord(
+            new_latitudes, standard_name='latitude',
+            units='degrees')
+    new_longitudes = iris.coords.DimCoord(
+            new_longitudes, standard_name='longitude',
+            units='degrees')
+
+    # If there is a time dimension, n_dim = 3, and so there will be 3
     # entries. However, if there is no time dimension, n_dim = 2, and the
-    # first value will be clipped.
-    new_shape = (orig_shape[0], new_latitudes.size,
-                 new_longitudes.size)[3 - n_dim:]
+    # first entry will be clipped.
+    interp_points = [
+        ('time', cube.coords()[0]),
+        ('latitude', new_latitudes),
+        ('longitude', new_longitudes)
+        ][3 - n_dim:]
 
     orig_coord_dict = dict(
-            [name, tuple(cube.coord(name).points) for name in ['time',
-            'latitude', 'longitude']
+            [(name, tuple(cube.coord(name).points)) for name in
+             ['latitude', 'longitude']])
+
+    new_coord_dict = dict(
+            [(name, tuple(dict(interp_points)[name].points)) for name in
+             ['latitude', 'longitude']])
 
     if orig_coord_dict == new_coord_dict:
-        # TODO: Is this really always applicable? Ie. flipped coordinates
-        # are same number of steps but different ranges? Need to compare
-        # individual coordinates for equality.
-        logging.info("Identical input and output coordinates, returning input.")
+        logging.info("Identical input output, not regridding.")
         return cube
 
     if area_weighted:
-        for coord in [c for c in cube.coords() if c.name() in
-                      ['time', 'latitude', 'longitude'][3 - n_dim:]]:
-            if not coord.has_bounds():
-                coord.guess_bounds()
-
-        new_latitudes = iris.coords.DimCoord(
-                new_latitudes, standard_name='latitude',
-                units='degrees')
-        new_longitudes = iris.coords.DimCoord(
-                new_longitudes, standard_name='longitude',
-                units='degrees')
 
         # If n_dim = 2, lats and lons are at positions 0 and 1, not 1 and 2
         # (using the modulo operator).
@@ -166,12 +170,6 @@ def regrid(
                 new_grid, iris.analysis.AreaWeighted())
 
     else:
-        interp_points = [
-            ('time', cube.coords()[0]),
-            ('latitude', new_latitudes),
-            ('longitude', new_longitudes)
-            ][3 - n_dim:]
-
         interpolated_cube = cube.interpolate(
                 interp_points, iris.analysis.Linear())
 
