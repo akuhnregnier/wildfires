@@ -10,6 +10,7 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import glob
 import logging
+import logging.config
 import operator
 import os
 import pickle
@@ -33,12 +34,54 @@ import statsmodels.api as sm
 from tqdm import tqdm
 # import statsmodels.genmod.families.links as links
 
+from wildfires.logging_config import LOGGING
+logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.expanduser('~'), 'FIREDATA')
 pickle_file = os.path.join(DATA_DIR, 'cubes.pickle')
 
 repo_dir = os.path.join(os.path.dirname(__file__), os.pardir)
 repo = Repo(repo_dir)
+
+
+def join_adjacent_intervals(intervals):
+    """Join adjacent intervals into larger contiguous intervals.
+
+    Args:
+        intervals (list of 2-element iterables): A list of iterables with 2
+            elements where each such iterable (eg. the tuple (start, end))
+            defines the start and end of the interval. The intervals are
+            assumed to not be overlapping, and starts and ends must match
+            exactly for the intervals to be joined.
+
+    Returns:
+        list of list: Contiguous intervals.
+
+    Examples:
+        >>> from wildfires.data.datasets import join_adjacent_intervals
+        >>> join_adjacent_intervals([[1, 2], [2, 3], [-1, 1]])
+        [[-1, 3]]
+        >>> from datetime import datetime
+        >>> contiguous = join_adjacent_intervals([
+        ...     (datetime(2000, 1, 1), datetime(2000, 2, 1)),
+        ...     (datetime(1999, 1, 1), datetime(2000, 1, 1)),
+        ...     (datetime(1995, 1, 1), datetime(1995, 2, 1))
+        ...     ])
+        >>> contiguous == [
+        ...     [datetime(1995, 1, 1), datetime(1995, 2, 1)],
+        ...     [datetime(1999, 1, 1), datetime(2000, 2, 1)],
+        ...     ]
+        True
+
+    """
+    sorted_intervals = sorted(intervals, key=lambda x: x[0])
+    contiguous_intervals = [list(sorted_intervals.pop(0))]
+    while sorted_intervals:
+        if (sorted_intervals[0][0] == contiguous_intervals[-1][1]):
+            contiguous_intervals[-1][1] = sorted_intervals.pop(0)[1]
+        else:
+            contiguous_intervals.append(list(sorted_intervals.pop(0)))
+    return contiguous_intervals
 
 
 def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180),
@@ -160,7 +203,7 @@ def regrid(
              ['latitude', 'longitude']])
 
     if orig_coord_dict == new_coord_dict:
-        logging.info("Identical input output, not regridding.")
+        logger.info("Identical input output, not regridding.")
         return cube
 
     if area_weighted:
@@ -285,8 +328,8 @@ class Dataset(ABC):
         if os.path.isfile(target_filename):
             # TODO: Want to overwrite if the commit hash is different?
             # Maybe add a flag to do this.
-            logging.info("File exists, not overwriting:'{:}'"
-                         .format(target_filename))
+            logger.info("File exists, not overwriting:'{:}'"
+                        .format(target_filename))
         else:
             assert (not repo.untracked_files) and (not repo.is_dirty()), (
                     "All changes must be committed and all files must be "
@@ -299,7 +342,7 @@ class Dataset(ABC):
 
             if not os.path.isdir(os.path.dirname(target_filename)):
                 os.makedirs(os.path.dirname(target_filename))
-            logging.info("Saving cubes to:'{:}'".format(target_filename))
+            logger.info("Saving cubes to:'{:}'".format(target_filename))
             iris.save(cache_data, target_filename, zlib=True)
             return cube.attributes['commit']
 
@@ -321,20 +364,20 @@ class Dataset(ABC):
             cubes = iris.load(target_filename)
             if not cubes:
                 os.remove(target_filename)
-                logging.warning("No cubes were found. Deleted file:{:}"
-                                .format(target_filename))
+                logger.warning("No cubes were found. Deleted file:{:}"
+                               .format(target_filename))
                 return
 
             commit_hashes = [cube.attributes['commit'] for cube in cubes]
             assert len(set(commit_hashes)) == 1, (
                     "Cubes should all stem from the same commit.")
-            logging.debug(
+            logger.debug(
                     "File exists, returning cubes from:'{:}'"
                     .format(target_filename))
             return cubes
         else:
-            logging.info("File does not exist:'{:}'"
-                         .format(target_filename))
+            logger.info("File does not exist:'{:}'"
+                        .format(target_filename))
 
     def write_cache(self):
         """Write list of cubes to disk as a NetCDF file using iris.
@@ -350,7 +393,7 @@ class Dataset(ABC):
         cubes = self.read_data(self.cache_filename)
         if cubes:
             self.cubes = cubes
-            logging.info(
+            logger.info(
                     "File exists, returning cubes from:'{:}' -> Dataset "
                     "timespan {:} -- {:}. Generated using commit {:}"
                     .format(self.cache_filename, self.min_time,
@@ -486,14 +529,14 @@ class CHELSA(Dataset):
             except:
                 # Try again, removing a potentially corrupt file
                 # beforehand.
-                logging.exception("Read failed, recreating:'{:}'"
-                                  .format(nc_file))
+                logger.exception("Read failed, recreating:'{:}'"
+                                 .format(nc_file))
                 cubes = None
                 try:
                     os.remove(nc_file)
                 except:
-                    logging.exception("File did not exist:'{:}'"
-                                      .format(nc_file))
+                    logger.exception("File did not exist:'{:}'"
+                                     .format(nc_file))
 
             if cubes:
                 update_hashes(cubes[0].attributes['commit'])
@@ -504,7 +547,7 @@ class CHELSA(Dataset):
                 with rasterio.open(f) as dataset:
                     pass
             except rasterio.RasterioIOError as e:
-                logging.exception("Corrupted file.")
+                logger.exception("Corrupted file.")
                 # Try to download file again.
                 url = f.replace(
                         os.path.join(DATA_DIR, 'CHELSA'),
@@ -512,7 +555,7 @@ class CHELSA(Dataset):
 
                 command = ("curl --connect-timeout 20 -L -o {:} {:}"
                            .format(f, url))
-                logging.debug('Executing:{:}'.format(command))
+                logger.debug('Executing:{:}'.format(command))
                 os.system(command)
 
             with rasterio.open(f) as dataset:
@@ -666,19 +709,39 @@ class Copernicus_SWI(Dataset):
         end_year_month = year_months[-1] + relativedelta(months=+1)
 
         selected_daily_files = []
+
         selected_monthly_files = []
+        selected_monthly_intervals = []
 
         # TODO: Avoid loading daily files if the corresponding monthly
         # files are present!!!
 
-        for i, dt in enumerate(datetimes):
+        # Handle monthly files first, in order to eliminate double-counting
+        # later on.
+        for f, dt in zip(files, datetimes):
             if start_year_month <= dt < end_year_month:
-                f = files[i]
                 # Prevent loading monthly files into the daily file list
                 # which will get processed into monthly data.
                 if 'monthly' in f:
                     selected_monthly_files.append(f)
-                else:
+                    selected_monthly_intervals.append(
+                            start_year_month, end_year_month)
+
+        # Fuse the monthly intervals into easier-to-use contiguous
+        # intervals.
+        contiguous_monthly_intervals = join_adjacent_intervals(
+                selected_monthly_intervals)
+
+        for f, dt in zip(files, datetimes):
+            if start_year_month <= dt < end_year_month:
+                monthly_data = False
+                for interval in contiguous_monthly_intervals:
+                    if interval[0] <= dt < interval[1]:
+                        monthly_data = True
+
+                if not monthly_data:
+                    assert 'monthly' not in f, (
+                        "Monthly files should have been separated beforehand.")
                     selected_daily_files.append(f)
 
         commit_hashes = set()
@@ -1624,10 +1687,11 @@ def load_dataset_cubes():
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG)
+    logging.config.dictConfig(LOGGING)
     # a = CHELSA()
     # a = GFEDv4()
-    a = Copernicus_SWI(slice(0, 3))
+    # a = Copernicus_SWI(slice(0, 3))
+    a = LIS_OTD_lightning_time_series()
 
 
 if __name__ == '__main__2':
