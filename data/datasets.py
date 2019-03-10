@@ -795,23 +795,33 @@ class Copernicus_SWI(Dataset):
             # information (but with longer time coordinates).
             raw_cubes = daily_cubes.concatenate()
 
-            for i in range(len(raw_cubes)):
-                raw_cubes[i] = regrid(raw_cubes[i])
-                iris.coord_categorisation.add_month_number(raw_cubes[i],
+            while raw_cubes:
+                regridded_cube = regrid(raw_cubes.pop(0))
+                iris.coord_categorisation.add_month_number(regridded_cube,
                                                            'time')
-                iris.coord_categorisation.add_year(raw_cubes[i], 'time')
-                monthly_cubes.append(raw_cubes[i].aggregated_by(
+                iris.coord_categorisation.add_year(regridded_cube, 'time')
+                monthly_cubes.append(regridded_cube.aggregated_by(
                     ['month_number', 'year'], iris.analysis.MEAN))
 
-                # Save these monthly files separately.
-                dt = raw_cubes[i].coord('time').cell(0).point
+            # Save these monthly files separately.
+            # TODO
+            datetimes_to_save = []
+            for cube in monthly_cubes:
+                datetimes_to_save.extend(list(cube.coord('time').points))
+            datetimes_to_save = list(set(datetimes_to_save))
+
+            for dt in datetimes_to_save:
+                cubes = monthly_cubes.extract(time=iris.Constraint(
+                    time=lambda t: dt == t.point))
+
                 commit_hash = self.save_data(
-                        raw_cubes[i],
+                        cubes,
                         os.path.join(
                             monthly_dir,
                             ("c_gls_SWI_{:04d}{:02d}{:02d}_monthly"
                              "_GLOBE_ASCAT_V3.1.1.nc").format(
-                                 dt.year, dt.month, dt.day)))
+                                 # The day is always 1 for monthly files.
+                                 dt.year, dt.month, 1)))
 
                 # If None is returned, then the file already exists and is not
                 # being overwritten, which should not happen, as we check for
