@@ -82,8 +82,12 @@ def join_adjacent_intervals(intervals):
         ...     [datetime(1999, 1, 1), datetime(2000, 2, 1)],
         ...     ]
         True
+        >>> join_adjacent_intervals([]) == []
+        True
 
     """
+    if not intervals:
+        return []
     intervals = list(map(list, intervals))
     sorted_intervals = sorted(intervals, key=lambda x: x[0])
     contiguous_intervals = [sorted_intervals.pop(0)]
@@ -144,6 +148,7 @@ def load_cubes(files, n=None):
     # Make sure files are sorted so that times increase.
     files.sort()
     l = iris.cube.CubeList()
+    logger.info("Loading files.")
     for f in tqdm(files[slice(0, n, 1)]):
         l.extend(iris.load(f))
     return l
@@ -182,6 +187,29 @@ def regrid(
     n_dim = len(cube.shape)
     assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
 
+    WGS84 = iris.coord_systems.GeogCS(
+            semi_major_axis=6378137.0, semi_minor_axis=6356752.314245179)
+    # Make sure coordinate systems are uniform.
+    systems = [cube.coord(coord_name).coord_system for coord_name in
+               ['latitude', 'longitude']]
+    assert systems[0] == systems[1]
+
+    if ((systems[0].semi_major_axis == WGS84.semi_major_axis)
+            and (systems[0].semi_minor_axis == WGS84.semi_minor_axis)):
+        logger.debug('Using WGS84 coordinate system for regridding.')
+        coord_sys = WGS84
+        # Fix floating point 'bug' where the inverse flattening of the
+        # coord system that comes with the dataset does not match the
+        # inverse flattening that is calculated by iris upon giving the two
+        # axis parameters above (which do match between the two coordinate
+        # systems). Inverse flattening calculated by iris:
+        # 298.2572235629972, vs that in the Copernicus_SWI dataset:
+        # 298.257223563, which seems like it is simply truncated.
+        for coord_name in ['latitude', 'longitude']:
+            cube.coord(coord_name).coord_system = WGS84
+    else:
+        coord_sys = None
+
     for coord in [c for c in cube.coords() if c.name() in
                   ['time', 'latitude', 'longitude'][3 - n_dim:]]:
         if not coord.has_bounds():
@@ -196,6 +224,9 @@ def regrid(
     new_longitudes = iris.coords.DimCoord(
             getattr(new_longitudes, 'points', new_longitudes),
             standard_name='longitude', units='degrees')
+
+    for coord in [new_latitudes, new_longitudes]:
+        coord.coord_system = coord_sys
 
     # If there is a time dimension, n_dim = 3, and so there will be 3
     # entries. However, if there is no time dimension, n_dim = 2, and the
@@ -219,7 +250,6 @@ def regrid(
         return cube
 
     if area_weighted:
-
         # If n_dim = 2, lats and lons are at positions 0 and 1, not 1 and 2
         # (using the modulo operator).
         grid_coords = [
@@ -1715,8 +1745,8 @@ if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
     # a = CHELSA()
     # a = GFEDv4()
-    # a = Copernicus_SWI(slice(0, 3))
-    a = LIS_OTD_lightning_time_series()
+    a = Copernicus_SWI(slice(0, 1))
+    # a = LIS_OTD_lightning_time_series()
 
 
 if __name__ == '__main__2':
