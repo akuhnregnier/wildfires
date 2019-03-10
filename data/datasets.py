@@ -45,14 +45,12 @@ repo = Repo(repo_dir)
 
 
 def join_adjacent_intervals(intervals):
-    """Join adjacent intervals into larger contiguous intervals.
+    """Join adjacent or overlapping intervals into contiguous intervals.
 
     Args:
         intervals (list of 2-element iterables): A list of iterables with 2
             elements where each such iterable (eg. the tuple (start, end))
-            defines the start and end of the interval. The intervals are
-            assumed to not be overlapping, and starts and ends must match
-            exactly for the intervals to be joined.
+            defines the start and end of the interval.
 
     Returns:
         list of list: Contiguous intervals.
@@ -72,15 +70,29 @@ def join_adjacent_intervals(intervals):
         ...     [datetime(1999, 1, 1), datetime(2000, 2, 1)],
         ...     ]
         True
+        >>> overlapping_contiguous = join_adjacent_intervals([
+        ...     (datetime(1999, 1, 1), datetime(2000, 2, 1)),
+        ...     (datetime(2000, 1, 1), datetime(2000, 2, 1)),
+        ...     (datetime(1995, 1, 1), datetime(1995, 3, 1)),
+        ...     (datetime(1995, 2, 1), datetime(1995, 4, 1)),
+        ...     (datetime(1995, 4, 1), datetime(1995, 5, 1)),
+        ...     ])
+        >>> overlapping_contiguous == [
+        ...     [datetime(1995, 1, 1), datetime(1995, 5, 1)],
+        ...     [datetime(1999, 1, 1), datetime(2000, 2, 1)],
+        ...     ]
+        True
 
     """
+    intervals = list(map(list, intervals))
     sorted_intervals = sorted(intervals, key=lambda x: x[0])
-    contiguous_intervals = [list(sorted_intervals.pop(0))]
+    contiguous_intervals = [sorted_intervals.pop(0)]
     while sorted_intervals:
-        if (sorted_intervals[0][0] == contiguous_intervals[-1][1]):
-            contiguous_intervals[-1][1] = sorted_intervals.pop(0)[1]
+        if sorted_intervals[0][0] <= contiguous_intervals[-1][1]:
+            contiguous_intervals[-1][1] = max([
+                sorted_intervals.pop(0)[1], contiguous_intervals[-1][1]])
         else:
-            contiguous_intervals.append(list(sorted_intervals.pop(0)))
+            contiguous_intervals.append(sorted_intervals.pop(0))
     return contiguous_intervals
 
 
@@ -657,6 +669,9 @@ class Copernicus_SWI(Dataset):
     easily construct a large iris Cube containing all the desired monthly
     data.
 
+    There are currently 147 available months of data, from 2007-01 to
+    2019-03.
+
     """
 
     def __init__(self, process_slice=slice(None)):
@@ -722,10 +737,14 @@ class Copernicus_SWI(Dataset):
             if start_year_month <= dt < end_year_month:
                 # Prevent loading monthly files into the daily file list
                 # which will get processed into monthly data.
+                #
+                # Only ignore the 1 month interval which is associated with
+                # each monthly file. If multiple intervals are found, they
+                # will be merged later.
                 if 'monthly' in f:
                     selected_monthly_files.append(f)
                     selected_monthly_intervals.append(
-                            start_year_month, end_year_month)
+                            dt, dt + relativedelta(months=+1))
 
         # Fuse the monthly intervals into easier-to-use contiguous
         # intervals.
@@ -786,14 +805,13 @@ class Copernicus_SWI(Dataset):
 
                 # Save these monthly files separately.
                 dt = raw_cubes[i].coord('time').cell(0).point
-                year, month, day = dt.year, dt.month, dt.day
                 commit_hash = self.save_data(
                         raw_cubes[i],
                         os.path.join(
                             monthly_dir,
                             ("c_gls_SWI_{:04d}{:02d}{:02d}_monthly"
                              "_GLOBE_ASCAT_V3.1.1.nc").format(
-                                 year, month, day)))
+                                 dt.year, dt.month, dt.day)))
 
                 # If None is returned, then the file already exists and is not
                 # being overwritten, which should not happen, as we check for
@@ -814,9 +832,6 @@ class Copernicus_SWI(Dataset):
 
         # TODO: Verify that this works as expected.
         self.cubes = monthly_cubes.concatenate()
-
-        # TODO: Caching!! Probably need to iterate over months beforehand
-        # and do selective caching just like for CHELSA data.
 
         # If all the data has been processed, not just a subset.
         if process_slice == slice(None):
