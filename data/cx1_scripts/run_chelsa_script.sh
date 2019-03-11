@@ -6,4 +6,4 @@
 
 # 1680 files
 
-/rds/general/user/ahk114/home/.pyenv/versions/miniconda3-latest/bin/python3 /rds/general/user/ahk114/home/Documents/cx1_scripts/chelsa_analysis.py
+/rds/general/user/ahk114/home/.pyenv/versions/miniconda3-latest/bin/python3 /rds/general/user/ahk114/home/Documents/wildfires/data/cx1_scripts/chelsa_analysis.py
