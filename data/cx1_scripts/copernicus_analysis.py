@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
-from datasets import Copernicus_SWI, LOGGING
+from wildfires.data.datasets import Copernicus_SWI, LOGGING
 import logging
 import logging.config
 logger = logging.getLogger(__name__)
