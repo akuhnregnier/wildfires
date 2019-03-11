@@ -195,6 +195,9 @@ def regrid(cube, area_weighted=False,
     cached regridders.
 
     """
+    # TODO
+    # VERY TEMPORARY!!!!!!!!!!!!!!!!!!!
+    return cube
     n_dim = len(cube.shape)
     assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
 
@@ -849,11 +852,12 @@ class Copernicus_SWI(Dataset):
             # TODO
             datetimes_to_save = []
             for cube in monthly_cubes:
-                datetimes_to_save.extend(list(cube.coord('time').points))
+                for i in range(len(cube.coord('time').points)):
+                    datetimes_to_save.append(cube.coord('time').cell(i).point)
             datetimes_to_save = list(set(datetimes_to_save))
 
             for dt in datetimes_to_save:
-                cubes = monthly_cubes.extract(time=iris.Constraint(
+                cubes = monthly_cubes.extract(iris.Constraint(
                     time=lambda t: dt == t.point))
 
                 commit_hash = self.save_data(
