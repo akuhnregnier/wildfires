@@ -102,9 +102,12 @@ def join_adjacent_intervals(intervals):
 
 def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180),
                        **kwargs):
-    assert len(data.shape) == 2
-    new_latitudes = get_centres(np.linspace(*lat_lims, data.shape[0] + 1))
-    new_longitudes = get_centres(np.linspace(*lon_lims, data.shape[1] + 1))
+    n_dims = len(data.shape)
+    assert n_dims in {2, 3}
+    new_latitudes = get_centres(
+            np.linspace(*lat_lims, data.shape[0 + n_dims % 2] + 1))
+    new_longitudes = get_centres(
+            np.linspace(*lon_lims, data.shape[1 + n_dims % 2] + 1))
     new_lat_coord = iris.coords.DimCoord(
             new_latitudes, standard_name='latitude',
             units='degrees')
@@ -112,10 +115,17 @@ def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180),
             new_longitudes, standard_name='longitude',
             units='degrees')
 
-    grid_coords = [
-        (new_lat_coord, 0),
-        (new_lon_coord, 1)
-        ]
+    if n_dims == 2:
+        grid_coords = [
+            (new_lat_coord, 0),
+            (new_lon_coord, 1)
+            ]
+    else:
+        grid_coords = [
+            (iris.coords.DimCoord(range(data.shape[0])), 0),
+            (new_lat_coord, 1),
+            (new_lon_coord, 2),
+            ]
     return iris.cube.Cube(data, dim_coords_and_dims=grid_coords, **kwargs)
 
 
@@ -194,7 +204,9 @@ def regrid(
                ['latitude', 'longitude']]
     assert systems[0] == systems[1]
 
-    if ((systems[0].semi_major_axis == WGS84.semi_major_axis)
+    if systems[0] is None:
+        coord_sys = None
+    elif ((systems[0].semi_major_axis == WGS84.semi_major_axis)
             and (systems[0].semi_minor_axis == WGS84.semi_minor_axis)):
         logger.debug('Using WGS84 coordinate system for regridding.')
         coord_sys = WGS84
@@ -208,7 +220,7 @@ def regrid(
         for coord_name in ['latitude', 'longitude']:
             cube.coord(coord_name).coord_system = WGS84
     else:
-        coord_sys = None
+        raise ValueError("Unknown coord_system:{:}".format(systems[0]))
 
     for coord in [c for c in cube.coords() if c.name() in
                   ['time', 'latitude', 'longitude'][3 - n_dim:]]:
