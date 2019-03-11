@@ -856,8 +856,15 @@ class Copernicus_SWI(Dataset):
                                                            'time')
                 iris.coord_categorisation.add_year(regridded_cube, 'time')
                 logger.debug('Averaging:{:}'.format(regridded_cube))
-                monthly_cubes.append(regridded_cube.aggregated_by(
-                    ['month_number', 'year'], iris.analysis.MEAN))
+
+                # TODO: TEMPORARY!!!!!!!!!!!!
+                #
+                # monthly_cubes.append(regridded_cube.aggregated_by(
+                #     ['month_number', 'year'], iris.analysis.MEAN))
+                #
+                monthly_cubes.append(regridded_cube[0])
+                logger.debug('Remaining nr to regrid & average:{:}'.format(
+                    len(raw_cubes)))
 
             # Save these monthly files separately.
             # TODO
