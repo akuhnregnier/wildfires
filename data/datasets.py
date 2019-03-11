@@ -858,7 +858,6 @@ class Copernicus_SWI(Dataset):
                 monthly_cubes.append(regridded_cube[:2].aggregated_by(
                     ['month_number', 'year'], iris.analysis.MEAN))
 
-                monthly_cubes.append(regridded_cube[0])
                 logger.debug('Remaining nr to regrid & average:{:}'.format(
                     len(raw_cubes)))
 
