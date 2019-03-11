@@ -811,6 +811,9 @@ class Copernicus_SWI(Dataset):
                         "Monthly files should have been separated beforehand.")
                     selected_daily_files.append(f)
 
+        logger.debug('Using {:} monthly & {:} daily files'.format(
+            len(selected_monthly_files), len(selected_daily_files)))
+
         commit_hashes = set()
         monthly_cubes = iris.cube.CubeList([])
 
@@ -895,8 +898,12 @@ class Copernicus_SWI(Dataset):
             if 'commit' in cube.attributes:
                 del cube.attributes['commit']
 
+        logger.debug('Concatenating final cubes.')
         # TODO: Verify that this works as expected.
+        logger.debug('Finished concatenating.')
         self.cubes = monthly_cubes.concatenate()
+
+        import ipdb; ipdb.set_trace()
 
         # If all the data has been processed, not just a subset.
         if process_slice == slice(None):
@@ -1771,7 +1778,7 @@ if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
     # a = CHELSA()
     # a = GFEDv4()
-    a = Copernicus_SWI(slice(0, 1))
+    a = Copernicus_SWI(slice(2, 3))
     # a = LIS_OTD_lightning_time_series()
 
 
