@@ -854,8 +854,14 @@ class Copernicus_SWI(Dataset):
                 iris.coord_categorisation.add_year(regridded_cube, 'time')
                 logger.debug('Averaging:{:}'.format(repr(regridded_cube)))
 
-                monthly_cubes.append(regridded_cube.aggregated_by(
-                    ['month_number', 'year'], iris.analysis.MEAN))
+                averaged_cube = regridded_cube.aggregated_by(
+                    ['month_number', 'year'], iris.analysis.MEAN)
+
+                assert averaged_cube.core_data().shape[0] == 1, (
+                        "There should be only 1 element in the time dimension "
+                        "(ie. 1 month).")
+
+                monthly_cubes.append(averaged_cube[0])
 
                 logger.debug('Remaining nr to regrid & average:{:}'.format(
                     len(raw_cubes)))
@@ -898,10 +904,10 @@ class Copernicus_SWI(Dataset):
             if 'commit' in cube.attributes:
                 del cube.attributes['commit']
 
-        logger.debug('Concatenating final cubes.')
+        logger.debug('Merging final cubes.')
         # TODO: Verify that this works as expected.
-        logger.debug('Finished concatenating.')
-        self.cubes = monthly_cubes.concatenate()
+        self.cubes = monthly_cubes.merge()
+        logger.debug('Finished merging.')
 
         import ipdb; ipdb.set_trace()
 
