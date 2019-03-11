@@ -731,11 +731,14 @@ class Copernicus_SWI(Dataset):
 
         """
         self.dir = os.path.join(DATA_DIR, 'Copernicus_SWI')
+        logger.debug('Copernicus dir:{:}'.format(self.dir))
         monthly_dir = os.path.join(self.dir, 'monthly')
+        logger.debug('Monthly dir:{:}'.format(monthly_dir))
 
         self.cubes = self.read_cache()
         # If a CubeList has been loaded successfully, exit __init__
         if self.cubes:
+            logger.debug('Found Copernicus cubes, returning.')
             return
 
         # The raw data is daily data, which has to be averaged to yield
@@ -751,6 +754,9 @@ class Copernicus_SWI(Dataset):
             else:
                 daily_files.append(f)
 
+        logger.debug('Found {:} monthly & {:} daily files'.format(
+            len(monthly_files), len(daily_files)))
+
         # Get times from the filenames, instead of having to load the cubes
         # and look at the time coordinate that way.
         pattern = re.compile(r'(\d{4})(\d{2})(\d{2})')
@@ -765,6 +771,8 @@ class Copernicus_SWI(Dataset):
 
         start_year_month = year_months[0]
         end_year_month = year_months[-1] + relativedelta(months=+1)
+        logger.debug('Processing data from {:} to {:}'.format(
+            start_year_month, end_year_month))
 
         selected_daily_files = []
 
@@ -793,6 +801,9 @@ class Copernicus_SWI(Dataset):
         # intervals.
         contiguous_monthly_intervals = join_adjacent_intervals(
                 selected_monthly_intervals)
+
+        logger.debug('Contiguous monthly intervals:{:}'.format(
+            contiguous_monthly_intervals))
 
         for f, dt in zip(files, datetimes):
             if start_year_month <= dt < end_year_month:
