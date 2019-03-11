@@ -909,8 +909,6 @@ class Copernicus_SWI(Dataset):
         self.cubes = monthly_cubes.merge()
         logger.debug('Finished merging.')
 
-        import ipdb; ipdb.set_trace()
-
         # If all the data has been processed, not just a subset.
         if process_slice == slice(None):
             logger.debug('Writing cache for entire timespan')
