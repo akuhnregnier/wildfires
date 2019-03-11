@@ -792,7 +792,7 @@ class Copernicus_SWI(Dataset):
                 if 'monthly' in f:
                     selected_monthly_files.append(f)
                     selected_monthly_intervals.append(
-                            dt, dt + relativedelta(months=+1))
+                            [dt, dt + relativedelta(months=+1)])
 
         # Fuse the monthly intervals into easier-to-use contiguous
         # intervals.
