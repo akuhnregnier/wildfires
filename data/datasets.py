@@ -896,13 +896,15 @@ class Copernicus_SWI(Dataset):
         # TODO: TEMPORARY, in order to allow merging of data from different
         # commits!!
         for cube in monthly_cubes:
-            del cube.attributes['commit']
+            if 'commit' in cube.attributes:
+                del cube.attributes['commit']
 
         # TODO: Verify that this works as expected.
         self.cubes = monthly_cubes.concatenate()
 
         # If all the data has been processed, not just a subset.
         if process_slice == slice(None):
+            logger.debug('Writing cache for entire timespan')
             self.write_cache()
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
