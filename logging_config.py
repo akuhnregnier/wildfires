@@ -29,11 +29,11 @@ LOGGING = {
         }
     },
     'loggers': {
-        'test': {
+        'wildfires': {
             'level': 'DEBUG',
             'handlers': ['console', 'file']
         },
     }
 }
-LOGGING['loggers']['__main__'] = LOGGING['loggers']['test']
+LOGGING['loggers']['__main__'] = LOGGING['loggers']['wildfires']
 
