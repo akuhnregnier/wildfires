@@ -2,7 +2,7 @@
 #PBS -N copernicus
 #PBS -l select=1:ncpus=1:mem=10gb
 #PBS -l walltime=0:35:00
-#PBS -J 10-13
+#PBS -J 0-147
 
 # 148 slices to cover all the months
 # ie. -J 0-147
