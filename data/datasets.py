@@ -195,9 +195,6 @@ def regrid(cube, area_weighted=False,
     cached regridders.
 
     """
-    # TODO
-    # VERY TEMPORARY!!!!!!!!!!!!!!!!!!!
-    return cube
     n_dim = len(cube.shape)
     assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
 
@@ -854,8 +851,7 @@ class Copernicus_SWI(Dataset):
                 iris.coord_categorisation.add_year(regridded_cube, 'time')
                 logger.debug('Averaging:{:}'.format(regridded_cube))
 
-                # TODO: TEMPORARY reset the slice!!!
-                monthly_cubes.append(regridded_cube[:2].aggregated_by(
+                monthly_cubes.append(regridded_cube.aggregated_by(
                     ['month_number', 'year'], iris.analysis.MEAN))
 
                 logger.debug('Remaining nr to regrid & average:{:}'.format(
