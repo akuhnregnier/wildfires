@@ -779,9 +779,6 @@ class Copernicus_SWI(Dataset):
         selected_monthly_files = []
         selected_monthly_intervals = []
 
-        # TODO: Avoid loading daily files if the corresponding monthly
-        # files are present!!!
-
         # Handle monthly files first, in order to eliminate double-counting
         # later on.
         for f, dt in zip(files, datetimes):
@@ -857,9 +854,7 @@ class Copernicus_SWI(Dataset):
                 iris.coord_categorisation.add_year(regridded_cube, 'time')
                 logger.debug('Averaging:{:}'.format(regridded_cube))
 
-                # TODO: TEMPORARY!!!!!!!!!!!!
-                #
-                monthly_cubes.append(regridded_cube[:3].aggregated_by(
+                monthly_cubes.append(regridded_cube.aggregated_by(
                     ['month_number', 'year'], iris.analysis.MEAN))
 
                 monthly_cubes.append(regridded_cube[0])
@@ -867,7 +862,6 @@ class Copernicus_SWI(Dataset):
                     len(raw_cubes)))
 
             # Save these monthly files separately.
-            # TODO
             datetimes_to_save = []
             for cube in monthly_cubes:
                 for i in range(len(cube.coord('time').points)):
