@@ -179,17 +179,18 @@ def get_centres(data):
     return (data[:-1] + data[1:]) / 2.
 
 
-def regrid(
-        cube, area_weighted=True,
-        new_latitudes=get_centres(np.linspace(-90, 90, 721)),
-        new_longitudes=get_centres(np.linspace(-180, 180, 1441))):
+def regrid(cube, area_weighted=False,
+           new_latitudes=get_centres(np.linspace(-90, 90, 721)),
+           new_longitudes=get_centres(np.linspace(-180, 180, 1441))):
     """Keep (optional) time coordinate, but regrid latitudes and longitudes.
 
     Expects either (time, lat, lon) or (lat, lon) coordinates.
 
     NOTE: Regarding caching AreaWeighted regridders - the creation of the
     regridder does not seem to take much time, however, so this step is
-    almost inconsequential. Furthermore, as time coordinate differences may
+    almost inconsequential. This is supported by the fact that the source
+    code and online bug reports show that no actual caching of weights
+    takes place! Furthermore, as time coordinate differences may
     exist between coordinates, iris does not support such differences with
     cached regridders.
 
@@ -261,29 +262,26 @@ def regrid(
         logger.info("Identical input output, not regridding.")
         return cube
 
-    if area_weighted:
-        # If n_dim = 2, lats and lons are at positions 0 and 1, not 1 and 2
-        # (using the modulo operator).
-        grid_coords = [
-            (cube.coords()[0], 0),
-            (new_latitudes, 1 - (3 % n_dim)),
-            (new_longitudes, 2 - (3 % n_dim))
-            ][3 - n_dim:]
+    # If n_dim = 2, lats and lons are at positions 0 and 1, not 1 and 2
+    # (using the modulo operator).
+    grid_coords = [
+        (cube.coords()[0], 0),
+        (new_latitudes, 1 - (3 % n_dim)),
+        (new_longitudes, 2 - (3 % n_dim))
+        ][3 - n_dim:]
 
-        new_grid = iris.cube.Cube(
-                np.zeros([coord[0].points.size for coord in grid_coords]),
-                dim_coords_and_dims=grid_coords)
+    new_grid = iris.cube.Cube(
+            np.zeros([coord[0].points.size for coord in grid_coords]),
+            dim_coords_and_dims=grid_coords)
 
-        for coord in new_grid.coords():
-            if not coord.has_bounds():
-                coord.guess_bounds()
+    for coord in new_grid.coords():
+        if not coord.has_bounds():
+            coord.guess_bounds()
 
-        interpolated_cube = cube.regrid(
-                new_grid, iris.analysis.AreaWeighted())
+    scheme = (iris.analysis.AreaWeighted() if area_weighted
+              else iris.analysis.Linear())
 
-    else:
-        interpolated_cube = cube.interpolate(
-                interp_points, iris.analysis.Linear())
+    interpolated_cube = cube.regrid(new_grid, scheme)
 
     return interpolated_cube
 
