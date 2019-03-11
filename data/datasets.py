@@ -826,10 +826,12 @@ class Copernicus_SWI(Dataset):
             raw_cubes = daily_cubes.concatenate()
 
             while raw_cubes:
+                logger.debug('Regridding:{:}'.format(raw_cubes[0]))
                 regridded_cube = regrid(raw_cubes.pop(0))
                 iris.coord_categorisation.add_month_number(regridded_cube,
                                                            'time')
                 iris.coord_categorisation.add_year(regridded_cube, 'time')
+                logger.debug('Averaging:{:}'.format(regridded_cube))
                 monthly_cubes.append(regridded_cube.aggregated_by(
                     ['month_number', 'year'], iris.analysis.MEAN))
 
@@ -1745,7 +1747,7 @@ if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
     # a = CHELSA()
     # a = GFEDv4()
-    a = Copernicus_SWI(slice(0, 1))
+    a = Copernicus_SWI(slice(2, 3))
     # a = LIS_OTD_lightning_time_series()
 
 
