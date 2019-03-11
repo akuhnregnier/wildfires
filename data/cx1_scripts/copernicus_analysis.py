@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
+sys.path.append(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir))
 from wildfires.data.datasets import Copernicus_SWI, LOGGING
 import logging
 import logging.config
