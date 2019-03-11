@@ -854,7 +854,8 @@ class Copernicus_SWI(Dataset):
                 iris.coord_categorisation.add_year(regridded_cube, 'time')
                 logger.debug('Averaging:{:}'.format(regridded_cube))
 
-                monthly_cubes.append(regridded_cube.aggregated_by(
+                # TODO: TEMPORARY reset the slice!!!
+                monthly_cubes.append(regridded_cube[:2].aggregated_by(
                     ['month_number', 'year'], iris.analysis.MEAN))
 
                 monthly_cubes.append(regridded_cube[0])
