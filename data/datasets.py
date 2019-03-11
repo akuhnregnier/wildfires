@@ -847,12 +847,12 @@ class Copernicus_SWI(Dataset):
             raw_cubes = daily_cubes.concatenate()
 
             while raw_cubes:
-                logger.debug('Regridding:{:}'.format(raw_cubes[0]))
+                logger.debug('Regridding:{:}'.format(repr(raw_cubes[0])))
                 regridded_cube = regrid(raw_cubes.pop(0))
                 iris.coord_categorisation.add_month_number(regridded_cube,
                                                            'time')
                 iris.coord_categorisation.add_year(regridded_cube, 'time')
-                logger.debug('Averaging:{:}'.format(regridded_cube))
+                logger.debug('Averaging:{:}'.format(repr(regridded_cube)))
 
                 monthly_cubes.append(regridded_cube.aggregated_by(
                     ['month_number', 'year'], iris.analysis.MEAN))
