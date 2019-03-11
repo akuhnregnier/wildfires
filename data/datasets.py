@@ -1757,7 +1757,7 @@ if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
     # a = CHELSA()
     # a = GFEDv4()
-    a = Copernicus_SWI(slice(2, 3))
+    a = Copernicus_SWI(slice(0, 1))
     # a = LIS_OTD_lightning_time_series()
 
 
