@@ -1476,6 +1476,117 @@ class GSMaP_precipitation(Dataset):
             time=lambda t: end >= t.point >= start))
 
 
+class HYDE(Dataset):
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, 'HYDE')
+
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
+        # TODO: Consider upper and lower esimates as well, not just
+        # baseline??
+        files = glob.glob(
+                os.path.join(self.dir, 'baseline', '*.asc'),
+                recursive=True)
+
+        cube_list = iris.cube.CubeList()
+        mapping = {
+                'uopp': {
+                    },
+                'urbc': {
+                    },
+                'tot_rice': {
+                    },
+                'tot_rainfed': {
+                    },
+                'tot_irri': {
+                    },
+                'rurc': {
+                    },
+                'rf_rice': {
+                    },
+                'rf_norice': {
+                    },
+                'rangeland': {
+                    },
+                'popd': {
+                    },
+                'popc': {
+                    },
+                'pasture': {
+                    },
+                'ir_rice': {
+                    },
+                'ir_norice': {
+                    },
+                'grazing': {
+                    },
+                'cropland': {
+                    },
+                'conv_rangeland': {
+                    },
+                }
+        pattern = re.compile(r'(.*)(\d{4})AD')
+
+        time_unit_str = 'hours since 1970-01-01 00:00:00'
+        calendar = 'gregorian'
+        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
+
+        for f in tqdm(files):
+            groups = pattern.search(os.path.split(f)[1]).groups()
+            variable_key = groups[0].strip('_')
+            year = int(groups[1])
+            data = np.loadtxt(f, skiprows=6, ndmin=2)
+            assert data.shape == (2160, 4320)
+            data = data.reshape(2160, 4320)
+            data = np.ma.MaskedArray(data, mask=np.isclose(data, -9999))
+
+            new_latitudes = get_centres(
+                    np.linspace(90, -90, data.shape[0] + 1))
+            new_longitudes = get_centres(
+                    np.linspace(-180, 180, data.shape[1] + 1))
+            new_lat_coord = iris.coords.DimCoord(
+                    new_latitudes, standard_name='latitude',
+                    units='degrees')
+            new_lon_coord = iris.coords.DimCoord(
+                    new_longitudes, standard_name='longitude',
+                    units='degrees')
+
+            grid_coords = [
+                (new_lat_coord, 0),
+                (new_lon_coord, 1)
+                ]
+
+            time_coord = iris.coords.DimCoord(
+                    cf_units.date2num(
+                        datetime(year, 1, 1),
+                        time_unit_str,
+                        calendar),
+                    standard_name='time',
+                    units=time_unit)
+
+            cube = iris.cube.Cube(
+                    data, dim_coords_and_dims=grid_coords,
+                    units=mapping[variable_key].get('unit'),
+                    var_name=variable_key,
+                    long_name=mapping[variable_key].get('long_name'),
+                    aux_coords_and_dims=[(time_coord, None)])
+            regrid_cube = regrid(cube)
+            cube_list.append(regrid_cube)
+
+        self.cubes = cube_list.merge()
+        from ipdb import set_trace; set_trace()
+        self.write_cache()
+
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.cubes.extract(iris.Constraint(
+            time=lambda t: end > t.point > start))
+
+
 class LIS_OTD_lightning_climatology(Dataset):
 
     def __init__(self):
@@ -1773,9 +1884,5 @@ def load_dataset_cubes():
 
 if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
-    # a = CHELSA()
-    # a = GFEDv4()
-    a = Copernicus_SWI(slice(12, 13))
-    # a = LIS_OTD_lightning_time_series()
-
+    a = HYDE()
 
