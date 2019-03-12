@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 #PBS -N copernicus
-#PBS -l select=1:ncpus=1:mem=10gb
-#PBS -l walltime=0:35:00
+#PBS -l select=1:ncpus=1:mem=7gb
+#PBS -l walltime=0:26:00
 #PBS -J 0-147
 
 # 148 slices to cover all the months
