@@ -382,7 +382,7 @@ class Dataset(ABC):
             if not os.path.isdir(os.path.dirname(target_filename)):
                 os.makedirs(os.path.dirname(target_filename))
             logger.info("Saving cubes to:'{:}'".format(target_filename))
-            iris.save(cache_data, target_filename, zlib=True)
+            iris.save(cache_data, target_filename, zlib=False)
             return cube.attributes['commit']
 
     @staticmethod
