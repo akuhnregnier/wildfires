@@ -194,6 +194,21 @@ def regrid(cube, area_weighted=False,
     n_dim = len(cube.shape)
     assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
 
+    if n_dim == 3:
+        # Call the regridding function recursively with time slices of the
+        # data, in order to try to prevent occasional Segmentation Faults
+        # that occur when trying to regrid a large chunk of time in 3
+        # dimensions.
+        regridded_cubes = iris.cube.CubeList()
+        assert len(cube.coords()[0].points) == cube.shape[0]
+        for i in range(cube.shape[0]):
+            regridded_cubes.append(regrid(
+                cube[i], area_weighted=area_weighted,
+                new_latitudes=new_latitudes, new_longitudes=new_longitudes))
+        return regridded_cubes.merge_cube()
+
+    assert n_dim == 2, "Need [lat, lon] dimensions for core algorithm."
+
     WGS84 = iris.coord_systems.GeogCS(
             semi_major_axis=6378137.0, semi_minor_axis=6356752.314245179)
     # Make sure coordinate systems are uniform.
@@ -280,30 +295,6 @@ def regrid(cube, area_weighted=False,
     interpolated_cube = cube.regrid(new_grid, scheme)
 
     return interpolated_cube
-
-
-def combine_masks(data, invalid_values=(0,)):
-    """Create a mask that shows where data is invalid.
-
-    NOTE: Calls data.data, so lazy data is realised here!
-
-    True - invalid data
-    False - valid data
-
-    Returns a boolean array with the same shape as the input data.
-
-    """
-    if hasattr(data, 'mask'):
-        mask = data.mask
-        data_arr = data.data
-    else:
-        mask = np.zeros_like(data, dtype=bool)
-        data_arr = data
-
-    for invalid_value in invalid_values:
-        mask |= (data_arr == invalid_value)
-
-    return mask
 
 
 def monthly_constraint(
@@ -558,7 +549,7 @@ class CHELSA(Dataset):
         time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
 
         commit_hashes = set()
-        cube_list = iris.cube.CubeList([])
+        cube_list = iris.cube.CubeList()
 
         def update_hashes(commit_hash):
             commit_hashes.update([commit_hash])
@@ -811,7 +802,7 @@ class Copernicus_SWI(Dataset):
             len(selected_monthly_files), len(selected_daily_files)))
 
         commit_hashes = set()
-        monthly_cubes = iris.cube.CubeList([])
+        monthly_cubes = iris.cube.CubeList()
 
         def update_hashes(commit_hash):
             commit_hashes.update([commit_hash])
@@ -987,7 +978,7 @@ class ESA_CCI_Landcover(Dataset):
         # variable.
         cube_lists = []
         for i in range(17):
-            cube_lists.append(iris.cube.CubeList([]))
+            cube_lists.append(iris.cube.CubeList())
 
         n_years = len(self.raw_cubes) / 17
         assert np.isclose(n_years, int(n_years))
@@ -1032,7 +1023,7 @@ class ESA_CCI_Landcover(Dataset):
 
                 cube_lists[j].append(cube2)
 
-        self.cubes = iris.cube.CubeList([])
+        self.cubes = iris.cube.CubeList()
         for cube_list in cube_lists:
             self.cubes.append(cube_list.concatenate_cube())
 
@@ -1439,7 +1430,7 @@ class GSMaP_precipitation(Dataset):
         time_unit_str = 'days since 1970-01-01 00:00:00'
         time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
 
-        monthly_average_cubes = iris.cube.CubeList([])
+        monthly_average_cubes = iris.cube.CubeList()
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=(
                 "Collapsing a non-contiguous coordinate. Metadata may not "
@@ -1599,7 +1590,7 @@ class LIS_OTD_lightning_time_series(Dataset):
                 (monthly_cubes[0].coord('longitude'), 2)
                 ]
 
-        self.cubes = iris.cube.CubeList([])
+        self.cubes = iris.cube.CubeList()
         for cube in monthly_cubes:
             # NOTE: This does not use any lazy data whatsoever, starting
             # with the monthly aggregation above.
