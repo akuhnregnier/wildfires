@@ -1578,7 +1578,6 @@ class HYDE(Dataset):
             cube_list.append(regrid_cube)
 
         self.cubes = cube_list.merge()
-        from ipdb import set_trace; set_trace()
         self.write_cache()
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
