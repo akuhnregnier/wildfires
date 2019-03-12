@@ -13,7 +13,6 @@ import logging
 import logging.config
 import operator
 import os
-import pickle
 import re
 import warnings
 
@@ -27,12 +26,9 @@ import iris.quickplot as qplt
 import matplotlib.pyplot as plt
 import netCDF4
 import numpy as np
-import pandas as pd
 from pyhdf.SD import SD, SDC
 import rasterio
-import statsmodels.api as sm
 from tqdm import tqdm
-# import statsmodels.genmod.families.links as links
 
 from wildfires.logging_config import LOGGING
 logger = logging.getLogger(__name__)
@@ -1730,6 +1726,7 @@ class Thurner_AGB(Dataset):
 
 
 def load_dataset_cubes():
+    # TODO: Add new datasets!
     a = CRU()
     b = ESA_CCI_Soilmoisture()
     c = GFEDv4s()
@@ -1777,8 +1774,8 @@ def load_dataset_cubes():
         cubes[i] = regrid(
             cubes[i],
             area_weighted=True,
-            new_latitudes=get_centres(np.linspace(-90, 90, 361)),
-            new_longitudes=get_centres(np.linspace(-180, 180, 721)))
+            new_latitudes=get_centres(),
+            new_longitudes=get_centres())
 
     return cubes
 
@@ -1791,142 +1788,3 @@ if __name__ == '__main__':
     # a = LIS_OTD_lightning_time_series()
 
 
-if __name__ == '__main__2':
-    logging.basicConfig(level=logging.INFO)
-
-    # TODO: Use iris cube long_name attribute to enter descriptive name
-    # which will be used throughout data analysis and plotting (eg. for
-    # selecting DataFrame columns).
-
-    # agb = AvitabileThurnerAGB()
-    # plt.close('all')
-    # plt.figure()
-    # qplt.contourf(agb.cube, 20)
-    # plt.gca().coastlines()
-
-    if os.path.isfile(pickle_file):
-        with open(pickle_file, 'rb') as f:
-            cubes = pickle.load(f)
-    else:
-        cubes = load_dataset_cubes()
-        with open(pickle_file, 'wb') as f:
-            pickle.dump(cubes, f, -1)
-
-    # Use masking to extract only the relevant data.
-
-    # Accumulate the masks for each dataset into a global mask.
-    global_mask = np.zeros(cubes[0].shape, dtype=bool)
-    for cube in cubes:
-        global_mask |= combine_masks(cube.data, invalid_values=[])
-
-    # Apply the same mask for each latitude and longitude.
-    collapsed_global_mask = np.any(global_mask, axis=0)
-    global_mask = np.zeros_like(global_mask, dtype=bool)
-    global_mask += collapsed_global_mask[np.newaxis]
-
-    # Use this mask to select each dataset
-
-    selected_datasets = []
-    for cube in cubes:
-        selected_data = cube.data[~global_mask]
-        if hasattr(selected_data, 'mask'):
-            assert not np.any(selected_data.mask)
-            selected_datasets.append((cube.name(), selected_data.data))
-        else:
-            selected_datasets.append((cube.name(), selected_data))
-
-    dataset_names = [s[0] for s in selected_datasets]
-
-    exog_name_map = {
-            'diurnal temperature range': 'diurnal temp range',
-            'near-surface temperature minimum': 'near-surface temp min',
-            'near-surface temperature': 'near-surface temp',
-            'near-surface temperature maximum': 'near-surface temp max',
-            'wet day frequency': 'wet day freq',
-            'Volumetric Soil Moisture Monthly Mean': 'soil moisture',
-            'SIF': 'SIF',
-            'VODorig': 'VOD',
-            'Combined Flash Rate Monthly Climatology': 'lightning rate',
-            ('Population Density, v4.10 (2000, 2005, 2010, 2015, 2020)'
-             ': 30 arc-minutes'): 'pop dens'
-            }
-
-    inclusion_names = {
-            'near-surface temperature maximum',
-            'Volumetric Soil Moisture Monthly Mean',
-            'SIF',
-            'VODorig',
-            'diurnal temperature range',
-            'wet day frequency',
-            'Combined Flash Rate Monthly Climatology',
-            ('Population Density, v4.10 (2000, 2005, 2010, 2015, 2020)'
-             ': 30 arc-minutes'),
-            }
-
-    exog_names = [exog_name_map.get(s[0], s[0]) for s in
-                  selected_datasets if s[0] in inclusion_names]
-    raw_exog_data = np.hstack(
-            [s[1].reshape(-1, 1) for s in selected_datasets
-             if s[0] in inclusion_names])
-
-    endog_name = selected_datasets[dataset_names.index('Burnt_Area')][0]
-    endog_data = selected_datasets[dataset_names.index('Burnt_Area')][1]
-
-    # lim = int(5e3)
-    lim = None
-    endog_data = endog_data[:lim]
-    raw_exog_data = raw_exog_data[:lim]
-
-    endog_data = pd.Series(endog_data, name='burned area')
-    exog_data = pd.DataFrame(
-            raw_exog_data,
-            columns=exog_names)
-
-    # TODO: Improve this by taking into account the number of days in each
-    # month
-
-    # Define dry days variable using the wet day variable.
-    exog_data['dry day freq'] = 31.5 - exog_data['wet day freq']
-    del exog_data['wet day freq']
-
-    # Carry out log transformation for select variables.
-    log_var_names = ['diurnal temp range',
-                     # There are problems with negative surface
-                     # temperatures here!
-                     # 'near-surface temp max',
-                     'dry day freq']
-
-    for name in log_var_names:
-        mod_data = exog_data[name] + 0.01
-        assert np.all(mod_data > 0.01)
-        exog_data['log ' + name] = np.log(mod_data)
-        del exog_data[name]
-
-    # Carry out square root transformation
-    sqrt_var_names = ['lightning rate', 'pop dens']
-    for name in sqrt_var_names:
-        exog_data['sqrt ' + name] = np.sqrt(exog_data[name])
-        del exog_data[name]
-
-    '''
-    # Available links for Gaussian:
-    [statsmodels.genmod.families.links.log,
-     statsmodels.genmod.families.links.identity,
-     statsmodels.genmod.families.links.inverse_power]
-
-    '''
-
-    model = sm.GLM(endog_data, exog_data,
-                   # family=sm.families.Gaussian(links.log)
-                   family=sm.families.Binomial()
-                   )
-
-    model_results = model.fit()
-
-    sm.graphics.plot_partregress_grid(model_results)
-    plt.tight_layout()
-
-    plt.figure()
-    plt.hexbin(endog_data, model_results.fittedvalues, bins='log')
-    plt.xlabel('real data')
-    plt.ylabel('prediction')
