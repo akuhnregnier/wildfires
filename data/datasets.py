@@ -841,6 +841,11 @@ class Copernicus_SWI(Dataset):
                 del cube.attributes['title']
                 del cube.attributes['time_coverage_start']
                 del cube.attributes['time_coverage_end']
+                del cube.attributes['platform']
+                del cube.attributes['copyright']
+                del cube.attributes['history']
+                del cube.attributes['sensor']
+                del cube.attributes['source']
 
             # Concatenate daily cubes into larger cubes with the same
             # information (but with longer time coordinates).
