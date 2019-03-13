@@ -1902,6 +1902,4 @@ def load_dataset_cubes():
 
 if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
-    a = HYDE()
-    monthly_data = a.get_monthly_data()
 
