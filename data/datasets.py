@@ -26,6 +26,7 @@ import iris.quickplot as qplt
 import matplotlib.pyplot as plt
 import netCDF4
 import numpy as np
+import pandas as pd
 from pyhdf.SD import SD, SDC
 import rasterio
 from tqdm import tqdm
@@ -320,18 +321,48 @@ class Dataset(ABC):
         raise NotImplementedError()
 
     @property
+    def frequency(self):
+        try:
+            time_coord = self.cubes[0].coord('time')
+            if len(time_coord.points) == 1:
+                return 'static'
+            raw_start = time_coord.cell(0).point
+            raw_end = time_coord.cell(1).point
+            start = datetime(raw_start.year, raw_start.month, 1)
+            end = datetime(raw_end.year, raw_end.month, 1)
+            if (start + relativedelta(months=+1)) == end:
+                return 'monthly'
+            elif (start + relativedelta(months=+12)) == end:
+                return 'yearly'
+            else:
+                return 'unknown'
+
+        except iris.exceptions.CoordinateNotFoundError:
+            return 'static'
+
+    @property
     def min_time(self):
-        return self.cubes[0].coord('time').cell(0).point
+        try:
+            return self.cubes[0].coord('time').cell(0).point
+        except iris.exceptions.CoordinateNotFoundError:
+            return 'static'
 
     @property
     def max_time(self):
-        return self.cubes[0].coord('time').cell(-1).point
+        try:
+            return self.cubes[0].coord('time').cell(-1).point
+        except iris.exceptions.CoordinateNotFoundError:
+            return 'static'
 
     def get_data(self):
         """Returns either lazy data (dask array) or a numpy array.
 
         """
         return self.cube.core_data()
+
+    @property
+    def name(self):
+        return type(self).__name__
 
     @property
     def cache_filename(self):
@@ -450,27 +481,104 @@ class Dataset(ABC):
     def get_monthly_data(self):
         pass
 
+    def broadcast_static_data(self, start, end):
+        """Broadcast every cube in 'self.cubes' to monthly intervals.
+
+        Daily information is ignored (truncated, ie. days are assumed to be
+        1).
+
+        Limits are inclusive.
+
+        """
+
+        datetimes = [datetime(start.year, start.month, 1)]
+        while datetimes[-1] != PartialDateTime(end.year, end.month):
+            datetimes.append(datetimes[-1] + relativedelta(months=+1))
+
+        calendar = 'gregorian'
+        time_unit_str = 'days since 1970-01-01 00:00:00'
+        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
+        time_coord = iris.coords.DimCoord(
+                cf_units.date2num(datetimes, time_unit_str, calendar),
+                standard_name='time',
+                units=time_unit)
+
+        new_cubes = []
+        for cube in self.cubes:
+            new_data = np.ma.vstack([
+                cube.data[np.newaxis] for i in datetimes])
+            coords = [
+                    (time_coord, 0),
+                    (cube.coord('latitude'), 1),
+                    (cube.coord('longitude'), 2)
+                    ]
+            new_cubes.append(iris.cube.Cube(
+                new_data,
+                dim_coords_and_dims=coords))
+            new_cubes[-1].metadata = cube.metadata
+
+        return new_cubes
+
+    def interpolate_yearly_data(self, start, end):
+        """Linear interpolation onto the target months.
+
+        Daily information is ignored (truncated, ie. days are assumed to be
+        1).
+
+        Limits are inclusive.
+
+        """
+        calendar = self.calendar
+        time_unit_str = self.time_unit_str
+        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
+
+        datetimes = [datetime(start.year, start.month, 1)]
+        while datetimes[-1] != PartialDateTime(end.year, end.month):
+            datetimes.append(datetimes[-1] + relativedelta(months=+1))
+
+        time = iris.coords.DimCoord(
+                cf_units.date2num(datetimes, self.time_unit_str,
+                                  calendar=self.calendar),
+                standard_name='time',
+                units=time_unit)
+
+        interp_cubes = iris.cube.CubeList()
+        for i in range(time.points.size):
+            interp_points = [
+                    ('time', time[i].points),
+                    ]
+            interp_cubes.extend(
+                    iris.cube.CubeList([cube.interpolate(
+                        interp_points,
+                        iris.analysis.Linear())
+                     for cube in self.cubes]))
+
+        final_cubelist = interp_cubes.concatenate()
+        return final_cubelist
+
 
 class AvitabileAGB(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'Avitabile_AGB')
-        self.cube = iris.load_cube(os.path.join(
-            self.dir, 'Avitabile_AGB_Map_0d25.nc'))
+        self.cubes = iris.cube.CubeList([iris.load_cube(os.path.join(
+            self.dir, 'Avitabile_AGB_Map_0d25.nc'))])
 
-    def get_monthly_data(self):
-        raise NotImplementedError("Data is static.")
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.broadcast_static_data(start, end)
 
 
 class AvitabileThurnerAGB(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'AvitabileThurner-merged_AGB')
-        self.cube = iris.cube.CubeList(iris.load_cube(os.path.join(
-            self.dir, 'Avi2015-Thu2014-merged_AGBtree.nc')))
+        self.cubes = iris.cube.CubeList([iris.load_cube(os.path.join(
+            self.dir, 'Avi2015-Thu2014-merged_AGBtree.nc'))])
 
-    def get_monthly_data(self):
-        raise NotImplementedError("Data is static.")
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.broadcast_static_data(start, end)
 
 
 class CarvalhaisGPP(Dataset):
@@ -480,8 +588,9 @@ class CarvalhaisGPP(Dataset):
         self.cubes = iris.cube.CubeList([iris.load_cube(
             os.path.join(self.dir, 'Carvalhais.gpp_50.360.720.1.nc'))])
 
-    def get_monthly_data(self):
-        raise NotImplementedError("Data is static.")
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.broadcast_static_data(start, end)
 
 
 class CHELSA(Dataset):
@@ -959,9 +1068,12 @@ class ESA_CCI_Fire(Dataset):
         self.dir = os.path.join(DATA_DIR, 'ESA-CCI-Fire_burnedarea')
         self.cubes = iris.cube.CubeList([iris.load_cube(os.path.join(
                 self.dir, 'MODIS_cci.BA.2001.2016.1440.720.365days.sum.nc'))])
+        self.time_unit_str = self.cubes[0].coord('time').units.name
+        self.calendar = self.cubes[0].coord('time').units.calendar
 
-    def get_monthly_data(self):
-        raise NotImplementedError("Only yearly data available!")
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.interpolate_yearly_data(start, end)
 
 
 class ESA_CCI_Landcover(Dataset):
@@ -994,14 +1106,14 @@ class ESA_CCI_Landcover(Dataset):
         years = range(1992, 2016)
         assert len(years) == n_years
 
-        time_unit_str = 'hours since 1970-01-01 00:00:00'
-        calendar = 'gregorian'
-        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
+        self.time_unit_str = 'hours since 1970-01-01 00:00:00'
+        self.calendar = 'gregorian'
+        time_unit = cf_units.Unit(self.time_unit_str, calendar=self.calendar)
 
         for i in range(n_years):
             time = iris.coords.DimCoord(
                     [cf_units.date2num(datetime(years[i], 1, 1),
-                                       time_unit_str, calendar)],
+                                       self.time_unit_str, self.calendar)],
                     standard_name='time',
                     units=time_unit)
             for j in range(17):
@@ -1036,8 +1148,9 @@ class ESA_CCI_Landcover(Dataset):
 
         self.write_cache()
 
-    def get_monthly_data(self):
-        raise NotImplementedError("Only yearly data available!")
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.interpolate_yearly_data(start, end)
 
 
 class ESA_CCI_Landcover_PFT(Dataset):
@@ -1046,7 +1159,12 @@ class ESA_CCI_Landcover_PFT(Dataset):
         self.dir = os.path.join(DATA_DIR, 'ESA-CCI-LC_landcover',
                                 '0d25_lc2pft')
         self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
-        time_coord = self.cubes[-1].coords()[0]
+
+        time_coord = None
+        for cube in self.cubes:
+            if cube.coords()[0].name() == 'time':
+                time_coord = cube.coord('time')
+                break
         assert time_coord.standard_name == 'time'
 
         # fix peculiar 'z' coordinate, which should be the number of years
@@ -1057,8 +1175,12 @@ class ESA_CCI_Landcover_PFT(Dataset):
                 cube.remove_coord('z')
                 cube.add_dim_coord(time_coord, 0)
 
-    def get_monthly_data(self):
-        raise NotImplementedError("Only yearly data available!")
+        self.time_unit_str = time_coord.units.name
+        self.calendar = time_coord.units.calendar
+
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.interpolate_yearly_data(start, end)
 
 
 class ESA_CCI_Soilmoisture(Dataset):
@@ -1207,7 +1329,7 @@ class GFEDv4(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes[0].extract(iris.Constraint(
+        return self.cubes.extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
 
 
@@ -1292,7 +1414,7 @@ class GFEDv4s(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes[0].extract(iris.Constraint(
+        return self.cubes.extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
 
 
@@ -1324,7 +1446,7 @@ class GlobFluo_SIF(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes[0].extract(iris.Constraint(
+        return self.cubes.extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
 
 
@@ -1399,8 +1521,7 @@ class GPW_v4_pop_dens(Dataset):
 
         final_cubelist = interp_cubes.concatenate()
         assert len(final_cubelist) == 1
-        final_cube = final_cubelist[0]
-        return final_cube
+        return final_cubelist
 
 
 class GSMaP_precipitation(Dataset):
@@ -1464,7 +1585,7 @@ class GSMaP_precipitation(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes[0].extract(iris.Constraint(
+        return self.cubes.extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
 
 
@@ -1578,31 +1699,7 @@ class HYDE(Dataset):
         """Linear interpolation onto the target months.
 
         """
-        datetimes = [datetime(start.year, start.month, 1)]
-        while datetimes[-1] != end:
-            datetimes.append(datetimes[-1] + relativedelta(months=+1))
-
-        time = iris.coords.DimCoord(
-                cf_units.date2num(datetimes, self.time_unit_str,
-                                  calendar=self.calendar),
-                standard_name='time',
-                units=self.time_unit)
-
-        interp_cubes = iris.cube.CubeList()
-        for i in range(time.points.size):
-            interp_points = [
-                    ('time', time[i].points),
-                    ]
-            interp_cubes.extend(
-                    iris.cube.CubeList([cube.interpolate(
-                        interp_points,
-                        iris.analysis.Linear())
-                     for cube in self.cubes]))
-
-        final_cubelist = interp_cubes.concatenate()
-        assert len(final_cubelist) == 17
-        final_cube = final_cubelist[0]
-        return final_cubelist
+        return self.interpolate_yearly_data(start, end)
 
 
 class LIS_OTD_lightning_climatology(Dataset):
@@ -1678,7 +1775,7 @@ class LIS_OTD_lightning_climatology(Dataset):
                 units=cube.units,
                 attributes=cube.attributes)
 
-        return output_cube
+        return iris.cube.CubeList([output_cube])
 
 
 class LIS_OTD_lightning_time_series(Dataset):
@@ -1773,7 +1870,7 @@ class Liu_VOD(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes[0].extract(iris.Constraint(
+        return self.cubes.extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
 
 
@@ -1781,9 +1878,8 @@ class MOD15A2H_LAI_fPAR(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'MOD15A2H_LAI-fPAR')
-        self.cubes = iris.cube.CubeList(
-                [iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))])
-        assert len(self.cubes) == 1
+        self.cubes = iris.load(
+                os.path.join(self.dir, '*.nc'))
 
         months = []
         for i in range(self.cubes[0].shape[0]):
@@ -1798,7 +1894,7 @@ class MOD15A2H_LAI_fPAR(Dataset):
         # is variable, take into account neighbouring months as well in a
         # weighted average (depending on how many days away from the middle
         # of the month these other samples are)?
-        return self.cube[0].extract(iris.Constraint(
+        return self.cubes.extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
 
 
@@ -1809,9 +1905,9 @@ class Simard_canopyheight(Dataset):
         self.cubes = iris.cube.CubeList(
                 [iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))])
 
-    def get_monthly_data(self):
-        raise NotImplementedError(
-            "No time-varying information, only lat-lon values available.")
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.broadcast_static_data(start, end)
 
 
 class Thurner_AGB(Dataset):
@@ -1841,17 +1937,70 @@ class Thurner_AGB(Dataset):
         for cube in self.cubes:
             cube.units = cf_units.Unit('kg(C)/m2')
 
-    def get_monthly_data(self):
-        raise NotImplementedError("Data is static.")
+    def get_monthly_data(self, start=PartialDateTime(2000, 1),
+                         end=PartialDateTime(2000, 12)):
+        return self.broadcast_static_data(start, end)
 
 
 def load_dataset_cubes():
-    # TODO: Add new datasets!
-    a = CRU()
-    b = ESA_CCI_Soilmoisture()
-    c = GFEDv4s()
-    d = GlobFluo_SIF()
-    e = Liu_VOD()
+    datasets = [
+            AvitabileThurnerAGB(),
+            CHELSA(),
+            Copernicus_SWI(),
+            ESA_CCI_Landcover_PFT(),
+            GFEDv4(),
+            GSMaP_precipitation(),
+            GlobFluo_SIF(),
+            HYDE(),
+            LIS_OTD_lightning_time_series(),
+            Liu_VOD(),
+            MOD15A2H_LAI_fPAR(),
+            Simard_canopyheight(),
+            Thurner_AGB(),
+            ]
+
+    time_dict = dict(
+            [(dataset.name,
+              list(map(str, (
+                  dataset.min_time,
+                  dataset.max_time,
+                  dataset.frequency
+                  ))))
+             for dataset in datasets])
+
+    min_times = [dataset.min_time for dataset in datasets
+                 if dataset.min_time != 'static']
+    max_times = [dataset.max_time for dataset in datasets
+                 if dataset.max_time != 'static']
+
+    # This timespan will encompass all the datasets.
+    min_time = np.max(min_times)
+    max_time = np.min(max_times)
+
+    time_dict['Overall'] = list(map(str, (min_time, max_time, 'N/A')))
+
+    dataset_names = list(time_dict.keys())
+    # Make sure this entry is at the bottom of the table.
+    dataset_names.remove('Overall')
+    dataset_names.append('Overall')
+    dataset_names = pd.Series(dataset_names, name='Dataset')
+    min_times_series = pd.Series(
+            [time_dict[name][0] for name in dataset_names],
+            name='Minimum')
+    max_times_series = pd.Series(
+            [time_dict[name][1] for name in dataset_names],
+            name='Maximum')
+    frequency_series = pd.Series(
+            [time_dict[name][2] for name in dataset_names],
+            name='Frequency')
+    times_df = pd.DataFrame(
+            [dataset_names, min_times_series, max_times_series,
+             frequency_series]).T
+
+    print(times_df)
+
+    from pprint import pprint
+    import ipdb; ipdb.set_trace()
 
     # Join up all the cubes.
     cubes = iris.cube.CubeList()
@@ -1862,13 +2011,6 @@ def load_dataset_cubes():
     cubes.extend(c.cubes)
     cubes.extend(d.cubes)
     cubes.extend(e.cubes)
-
-    min_times = [c.coords()[0].cell(0).point for c in cubes]
-    max_times = [c.coords()[0].cell(-1).point for c in cubes]
-
-    # This timespan will encompass all the datasets.
-    min_time = np.max(min_times)
-    max_time = np.min(max_times)
 
     # This method returns a cube.
     f = LIS_OTD_lightning_climatology().get_monthly_data(min_time, max_time)
@@ -1902,4 +2044,5 @@ def load_dataset_cubes():
 
 if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
+    cubes = load_dataset_cubes()
 
