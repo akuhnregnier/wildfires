@@ -23,7 +23,7 @@ class TestGWP(unittest.TestCase):
                 cls.dataset.min_time.month)
 
         cls.monthly_cube = cls.dataset.get_monthly_data(
-                cls.start_time, cls.end_time)
+                cls.start_time, cls.end_time)[0]
 
         cls.interpolated_times = [
                 cls.monthly_cube.coord('time').cell(i).point for i in

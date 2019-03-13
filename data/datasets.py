@@ -195,10 +195,37 @@ def regrid(cube, area_weighted=False,
     n_dim = len(cube.shape)
     assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
 
+    # Using getattr allows the input coordinates to be both
+    # iris.coords.DimCoord (with a 'points' attribute) as well as normal
+    # numpy arrays.
+    new_latitudes = iris.coords.DimCoord(
+            getattr(new_latitudes, 'points', new_latitudes),
+            standard_name='latitude', units='degrees')
+    new_longitudes = iris.coords.DimCoord(
+            getattr(new_longitudes, 'points', new_longitudes),
+            standard_name='longitude', units='degrees')
+
+    matching = False
+    for (coord_old, coord_new) in (
+            (cube.coord('latitude'), new_latitudes),
+            (cube.coord('longitude'), new_longitudes)):
+        if tuple(coord_old.points) == tuple(coord_new.points):
+            matching = True
+        else:
+            matching = False
+            break
+
+    if matching:
+        logger.info("Identical input output, not regridding.")
+        return cube
+
+    # TODO: Check that coordinate system discrepancies are picked up by
+    # this check!!
+
     if n_dim == 3:
         # Call the regridding function recursively with time slices of the
         # data, in order to try to prevent occasional Segmentation Faults
-        # that occur when trying to regrid a large chunk of time in 3
+        # that occur when trying to regrid a large chunk of data in 3
         # dimensions.
         regridded_cubes = iris.cube.CubeList()
         assert len(cube.coords()[0].points) == cube.shape[0]
@@ -236,51 +263,17 @@ def regrid(cube, area_weighted=False,
         raise ValueError("Unknown coord_system:{:}".format(systems[0]))
 
     for coord in [c for c in cube.coords() if c.name() in
-                  ['time', 'latitude', 'longitude'][3 - n_dim:]]:
+                  ['latitude', 'longitude']]:
         if not coord.has_bounds():
             coord.guess_bounds()
-
-    # Using getattr allows the input coordinates to be both
-    # iris.coords.DimCoord (with a 'points' attribute) as well as normal
-    # numpy arrays.
-    new_latitudes = iris.coords.DimCoord(
-            getattr(new_latitudes, 'points', new_latitudes),
-            standard_name='latitude', units='degrees')
-    new_longitudes = iris.coords.DimCoord(
-            getattr(new_longitudes, 'points', new_longitudes),
-            standard_name='longitude', units='degrees')
 
     for coord in [new_latitudes, new_longitudes]:
         coord.coord_system = coord_sys
 
-    # If there is a time dimension, n_dim = 3, and so there will be 3
-    # entries. However, if there is no time dimension, n_dim = 2, and the
-    # first entry will be clipped.
-    interp_points = [
-        ('time', cube.coords()[0]),
-        ('latitude', new_latitudes),
-        ('longitude', new_longitudes)
-        ][3 - n_dim:]
-
-    orig_coord_dict = dict(
-            [(name, tuple(cube.coord(name).points)) for name in
-             ['latitude', 'longitude']])
-
-    new_coord_dict = dict(
-            [(name, tuple(dict(interp_points)[name].points)) for name in
-             ['latitude', 'longitude']])
-
-    if orig_coord_dict == new_coord_dict:
-        logger.info("Identical input output, not regridding.")
-        return cube
-
-    # If n_dim = 2, lats and lons are at positions 0 and 1, not 1 and 2
-    # (using the modulo operator).
     grid_coords = [
-        (cube.coords()[0], 0),
-        (new_latitudes, 1 - (3 % n_dim)),
-        (new_longitudes, 2 - (3 % n_dim))
-        ][3 - n_dim:]
+        (new_latitudes, 0),
+        (new_longitudes, 1)
+        ]
 
     new_grid = iris.cube.Cube(
             np.zeros([coord[0].points.size for coord in grid_coords]),
@@ -477,9 +470,52 @@ class Dataset(ABC):
                      .intersection(longitude=longitude_range))
         return self.cube
 
+    def regrid(self, area_weighted=False,
+               new_latitudes=get_centres(np.linspace(-90, 90, 721)),
+               new_longitudes=get_centres(np.linspace(-180, 180, 1441))):
+        """Replace stored cubes with regridded versions in-place.
+
+        """
+        self.cubes = iris.cube.CubeList([
+                regrid(cube, area_weighted=area_weighted,
+                       new_latitudes=new_latitudes,
+                       new_longitudes=new_longitudes)
+                for cube in self.cubes])
+
     @abstractmethod
     def get_monthly_data(self):
         pass
+
+    def limit_months(self, start=PartialDateTime(2000, 1),
+                     end=PartialDateTime(2000, 12)):
+        """Discard non-specified time period.
+
+        Crucially, this allows for regridding to take place much faster, as
+        unused years/months are not considered.
+
+        If the dataset consists of monthly data, the corresponding time
+        period is selected, and the other times discarded.
+
+        For yearly data, due to the need of interpolation, start/end
+        dates are rounded down/up to the previous/next year respectively.
+
+        """
+        freq = self.frequency
+        if freq == 'static':
+            logger.debug('Not limiting times, as data is static')
+            return
+
+        start = PartialDateTime(start.year, start.month)
+        end = PartialDateTime(end.year, end.month)
+
+        if freq == 'yearly':
+            start = PartialDateTime(start.year)
+            if end.month != 1:
+                end = PartialDateTime(end.year + 1)
+        elif freq != 'monthly':
+            raise ValueError('Invalid frequency:{:}'.format(freq))
+        self.cubes = self.cubes.extract(iris.Constraint(
+            time=lambda t: end >= t.point >= start))
 
     def broadcast_static_data(self, start, end):
         """Broadcast every cube in 'self.cubes' to monthly intervals.
@@ -528,9 +564,7 @@ class Dataset(ABC):
         Limits are inclusive.
 
         """
-        calendar = self.calendar
-        time_unit_str = self.time_unit_str
-        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
+        time_unit = cf_units.Unit(self.time_unit_str, calendar=self.calendar)
 
         datetimes = [datetime(start.year, start.month, 1)]
         while datetimes[-1] != PartialDateTime(end.year, end.month):
@@ -1463,7 +1497,9 @@ class GPW_v4_pop_dens(Dataset):
                      [2000, 2005, 2010, 2015, 2020]]
         self.time_unit_str = 'days since {:}'.format(
                 str(datetime(1970, 1, 1)))
-        self.time_unit = cf_units.Unit(self.time_unit_str, calendar='gregorian')
+        self.calendar = 'gregorian'
+        self.time_unit = cf_units.Unit(self.time_unit_str,
+                                       calendar=self.calendar)
         time = iris.coords.DimCoord(
                 cf_units.date2num(datetimes, self.time_unit_str,
                                   calendar='gregorian'),
@@ -1495,31 +1531,7 @@ class GPW_v4_pop_dens(Dataset):
         """Linear interpolation onto the target months.
 
         """
-        datetimes = [datetime(start.year, start.month, 1)]
-        while datetimes[-1] != end:
-            datetimes.append(datetimes[-1] + relativedelta(months=+1))
-
-        # TODO: propagate accessing 'time_unit_str' and 'time_unit' as a
-        # standardised instance variable for other classes that use a
-        # similar interpolation scheme that relies on consistency of the
-        # numerical time values! This will improve readability.
-        time = iris.coords.DimCoord(
-                cf_units.date2num(datetimes, self.time_unit_str,
-                                  calendar='gregorian'),
-                standard_name='time',
-                units=self.time_unit)
-
-        interp_cubes = iris.cube.CubeList()
-        for i in range(time.points.size):
-            interp_points = [
-                    ('time', time[i].points),
-                    ]
-            interp_cubes.append(
-                    self.cubes[0].interpolate(
-                        interp_points,
-                        iris.analysis.Linear()))
-
-        final_cubelist = interp_cubes.concatenate()
+        final_cubelist = self.interpolate_yearly_data(start, end)
         assert len(final_cubelist) == 1
         return final_cubelist
 
@@ -1958,6 +1970,12 @@ def load_dataset_cubes():
             Simard_canopyheight(),
             Thurner_AGB(),
             ]
+
+    # Regrid all the cubes
+    logger.info('Starting regridding of all datasets')
+    for dataset in datasets:
+        dataset.regrid()
+    logger.info('Finished regridding of all datasets')
 
     time_dict = dict(
             [(dataset.name,
