@@ -1555,12 +1555,17 @@ class GSMaP_precipitation(Dataset):
         time_unit_str = 'days since 1970-01-01 00:00:00'
         time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
 
+        # Above this mm/h threshold, a day is a 'wet day'.
+        mm_per_hr_threshold = 0.1 / 24
+
+        logger.info('Constructing average precipitation and dry days cubes.')
         monthly_average_cubes = iris.cube.CubeList()
+        dry_days_cubes = iris.cube.CubeList()
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=(
                 "Collapsing a non-contiguous coordinate. Metadata may not "
                 "be fully descriptive for 'time'."))
-            for f in filenames:
+            for f in tqdm(filenames):
                 # Clip outer values which are duplicated in the data
                 # selection below and not needed here.
                 raw_cube = iris.load_cube(f)[..., 1:1441]
@@ -1582,17 +1587,31 @@ class GSMaP_precipitation(Dataset):
                 monthly_cube.coord('time').points = [new_time]
                 monthly_cube.coord('time').units = time_unit
 
+                monthly_cube.units = cf_units.Unit('mm/hr')
+
                 monthly_average_cubes.append(monthly_cube)
 
-        merged_cube = monthly_average_cubes.merge_cube()
-        merged_cube.units = cf_units.Unit('mm/hr')
+                # Calculate dry day statistics.
 
-        # The cube still has lazy data at this point. So accessing the
-        # 'data' attribute will involve averaging data and concatenating
-        # it, which will take much longer than anything that is being
-        # achieved above!
+                dry_days_data = np.sum(raw_cube.data < mm_per_hr_threshold,
+                                       axis=0)
 
-        self.cubes = iris.cube.CubeList([merged_cube])
+                coords = [
+                        (monthly_cube.coord('latitude'), 0),
+                        (monthly_cube.coord('longitude'), 1)
+                        ]
+                dry_days_cubes.append(iris.cube.Cube(
+                    dry_days_data, dim_coords_and_dims=coords,
+                    units=cf_units.Unit('days'),
+                    var_name='dry_days',
+                    aux_coords_and_dims=[(monthly_cube.coord('time'), None)]))
+
+        self.cubes = iris.cube.CubeList([
+            monthly_average_cubes.merge_cube(),
+            dry_days_cubes.merge_cube()
+            ])
+        assert len(self.cubes) == 2
+
         self.write_cache()
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
@@ -1971,12 +1990,6 @@ def load_dataset_cubes():
             Thurner_AGB(),
             ]
 
-    # Regrid all the cubes
-    logger.info('Starting regridding of all datasets')
-    for dataset in datasets:
-        dataset.regrid()
-    logger.info('Finished regridding of all datasets')
-
     time_dict = dict(
             [(dataset.name,
               list(map(str, (
@@ -2017,6 +2030,20 @@ def load_dataset_cubes():
 
     print(times_df)
 
+    # Limit the amount of data that has to be processed.
+    logger.info('Limiting data')
+    for dataset in datasets:
+        dataset.limit_months(min_time, max_time)
+    logger.info('Finished limiting data')
+
+    # Regrid cubes to the same lat-lon grid.
+    # TODO: change lat and lon limits and also the number of points!!
+    # Always work in 0.25 degree steps? From the same starting point?
+    logger.info('Starting regridding of all datasets')
+    for dataset in datasets:
+        dataset.regrid()
+    logger.info('Finished regridding of all datasets')
+
     from pprint import pprint
     import ipdb; ipdb.set_trace()
 
@@ -2047,20 +2074,11 @@ def load_dataset_cubes():
     cubes = cubes.extract(iris.Constraint(
         time=lambda t: monthly_constraint(t.point, (min_time, max_time))))
 
-    # Regrid cubes to the same lat-lon grid.
-    # TODO: change lat and lon limits and also the number of points!!
-    # Always work in 0.25 degree steps? From the same starting point?
-    for i in range(len(cubes)):
-        cubes[i] = regrid(
-            cubes[i],
-            area_weighted=True,
-            new_latitudes=get_centres(),
-            new_longitudes=get_centres())
-
     return cubes
 
 
 if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
-    cubes = load_dataset_cubes()
+    # cubes = load_dataset_cubes()
+    a = GSMaP_precipitation()
 
