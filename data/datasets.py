@@ -1339,14 +1339,14 @@ class GPW_v4_pop_dens(Dataset):
 
         datetimes = [datetime(year, 1, 1) for year in
                      [2000, 2005, 2010, 2015, 2020]]
-        time_unit_str = 'days since {:}'.format(
-                str(datetime(2000, 1, 1)))
-        time_unit = cf_units.Unit(time_unit_str, calendar='gregorian')
+        self.time_unit_str = 'days since {:}'.format(
+                str(datetime(1970, 1, 1)))
+        self.time_unit = cf_units.Unit(self.time_unit_str, calendar='gregorian')
         time = iris.coords.DimCoord(
-                cf_units.date2num(datetimes, time_unit_str,
+                cf_units.date2num(datetimes, self.time_unit_str,
                                   calendar='gregorian'),
                 standard_name='time',
-                units=time_unit)
+                units=self.time_unit)
 
         latitudes = iris.coords.DimCoord(
                 netcdf_dataset['latitude'][:], standard_name='latitude',
@@ -1373,34 +1373,19 @@ class GPW_v4_pop_dens(Dataset):
         """Linear interpolation onto the target months.
 
         """
-        start_month = start.month
-        end_month = end.month
-        start_year = start.year
-        end_year = end.year
+        datetimes = [datetime(start.year, start.month, 1)]
+        while datetimes[-1] != end:
+            datetimes.append(datetimes[-1] + relativedelta(months=+1))
 
-        year = start_year
-        month = start_month
-
-        datetimes = []
-        while ((year != end_year) or (month != end_month)):
-            datetimes.append(datetime(year, month, 1))
-
-            month += 1
-            if month == 13:
-                month = 1
-                year += 1
-
-        # This is needed to include end month
-        datetimes.append(datetime(year, month, 1))
-
-        time_unit_str = 'days since {:}'.format(
-                str(datetime(2000, 1, 1)))
-        time_unit = cf_units.Unit(time_unit_str, calendar='gregorian')
+        # TODO: propagate accessing 'time_unit_str' and 'time_unit' as a
+        # standardised instance variable for other classes that use a
+        # similar interpolation scheme that relies on consistency of the
+        # numerical time values! This will improve readability.
         time = iris.coords.DimCoord(
-                cf_units.date2num(datetimes, time_unit_str,
+                cf_units.date2num(datetimes, self.time_unit_str,
                                   calendar='gregorian'),
                 standard_name='time',
-                units=time_unit)
+                units=self.time_unit)
 
         interp_cubes = iris.cube.CubeList()
         for i in range(time.points.size):
@@ -1488,12 +1473,17 @@ class HYDE(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'HYDE')
 
+        self.time_unit_str = 'hours since 1970-01-01 00:00:00'
+        self.calendar = 'gregorian'
+        self.time_unit = cf_units.Unit(self.time_unit_str,
+                                       calendar=self.calendar)
+
         self.cubes = self.read_cache()
         # If a CubeList has been loaded successfully, exit __init__
         if self.cubes:
             return
 
-        # TODO: Consider upper and lower esimates as well, not just
+        # TODO: Consider upper and lower estimates as well, not just
         # baseline??
         files = glob.glob(
                 os.path.join(self.dir, 'baseline', '*.asc'),
@@ -1538,10 +1528,6 @@ class HYDE(Dataset):
                 }
         pattern = re.compile(r'(.*)(\d{4})AD')
 
-        time_unit_str = 'hours since 1970-01-01 00:00:00'
-        calendar = 'gregorian'
-        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
-
         for f in tqdm(files):
             groups = pattern.search(os.path.split(f)[1]).groups()
             variable_key = groups[0].strip('_')
@@ -1570,10 +1556,10 @@ class HYDE(Dataset):
             time_coord = iris.coords.DimCoord(
                     cf_units.date2num(
                         datetime(year, 1, 1),
-                        time_unit_str,
-                        calendar),
+                        self.time_unit_str,
+                        self.calendar),
                     standard_name='time',
-                    units=time_unit)
+                    units=self.time_unit)
 
             cube = iris.cube.Cube(
                     data, dim_coords_and_dims=grid_coords,
@@ -1589,8 +1575,34 @@ class HYDE(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes.extract(iris.Constraint(
-            time=lambda t: end > t.point > start))
+        """Linear interpolation onto the target months.
+
+        """
+        datetimes = [datetime(start.year, start.month, 1)]
+        while datetimes[-1] != end:
+            datetimes.append(datetimes[-1] + relativedelta(months=+1))
+
+        time = iris.coords.DimCoord(
+                cf_units.date2num(datetimes, self.time_unit_str,
+                                  calendar=self.calendar),
+                standard_name='time',
+                units=self.time_unit)
+
+        interp_cubes = iris.cube.CubeList()
+        for i in range(time.points.size):
+            interp_points = [
+                    ('time', time[i].points),
+                    ]
+            interp_cubes.extend(
+                    iris.cube.CubeList([cube.interpolate(
+                        interp_points,
+                        iris.analysis.Linear())
+                     for cube in self.cubes]))
+
+        final_cubelist = interp_cubes.concatenate()
+        assert len(final_cubelist) == 17
+        final_cube = final_cubelist[0]
+        return final_cubelist
 
 
 class LIS_OTD_lightning_climatology(Dataset):
@@ -1891,4 +1903,5 @@ def load_dataset_cubes():
 if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
     a = HYDE()
+    monthly_data = a.get_monthly_data()
 
