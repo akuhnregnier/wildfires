@@ -13,6 +13,7 @@ import logging
 import logging.config
 import operator
 import os
+import pickle
 import re
 import warnings
 
@@ -517,6 +518,26 @@ class Dataset(ABC):
         self.cubes = self.cubes.extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
 
+    def select_monthly_from_monthly(
+                self, start=PartialDateTime(2000, 1),
+                end=PartialDateTime(2000, 12),
+                inclusive_lower=True, inclusive_upper=True):
+
+        assert self.frequency == 'monthly'
+
+        lower_op = operator.ge if inclusive_lower else operator.gt
+        upper_op = operator.le if inclusive_upper else operator.lt
+
+        end = PartialDateTime(end.year, end.month)
+        start = PartialDateTime(start.year, start.month)
+
+        def constraint_func(t):
+            return (lower_op(t, start) and
+                    upper_op(t, end))
+
+        return self.cubes.extract(iris.Constraint(
+            time=lambda t: constraint_func(t.point)))
+
     def broadcast_static_data(self, start, end):
         """Broadcast every cube in 'self.cubes' to monthly intervals.
 
@@ -824,8 +845,7 @@ class CHELSA(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes.extract(iris.Constraint(
-            time=lambda t: end > t.point > start))
+        return self.select_monthly_from_monthly(start, end)
 
 
 class Copernicus_SWI(Dataset):
@@ -1058,8 +1078,7 @@ class Copernicus_SWI(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes.extract(iris.Constraint(
-            time=lambda t: end > t.point > start))
+        return self.select_monthly_from_monthly(start, end)
 
 
 class CRU(Dataset):
@@ -1092,8 +1111,7 @@ class CRU(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes.extract(iris.Constraint(
-            time=lambda t: end > t.point > start))
+        return self.select_monthly_from_monthly(start, end)
 
 
 class ESA_CCI_Fire(Dataset):
@@ -1225,11 +1243,7 @@ class ESA_CCI_Soilmoisture(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        # First get the desired cube from the list, then select the desired
-        # timespan.
-        return (self.cubes.extract_strict(
-            iris.Constraint(name='Volumetric Soil Moisture Monthly Mean'))
-            .extract(iris.Constraint(time=lambda t: end >= t.point >= start)))
+        return self.select_monthly_from_monthly(start, end)
 
 
 class ESA_CCI_Soilmoisture_Daily(Dataset):
@@ -1271,6 +1285,7 @@ class ESA_CCI_Soilmoisture_Daily(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
+        raise NotImplementedError("See note above.")
         # TODO: Isolate actual soil moisture.
         return self.monthly_means.extract(iris.Constraint(
             time=lambda t: end >= t.point >= start))
@@ -1363,8 +1378,7 @@ class GFEDv4(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes.extract(iris.Constraint(
-            time=lambda t: end >= t.point >= start))
+        return self.select_monthly_from_monthly(start, end)
 
 
 class GFEDv4s(Dataset):
@@ -1448,8 +1462,7 @@ class GFEDv4s(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes.extract(iris.Constraint(
-            time=lambda t: end >= t.point >= start))
+        return self.select_monthly_from_monthly(start, end)
 
 
 class GlobFluo_SIF(Dataset):
@@ -1480,8 +1493,7 @@ class GlobFluo_SIF(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes.extract(iris.Constraint(
-            time=lambda t: end >= t.point >= start))
+        return self.select_monthly_from_monthly(start, end)
 
 
 class GPW_v4_pop_dens(Dataset):
@@ -1616,8 +1628,7 @@ class GSMaP_precipitation(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes.extract(iris.Constraint(
-            time=lambda t: end >= t.point >= start))
+        return self.select_monthly_from_monthly(start, end)
 
 
 class HYDE(Dataset):
@@ -1869,8 +1880,7 @@ class LIS_OTD_lightning_time_series(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes.extract(iris.Constraint(
-            time=lambda t: end > t.point > start))
+        return self.select_monthly_from_monthly(start, end)
 
 
 class Liu_VOD(Dataset):
@@ -1901,8 +1911,7 @@ class Liu_VOD(Dataset):
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
-        return self.cubes.extract(iris.Constraint(
-            time=lambda t: end >= t.point >= start))
+        return self.select_monthly_from_monthly(start, end)
 
 
 class MOD15A2H_LAI_fPAR(Dataset):
@@ -1925,8 +1934,7 @@ class MOD15A2H_LAI_fPAR(Dataset):
         # is variable, take into account neighbouring months as well in a
         # weighted average (depending on how many days away from the middle
         # of the month these other samples are)?
-        return self.cubes.extract(iris.Constraint(
-            time=lambda t: end >= t.point >= start))
+        return self.select_monthly_from_monthly(start, end)
 
 
 class Simard_canopyheight(Dataset):
@@ -1973,22 +1981,49 @@ class Thurner_AGB(Dataset):
         return self.broadcast_static_data(start, end)
 
 
-def load_dataset_cubes():
-    datasets = [
-            AvitabileThurnerAGB(),
-            CHELSA(),
-            Copernicus_SWI(),
-            ESA_CCI_Landcover_PFT(),
-            GFEDv4(),
-            GSMaP_precipitation(),
-            GlobFluo_SIF(),
-            HYDE(),
-            LIS_OTD_lightning_time_series(),
-            Liu_VOD(),
-            MOD15A2H_LAI_fPAR(),
-            Simard_canopyheight(),
-            Thurner_AGB(),
-            ]
+def dataset_times(datasets=None):
+    """Compile dataset time span information.
+
+    Args:
+        datasets: If no value is given, defaults to using the following
+            datasets:
+                AvitabileThurnerAGB(),
+                CHELSA(),
+                Copernicus_SWI(),
+                ESA_CCI_Landcover_PFT(),
+                GFEDv4(),
+                GSMaP_precipitation(),
+                GlobFluo_SIF(),
+                HYDE(),
+                LIS_OTD_lightning_time_series(),
+                Liu_VOD(),
+                MOD15A2H_LAI_fPAR(),
+                Simard_canopyheight(),
+                Thurner_AGB(),
+            Alternatively, a list of Dataset instances can be given.
+
+    Returns:
+        min_time: Minimum shared time of all datasets.
+        max_time: Maximum shared time of all datasets.
+        times_df: Pandas DataFrame encapsulating the timespan information.
+
+    """
+    if datasets is None:
+        datasets = [
+                AvitabileThurnerAGB(),
+                CHELSA(),
+                Copernicus_SWI(),
+                ESA_CCI_Landcover_PFT(),
+                GFEDv4(),
+                GSMaP_precipitation(),
+                GlobFluo_SIF(),
+                HYDE(),
+                LIS_OTD_lightning_time_series(),
+                Liu_VOD(),
+                MOD15A2H_LAI_fPAR(),
+                Simard_canopyheight(),
+                Thurner_AGB(),
+                ]
 
     time_dict = dict(
             [(dataset.name,
@@ -2028,6 +2063,33 @@ def load_dataset_cubes():
             [dataset_names, min_times_series, max_times_series,
              frequency_series]).T
 
+    return min_time, max_time, times_df
+
+
+def load_dataset_cubes():
+
+    if os.path.isfile(pickle_file):
+        with open(pickle_file, 'rb') as f:
+            cubes = pickle.load(f)
+        return cubes
+
+    datasets = [
+            AvitabileThurnerAGB(),
+            CHELSA(),
+            Copernicus_SWI(),
+            ESA_CCI_Landcover_PFT(),
+            GFEDv4(),
+            GSMaP_precipitation(),
+            GlobFluo_SIF(),
+            HYDE(),
+            LIS_OTD_lightning_time_series(),
+            Liu_VOD(),
+            MOD15A2H_LAI_fPAR(),
+            Simard_canopyheight(),
+            Thurner_AGB(),
+            ]
+
+    min_time, max_time, times_df = dataset_times(datasets)
     print(times_df)
 
     # Limit the amount of data that has to be processed.
@@ -2044,41 +2106,20 @@ def load_dataset_cubes():
         dataset.regrid()
     logger.info('Finished regridding of all datasets')
 
-    from pprint import pprint
-    import ipdb; ipdb.set_trace()
-
+    logger.info('Starting temporal upscaling')
     # Join up all the cubes.
     cubes = iris.cube.CubeList()
-    cubes.extend(a.cubes)
-    # For now, only use the monthly mean soil moisture data.
-    cubes.append(b.cubes.extract_strict(
-            iris.Constraint(name='Volumetric Soil Moisture Monthly Mean')))
-    cubes.extend(c.cubes)
-    cubes.extend(d.cubes)
-    cubes.extend(e.cubes)
+    for dataset in datasets:
+        cubes.extend(dataset.get_monthly_data(min_time, max_time))
+    logger.info('Finished temporal upscaling')
 
-    # This method returns a cube.
-    f = LIS_OTD_lightning_climatology().get_monthly_data(min_time, max_time)
-    assert isinstance(f, iris.cube.Cube)
-    cubes.append(f)
-
-    g = GPW_v4_pop_dens().get_monthly_data(min_time, max_time)
-    assert isinstance(g, iris.cube.Cube)
-    cubes.append(g)
-
-    # Extract the common timespan.
-    # t is a Cell, t.point extracts the 'real_datetime' object which has
-    # the expected year and month attributes. This also leads to ignoring
-    # bounds, which, if they are not None, can cause these comparisons to
-    # fail.
-    cubes = cubes.extract(iris.Constraint(
-        time=lambda t: monthly_constraint(t.point, (min_time, max_time))))
+    with open(pickle_file, 'wb') as f:
+        pickle.dump(cubes, f, -1)
 
     return cubes
 
 
 if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
-    # cubes = load_dataset_cubes()
-    a = GSMaP_precipitation()
+    cubes = load_dataset_cubes()
 

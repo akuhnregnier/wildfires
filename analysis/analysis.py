@@ -12,7 +12,6 @@ import pandas as pd
 import statsmodels.api as sm
 # import statsmodels.genmod.families.links as links
 
-from wildfires.data.datasets import pickle_file
 from wildfires.data.datasets import load_dataset_cubes
 from wildfires.logging_config import LOGGING
 logger = logging.getLogger(__name__)
@@ -48,13 +47,9 @@ if __name__ == '__main__':
     # which will be used throughout data analysis and plotting (eg. for
     # selecting DataFrame columns).
 
-    if os.path.isfile(pickle_file):
-        with open(pickle_file, 'rb') as f:
-            cubes = pickle.load(f)
-    else:
-        cubes = load_dataset_cubes()
-        with open(pickle_file, 'wb') as f:
-            pickle.dump(cubes, f, -1)
+    cubes = load_dataset_cubes()
+
+    # TODO: Select desired cubes by name.
 
     # Use masking to extract only the relevant data.
 
@@ -62,7 +57,7 @@ if __name__ == '__main__':
     global_mask = np.zeros(cubes[0].shape, dtype=bool)
     for cube in cubes:
         # TODO: Find out the invalid values for the datasets that do not
-        # have masks!
+        # have masks (if a mask hasn't been created before)!
         global_mask |= combine_masks(cube.data, invalid_values=[])
 
     # Apply the same mask for each latitude and longitude.
