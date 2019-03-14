@@ -128,18 +128,22 @@ def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180),
 
 
 def data_map_plot(data, lat_lims=(-90, 90), lon_lims=(-180, 180),
-                  **kwargs):
+                  filename=None, **kwargs):
     """Used to plot data or an iris.cube.Cube on a map with coastlines.
 
     """
     if isinstance(data, iris.cube.Cube):
         cube = data
     else:
-        cube = dummy_lat_lon_cube(data, lat_lims, lon_lims, **kwargs)
+        cube = dummy_lat_lon_cube(data, lat_lims, lon_lims)
+
+    cube.long_name = kwargs.get('name', ' ')
 
     fig = plt.figure()
     qplt.contourf(cube)
     plt.gca().coastlines()
+    if filename is not None:
+        plt.savefig(filename)
     return fig
 
 
@@ -1950,6 +1954,7 @@ class Simard_canopyheight(Dataset):
 
 
 class Thurner_AGB(Dataset):
+    # TODO: Look at data values - seems like there is a major issue there!
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'Thurner_AGB')
