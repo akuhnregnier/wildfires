@@ -1,0 +1,9 @@
+"""
+Downloading files from copernicus.
+
+"""
+lftp ftp.copernicus.vgt.vito.be
+user akuhnregnier
+# enter password
+# only 4 parallel connections per user allowed
+mirror --continue --only-newer --ignore-time --parallel=4 M0045075/ ~/FIREDATA/Copernicus_SWI/

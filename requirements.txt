@@ -1,4 +1,5 @@
 cf_units
+gitpython
 h5py  # reading hdf5 files (.hdf5)
 iris
 matplotlib
@@ -7,3 +8,4 @@ numpy
 pandas
 pyhdf  # reading hdf4 files (.hdf)
 statsmodels
+tqdm

@@ -1986,54 +1986,140 @@ class Thurner_AGB(Dataset):
         return self.broadcast_static_data(start, end)
 
 
-def load_dataset_cubes():
-    a = CRU()
-    b = ESA_CCI_Soilmoisture()
-    c = GFEDv4s()
-    d = GlobFluo_SIF()
-    e = Liu_VOD()
+def dataset_times(datasets=None):
+    """Compile dataset time span information.
 
-    # Join up all the cubes.
-    cubes = iris.cube.CubeList()
-    cubes.extend(a.cubes)
-    # For now, only use the monthly mean soil moisture data.
-    cubes.append(b.cubes.extract_strict(
-            iris.Constraint(name='Volumetric Soil Moisture Monthly Mean')))
-    cubes.extend(c.cubes)
-    cubes.extend(d.cubes)
-    cubes.extend(e.cubes)
+    Args:
+        datasets: If no value is given, defaults to using the following
+            datasets:
+                AvitabileThurnerAGB(),
+                CHELSA(),
+                Copernicus_SWI(),
+                ESA_CCI_Landcover_PFT(),
+                GFEDv4(),
+                GSMaP_precipitation(),
+                GlobFluo_SIF(),
+                HYDE(),
+                LIS_OTD_lightning_time_series(),
+                Liu_VOD(),
+                MOD15A2H_LAI_fPAR(),
+                Simard_canopyheight(),
+                Thurner_AGB(),
+            Alternatively, a list of Dataset instances can be given.
 
-    min_times = [c.coords()[0].cell(0).point for c in cubes]
-    max_times = [c.coords()[0].cell(-1).point for c in cubes]
+    Returns:
+        min_time: Minimum shared time of all datasets.
+        max_time: Maximum shared time of all datasets.
+        times_df: Pandas DataFrame encapsulating the timespan information.
+
+    """
+    if datasets is None:
+        datasets = [
+                AvitabileThurnerAGB(),
+                CHELSA(),
+                Copernicus_SWI(),
+                ESA_CCI_Landcover_PFT(),
+                GFEDv4(),
+                GSMaP_precipitation(),
+                GlobFluo_SIF(),
+                HYDE(),
+                LIS_OTD_lightning_time_series(),
+                Liu_VOD(),
+                MOD15A2H_LAI_fPAR(),
+                Simard_canopyheight(),
+                Thurner_AGB(),
+                ]
+
+    time_dict = dict(
+            [(dataset.name,
+              list(map(str, (
+                  dataset.min_time,
+                  dataset.max_time,
+                  dataset.frequency
+                  ))))
+             for dataset in datasets])
+
+    min_times = [dataset.min_time for dataset in datasets
+                 if dataset.min_time != 'static']
+    max_times = [dataset.max_time for dataset in datasets
+                 if dataset.max_time != 'static']
 
     # This timespan will encompass all the datasets.
     min_time = np.max(min_times)
     max_time = np.min(max_times)
 
-    # This method returns a cube.
-    f = LIS_OTD_Lightning().get_monthly_data(min_time, max_time)
-    assert isinstance(f, iris.cube.Cube)
-    cubes.append(f)
+    time_dict['Overall'] = list(map(str, (min_time, max_time, 'N/A')))
 
-    g = GPW_v4_pop_dens().get_monthly_data(min_time, max_time)
-    assert isinstance(g, iris.cube.Cube)
-    cubes.append(g)
+    dataset_names = list(time_dict.keys())
+    # Make sure this entry is at the bottom of the table.
+    dataset_names.remove('Overall')
+    dataset_names.append('Overall')
+    dataset_names = pd.Series(dataset_names, name='Dataset')
+    min_times_series = pd.Series(
+            [time_dict[name][0] for name in dataset_names],
+            name='Minimum')
+    max_times_series = pd.Series(
+            [time_dict[name][1] for name in dataset_names],
+            name='Maximum')
+    frequency_series = pd.Series(
+            [time_dict[name][2] for name in dataset_names],
+            name='Frequency')
+    times_df = pd.DataFrame(
+            [dataset_names, min_times_series, max_times_series,
+             frequency_series]).T
 
-    # Extract the common timespan.
-    # t is a Cell, t.point extracts the 'real_datetime' object which has
-    # the expected year and month attributes. This also leads to ignoring
-    # bounds, which, if they are not None, can cause these comparisons to
-    # fail.
-    cubes = cubes.extract(iris.Constraint(
-        time=lambda t: monthly_constraint(t.point, (min_time, max_time))))
+    return min_time, max_time, times_df
+
+
+def load_dataset_cubes():
+
+    if os.path.isfile(pickle_file):
+        with open(pickle_file, 'rb') as f:
+            cubes = pickle.load(f)
+        return cubes
+
+    datasets = [
+            AvitabileThurnerAGB(),
+            CHELSA(),
+            Copernicus_SWI(),
+            ESA_CCI_Landcover_PFT(),
+            GFEDv4(),
+            GSMaP_precipitation(),
+            GlobFluo_SIF(),
+            HYDE(),
+            LIS_OTD_lightning_time_series(),
+            Liu_VOD(),
+            MOD15A2H_LAI_fPAR(),
+            Simard_canopyheight(),
+            Thurner_AGB(),
+            ]
+
+    min_time, max_time, times_df = dataset_times(datasets)
+    print(times_df)
+
+    # Limit the amount of data that has to be processed.
+    logger.info('Limiting data')
+    for dataset in datasets:
+        dataset.limit_months(min_time, max_time)
+    logger.info('Finished limiting data')
 
     # Regrid cubes to the same lat-lon grid.
-    for i in range(len(cubes)):
-        cubes[i] = regrid(
-            cubes[i],
-            area_weighted=True,
-            new_latitudes=get_centres(np.linspace(-90, 90, 361)),
-            new_longitudes=get_centres(np.linspace(-180, 180, 721)))
+    # TODO: change lat and lon limits and also the number of points!!
+    # Always work in 0.25 degree steps? From the same starting point?
+    logger.info('Starting regridding of all datasets')
+    for dataset in datasets:
+        dataset.regrid()
+    logger.info('Finished regridding of all datasets')
+
+    logger.info('Starting temporal upscaling')
+    # Join up all the cubes.
+    cubes = iris.cube.CubeList()
+    for dataset in datasets:
+        cubes.extend(dataset.get_monthly_data(min_time, max_time))
+    logger.info('Finished temporal upscaling')
+
+    with open(pickle_file, 'wb') as f:
+        pickle.dump(cubes, f, -1)
 
     return cubes
 
@@ -2042,129 +2128,3 @@ if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
     cubes = load_dataset_cubes()
 
-    if os.path.isfile(pickle_file):
-        with open(pickle_file, 'rb') as f:
-            cubes = pickle.load(f)
-    else:
-        cubes = load_dataset_cubes()
-        with open(pickle_file, 'wb') as f:
-            pickle.dump(cubes, f, -1)
-
-    # Use masking to extract only the relevant data.
-
-    # Accumulate the masks for each dataset into a global mask.
-    global_mask = np.zeros(cubes[0].shape, dtype=bool)
-    for cube in cubes:
-        global_mask |= combine_masks(cube.data, invalid_values=[])
-
-    # Apply the same mask for each latitude and longitude.
-    collapsed_global_mask = np.any(global_mask, axis=0)
-    global_mask = np.zeros_like(global_mask, dtype=bool)
-    global_mask += collapsed_global_mask[np.newaxis]
-
-    # Use this mask to select each dataset
-
-    selected_datasets = []
-    for cube in cubes:
-        selected_data = cube.data[~global_mask]
-        if hasattr(selected_data, 'mask'):
-            assert not np.any(selected_data.mask)
-            selected_datasets.append((cube.name(), selected_data.data))
-        else:
-            selected_datasets.append((cube.name(), selected_data))
-
-    dataset_names = [s[0] for s in selected_datasets]
-
-    exog_name_map = {
-            'diurnal temperature range': 'diurnal temp range',
-            'near-surface temperature minimum': 'near-surface temp min',
-            'near-surface temperature': 'near-surface temp',
-            'near-surface temperature maximum': 'near-surface temp max',
-            'wet day frequency': 'wet day freq',
-            'Volumetric Soil Moisture Monthly Mean': 'soil moisture',
-            'SIF': 'SIF',
-            'VODorig': 'VOD',
-            'Combined Flash Rate Monthly Climatology': 'lightning rate',
-            ('Population Density, v4.10 (2000, 2005, 2010, 2015, 2020)'
-             ': 30 arc-minutes'): 'pop dens'
-            }
-
-    inclusion_names = {
-            'near-surface temperature maximum',
-            'Volumetric Soil Moisture Monthly Mean',
-            'SIF',
-            'VODorig',
-            'diurnal temperature range',
-            'wet day frequency',
-            'Combined Flash Rate Monthly Climatology',
-            ('Population Density, v4.10 (2000, 2005, 2010, 2015, 2020)'
-             ': 30 arc-minutes'),
-            }
-
-    exog_names = [exog_name_map.get(s[0], s[0]) for s in
-                  selected_datasets if s[0] in inclusion_names]
-    raw_exog_data = np.hstack(
-            [s[1].reshape(-1, 1) for s in selected_datasets
-             if s[0] in inclusion_names])
-
-    endog_name = selected_datasets[dataset_names.index('Burnt_Area')][0]
-    endog_data = selected_datasets[dataset_names.index('Burnt_Area')][1]
-
-    # lim = int(5e3)
-    lim = None
-    endog_data = endog_data[:lim]
-    raw_exog_data = raw_exog_data[:lim]
-
-    endog_data = pd.Series(endog_data, name='burned area')
-    exog_data = pd.DataFrame(
-            raw_exog_data,
-            columns=exog_names)
-
-    # TODO: Improve this by taking into account the number of days in each
-    # month
-
-    # Define dry days variable using the wet day variable.
-    exog_data['dry day freq'] = 31.5 - exog_data['wet day freq']
-    del exog_data['wet day freq']
-
-    # Carry out log transformation for select variables.
-    log_var_names = ['diurnal temp range',
-                     # There are problems with negative surface
-                     # temperatures here!
-                     # 'near-surface temp max',
-                     'dry day freq']
-
-    for name in log_var_names:
-        mod_data = exog_data[name] + 0.01
-        assert np.all(mod_data > 0.01)
-        exog_data['log ' + name] = np.log(mod_data)
-        del exog_data[name]
-
-    # Carry out square root transformation
-    sqrt_var_names = ['lightning rate', 'pop dens']
-    for name in sqrt_var_names:
-        exog_data['sqrt ' + name] = np.sqrt(exog_data[name])
-        del exog_data[name]
-
-    '''
-    # Available links for Gaussian:
-    [statsmodels.genmod.families.links.log,
-     statsmodels.genmod.families.links.identity,
-     statsmodels.genmod.families.links.inverse_power]
-
-    '''
-
-    model = sm.GLM(endog_data, exog_data,
-                   # family=sm.families.Gaussian(links.log)
-                   family=sm.families.Binomial()
-                   )
-
-    model_results = model.fit()
-
-    sm.graphics.plot_partregress_grid(model_results)
-    plt.tight_layout()
-
-    plt.figure()
-    plt.hexbin(endog_data, model_results.fittedvalues, bins='log')
-    plt.xlabel('real data')
-    plt.ylabel('prediction')
