@@ -128,7 +128,7 @@ def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180),
 
 
 def data_map_plot(data, lat_lims=(-90, 90), lon_lims=(-180, 180),
-                  filename=None, **kwargs):
+                  filename=None, log=False, **kwargs):
     """Used to plot data or an iris.cube.Cube on a map with coastlines.
 
     """
@@ -137,7 +137,16 @@ def data_map_plot(data, lat_lims=(-90, 90), lon_lims=(-180, 180),
     else:
         cube = dummy_lat_lon_cube(data, lat_lims, lon_lims)
 
-    cube.long_name = kwargs.get('name', ' ')
+    cube = cube.copy()
+
+    if 'name' in kwargs:
+        cube.long_name = kwargs['name']
+    else:
+        cube.long_name = cube.name()
+
+    if log:
+        cube = iris.analysis.maths.log(cube)
+        cube.long_name = 'log ' + cube.long_name
 
     fig = plt.figure()
     qplt.contourf(cube)
