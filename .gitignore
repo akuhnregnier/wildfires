@@ -106,3 +106,6 @@ venv.bak/
 # PBS output files
 *.e*
 *.o*
+
+# Images
+*.png

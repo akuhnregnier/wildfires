@@ -9,3 +9,4 @@ pandas
 pyhdf  # reading hdf4 files (.hdf)
 statsmodels
 tqdm
+rasterio
