@@ -145,8 +145,9 @@ def data_map_plot(data, lat_lims=(-90, 90), lon_lims=(-180, 180),
         cube.long_name = cube.name()
 
     if log:
+        future_name = 'log ' + cube.long_name
         cube = iris.analysis.maths.log(cube)
-        cube.long_name = 'log ' + cube.long_name
+        cube.long_name = future_name
 
     fig = plt.figure()
     qplt.contourf(cube)

@@ -2,11 +2,14 @@ cf_units
 gitpython
 h5py  # reading hdf5 files (.hdf5)
 iris
+jupyter
 matplotlib
 netCDF4
 numpy
 pandas
 pyhdf  # reading hdf4 files (.hdf)
+rasterio
+scikit-learn
+scipy
 statsmodels
 tqdm
-rasterio
