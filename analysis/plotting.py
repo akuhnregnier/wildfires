@@ -14,8 +14,8 @@ from wildfires.logging_config import LOGGING
 logger = logging.getLogger(__name__)
 
 def partial_dependence_plot(model, X, features, n_cols=3, grid_resolution=100,
-                            percentiles=(0.05, 0.95),
-                            predicted_name='burned area'):
+                            percentiles=(0.05, 0.95), coverage=1,
+                            random_state=None, predicted_name='burned area'):
     """Plot 1 dimensional partial dependence plots.
 
     Args:
@@ -29,6 +29,13 @@ def partial_dependence_plot(model, X, features, n_cols=3, grid_resolution=100,
             specified percentiles.
         percentiles (tuple of float): Percentiles between which to plot the
             pdp.
+        coverage (float): A float between 0 and 1 which dictates what
+            fraction of data is used to generate the plots.
+        random_state (int or None): Used to call np.random.seed(). This is
+            only used if coverage < 1. Supplying None causes the random
+            number generator to initialise itself using the system clock
+            (or using something similar which will not be constant from one
+            run to the next).
         predicted_name (string): Name on the y axis.
 
     Returns:
@@ -45,14 +52,29 @@ def partial_dependence_plot(model, X, features, n_cols=3, grid_resolution=100,
 
     datasets = []
 
+    if not np.isclose(coverage, 1):
+        logger.debug('Selecting subset of data with coverage:{:}'
+                .format(coverage))
+        np.random.seed(random_state)
+
+        # Select a random subset of the data.
+        permuted_indices = np.random.permutation(np.arange(X.shape[0]))
+        permuted_indices = permuted_indices[:int(coverage * X.shape[0])]
+    else:
+        logger.debug('Selecting all data.')
+        # Select all of the data.
+        permuted_indices = np.arange(X.shape[0])
+
+    X_selected = X.iloc[permuted_indices]
+
     for feature in tqdm(features):
         series = quantile_data[feature]
 
         # for each possible value of the selected feature, average over all
         # possible combinations of the other features
         averaged_predictions = []
+        calc_X = X_selected.copy()
         for value in series:
-            calc_X = X.copy()
             calc_X[feature] = value
             predictions = model.predict(calc_X)
             averaged_predictions.append(np.mean(predictions))
