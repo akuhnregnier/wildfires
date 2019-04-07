@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 import logging
+import os
 
 import cdsapi
 from dateutil.relativedelta import relativedelta
 from iris.time import PartialDateTime
 import numpy as np
 
+from wildfires.data.datasets import DATA_DIR
+
 
 logger = logging.getLogger(__name__)
 
 
 def retrieve_monthly_era5(param='167.128', start=PartialDateTime(2000, 1),
-                          end=PartialDateTime(2010, 1)):
+                          end=PartialDateTime(2000, 2), target_dir=DATA_DIR):
     """Retrieve monthly ERA5 data for the chosen parameter.
 
     Args:
@@ -46,19 +49,25 @@ def retrieve_monthly_era5(param='167.128', start=PartialDateTime(2000, 1),
     end = PartialDateTime(end.year, end.month)
 
     decades = sorted(list(np.array(
-        set([year // 10 for year in range(start.year, end.year + 1)]))
+        list(set([year // 10 for year in range(start.year, end.year + 1)])))
         * 10))
 
     for decade in decades:
+        logger.debug('decade:{}'.format(decade))
         requested_dates = []
         # The decade is the first year, so go from there until the final
         # year, up to 9 times (otherwise the next decade would be reached).
-        for year in range(decade, min((end.year, decade + 10))):
-            for month in range(1, end.month if year == end.year else 13):
+        for year in range(decade, min((end.year, decade + 9)) + 1):
+            logger.debug('year:{}'.format(year))
+            for month in range(1, (end.month + 1) if year == end.year else 13):
+                logger.debug('month:{}'.format(month))
                 requested_dates.append('{:>04d}{:>02d}01'.format(year, month))
 
         date_request_string = '/'.join(requested_dates)
-        decade_target_file = 'era5_moda_{}_{}.nc'.format(param, decade)
+        decade_target_file = os.path.join(
+                target_dir, 'era5_moda_{}_{}.nc'.format(param, decade))
+
+        logger.debug('date request:{}'.format(date_request_string))
 
         c.retrieve("reanalysis-era5-complete",
             {
@@ -81,41 +90,11 @@ def retrieve_monthly_era5(param='167.128', start=PartialDateTime(2000, 1),
                 'format': 'netcdf'
             },
             decade_target_file)
-        logger.debug('Finished download for decade:{} to:{}'
-                     .format(decade, decade_target_file))
+        logger.info('Finished download for decade:{} to:{}'
+                    .format(decade, decade_target_file))
 
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
-    logger = logging.getLogger(__name__)
-    """
-    Sample retrieval below.
-    """
-    c = cdsapi.Client()
-    # target_file = "/tmp/era5_download_test_area.nc"
-    target_file = "/tmp/test.nc"
-    # "reanalysis-era5-complete" is not listed publicly, only in
-    # https://confluence.ecmwf.int/display/CKB/How+to+download+ERA5
-    # It should contain monthly means?
-    c.retrieve("reanalysis-era5-complete",
-        {
-            'class': 'ea',
-            'expver': '1',
-            'stream': 'moda',
-            'type': 'an',
-            # 128 is table 2 version
-            # https://confluence.ecmwf.int/display/UDOC/Identification+keywords
-            'param': '167.128',
-            'levtype': 'sfc',
-            'date': '2018-01-01',
-            'decade': '2010',
-            'grid': '0.25/0.25',
-            # Optional. Subset (clip) to an area. Specify as N/W/S/E in
-            # Geographic lat/long degrees. Southern latitudes and western
-            # longitudes must be given as negative numbers. Requires "grid"
-            # to be set to a regular grid, e.g. "0.25/0.25".
-            # 'area': '89.75/-179.75/-89.75/179.75',
-            'format': 'netcdf'
-        },
-        target_file)
-    logger.debug('Finished download!')
+    retrieve_monthly_era5(start=PartialDateTime(2000, 1),
+                          end=PartialDateTime(2000, 1))
