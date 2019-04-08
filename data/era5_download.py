@@ -5,7 +5,8 @@ from multiprocessing import Process, Pipe, Queue
 import os
 import sys
 from threading import Thread
-
+from time import clock
+from queue import Empty
 
 import cdsapi
 from datetime import datetime
@@ -302,9 +303,21 @@ class RampVar:
         max_value (float): Maximum value the variable can take.
         steps (int): The number of intervals.
 
+    Examples:
+        >>> var = RampVar(0, 2, 3)
+        >>> int(round(var.value))
+        0
+        >>> int(round(var.value))
+        1
+        >>> int(round(var.value))
+        2
+        >>> var.reset()
+        >>> int(round(var.value))
+        0
+
     """
 
-    def __init__(self, initial_value, max_value, steps):
+    def __init__(self, initial_value, max_value, steps=10):
         self.steps = steps
         self.values = np.linspace(initial_value, max_value, steps)
         self.index = -1
@@ -319,6 +332,10 @@ class RampVar:
             self.index += 1
         return self.values[self.index]
 
+    def reset(self):
+        """Resets the value to the initial value."""
+        self.index = -1
+
 
 class LoggingMixin:
     """Relies on child classes defining a 'logger' and 'id_index'
@@ -332,20 +349,6 @@ class LoggingMixin:
         self.logger.log(level, msg)
 
 
-import urllib3
-import shutil
-from time import sleep
-
-def retrieve_func(index):
-    logger.info("DOWNLOADING file.")
-    url = 'http://ipv4.download.thinkbroadband.com:8080/200MB.zip'
-    c = urllib3.PoolManager(headers={'user-agent': 'Mozilla/5.0 (Windows NT 6.3; rv:36.0) ..'})
-    with c.request('GET', url, preload_content=False) as resp, open('/tmp/{}_download'.format(index), 'wb') as out_file:
-        shutil.copyfileobj(resp, out_file)
-    resp.release_conn()
-    logger.info("FINISHED downloading.")
-
-
 class DownloadThread(Thread, LoggingMixin):
 
     def __init__(self, id_index, request, queue, logger):
@@ -354,16 +357,7 @@ class DownloadThread(Thread, LoggingMixin):
         self.request = request
         self.queue = queue
         self.logger = logger
-        # TODO: Restore this!
-        # self.client = cdsapi.Client()
-
-        def retrieve(*args):
-            self.log("Retrieving request: {}".format(args))
-            retrieve_func(self.id_index)
-
-        self.client = lambda: None
-        self.client.retrieve = retrieve
-
+        self.client = cdsapi.Client()
         self.log("Initialised DownloadThread with id_index={}."
                  .format(self.id_index))
 
@@ -380,15 +374,9 @@ class DownloadThread(Thread, LoggingMixin):
                         filename, self.request))
             self.queue.put(filename)
         except Exception:
-            # sys.exc_info(): [0] contains the exception class, [1] the
-            # instance (ie. that's what would be used for isinstance()
-            # checking!) and [2] contains the traceback object, to be used
-            # like: raise
-            # sys.exc_info()[1].with_traceback(sys.exc_info()[2])
             self.queue.put(sys.exc_info())
         finally:
             self.log("Exiting.")
-            pass
 
 
 class AveragingWorker(Process, LoggingMixin):
@@ -425,46 +413,77 @@ class AveragingWorker(Process, LoggingMixin):
                 self.pipe.send(status)
                 self.log("Sent status {}.".format(status))
         except Exception:
-            # sys.exc_info(): [0] contains the exception class, [1] the
-            # instance (ie. that's what would be used for isinstance()
-            # checking!) and [2] contains the traceback object, to be used
-            # like: raise
-            # sys.exc_info()[1].with_traceback(sys.exc_info()[2])
             self.pipe.send(sys.exc_info())
         finally:
             self.log("Exiting.")
-            pass
 
 
-def spawn_retrieve_processing(requests, n_threads=1):
-    # TODO: Update this to match the actual implementation!!
+def str_to_seconds(s):
+    if isinstance(s, str):
+        multipliers = {
+                's': 1.,
+                'm': 60.,
+                'h': 60.**2.,
+                'd': 24. * 60**2.
+                }
+        for key, multiplier in zip(multipliers, list(multipliers.values())):
+            if key in s:
+                return float(s.strip(key)) * multiplier
+    return float(s)
+
+
+def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
+                         timeout='3d'):
     """Start retrieving and processing data asynchronously.
 
-    Calling process spawns one non-blocking process just for the calculation of
-    the mean values for one pre-downloaded file.
+    The calling process spawns one non-blocking process just for the
+    processing of the downloaded files. This process is fed with the
+    filenames of the files as they are downloaded by the download threads.
+    It then proceeds to average these values (without blocking the download
+    of the other data or blocking).
 
-    After this processing process has finished, it will be noted that this file
-    has been successfully processed (barring any errors that were received,
-    which should be logged!) and removed from the list of files that are
-    available for processing.
+    A number of threads (`n_threads`) will be started in order to download
+    data concurrently. If one thread finishes downloading data, it will
+    receive a new request to retrieve, and so on for the other threads,
+    until all the requests have been handled.
 
-    A number of threads will be started in order to download data concurrently.
-    If one Thread finishes downloading data, it will receive a new request to
-    execute, and so on for the other threads, until all the requests have been
-    handled.
-
-    When one of these threads has finished downloading data (again, check for
-    errors here!) signal to the main process that a file has been downloaded
-    successfully. The main process will then add the downloaded file's name
-    to the list of names that have yet to be processed, and start giving these
-    names to the dedicated processing process.
+    The main process checks the output of these download threads, and if a
+    new file has been downloaded successfully, it is added to the
+    processing queue for the distinct processing process.
 
     Args:
         requests (list): A list of 3 element tuples which are passed to the
             retrieve function of the CDS API client in order to retrieve
             the intended data.
+        n_threads (int): The maximum number of data download threads to
+            open at any one time. This corresponds to the number of open
+            requests to the CDS API.
+        soft_filesize_limit (float): If the cumulative size of downloaded,
+            non-processed files on disk in GB exceeds this value, downloading
+            of new files (ie. spawning of new threads) will cease until the
+            aforementioned cumulative size drops below the threshold again.
+            Please note that this threshold does not take into account the
+            file sizes of processed files, ONLY the raw downloaded files
+            resulting from the requests made to the CDS API. Exceeding the
+            threshold also does not terminate existing threads, meaning
+            that at most `n_threads - 1` downloads could still occur before
+            requests are ceased entirely. If None, no limit is applied.
+        timeout (float or str): Time-out after which the function
+            terminates and ceases downloads as well as processing. If None, no
+            limit is applied. If given as a float, the units are in
+            seconds. A string may be given, in which case the units may be
+            dictated. For example, '1s' would refer to one second, '1m' to
+            one minute, '1h' to one hour, and '2d' to two days.
+
+    TODO:
+        Soft time-out which does not cause an abrupt exit of the program
+        (using an Exception) but allows the threads/process to exit
+        gracefully.
 
     """
+    start_time = clock()
+    if isinstance(timeout, str):
+        timeout = str_to_seconds(timeout)
     requests = requests.copy()
     worker_index = 0
     pipe_start, pipe_end = Pipe()
@@ -472,12 +491,15 @@ def spawn_retrieve_processing(requests, n_threads=1):
     averaging_worker.start()
     worker_index += 1
 
-    timeout_ramp = RampVar(0.5, 10, 15)
+    timeout_ramp = RampVar(0.5, 20, 10)
     retrieve_queue = Queue()
 
     threads = []
     remaining_files = []
     while requests or remaining_files or threads:
+        if clock() - start_time > timeout:
+            raise RuntimeError("Timeout exceeded (timeout was {})."
+                               .format(timeout))
         to_remove = []
         for thread in threads:
             if not thread.is_alive():
@@ -491,11 +513,20 @@ def spawn_retrieve_processing(requests, n_threads=1):
         logger.debug("Current number of threads: {}.".format(len(threads)))
         new_threads = []
         while len(threads) < n_threads and requests:
-            new_thread = DownloadThread(
-                worker_index, requests.pop(), retrieve_queue, logger)
-            new_threads.append(new_thread)
-            threads.append(new_thread)
-            worker_index += 1
+            filesize_sum = (sum([os.path.getsize(f) for f in remaining_files])
+                            / 1000**3)
+            if filesize_sum < soft_filesize_limit:
+                new_thread = DownloadThread(
+                    worker_index, requests.pop(), retrieve_queue, logger)
+                new_threads.append(new_thread)
+                threads.append(new_thread)
+                worker_index += 1
+            else:
+                logger.warning("Soft file size limit exceeded. Requested "
+                               "limit: {0.1e} GB. Observed: {:0.1e} GB. "
+                               "Active threads: {}"
+                               .format(soft_filesize_limit, filesize_sum,
+                                       len(threads)))
 
         for new_thread in new_threads:
             new_thread.start()
@@ -505,6 +536,9 @@ def spawn_retrieve_processing(requests, n_threads=1):
             # something.
             logger.debug("Waiting for a DownloadThread to finish.")
             retrieve_outputs = []
+            # TODO
+            # Check for Empty
+            # Do timeout
             retrieve_outputs.append(retrieve_queue.get())
             # If there is something else in the queue, retrieve this until
             # nothing is left.
@@ -529,17 +563,21 @@ def spawn_retrieve_processing(requests, n_threads=1):
             break
         elif threads:
             worker_timeout = 0
+            timeout_ramp.reset()
         else:
             worker_timeout = timeout_ramp.value
-
-        # from time import sleep
-        # sleep(0.2)
 
         logger.debug("Polling processing worker pipe with timeout={:0.1f}."
                      .format(worker_timeout))
         while pipe_start.poll(timeout=worker_timeout):
             output = pipe_start.recv()
-            # TODO: Handle this?
+            # The output may contain sys.exc_info() in case of an Exception.
+            # sys.exc_info(): [0] contains the exception class, [1] the
+            # instance (ie. that's what would be used for isinstance()
+            # checking!) and [2] contains the traceback object, to be used
+            # like: raise
+            # sys.exc_info()[1].with_traceback(sys.exc_info()[2])
+            # TODO: handle this?
             if isinstance(output[1], Exception):
                 raise output[1].with_traceback(output[2])
             # The output represents a status code.
@@ -563,7 +601,7 @@ def spawn_retrieve_processing(requests, n_threads=1):
     # if it exceeds the time-out).
     logger.info("Terminating AveragingWorker.")
     pipe_start.send("STOP_WORKER")
-    averaging_worker.join(timeout=2)
+    averaging_worker.join(timeout=20)
     averaging_worker.terminate()
 
 
@@ -584,7 +622,7 @@ if __name__ == '__main__':
     #         levels='100',
     #         target_dir='/tmp')
 
-    spawn_retrieve_processing([
+    retrieval_processing([
         ('dataset-name', {'a': 'test'}, '/tmp/filename.smth'),
         ('dataset-name', {'a': 'test'}, '/tmp/filename.smth')
         ],
