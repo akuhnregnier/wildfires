@@ -2,6 +2,8 @@
 """Tools for downloading ERA5 data using the CDS API.
 
 """
+from abc import ABC, abstractmethod
+import calendar
 from copy import deepcopy
 from datetime import datetime
 import logging
@@ -24,6 +26,51 @@ from wildfires.logging_config import LOGGING
 
 
 logger = logging.getLogger(__name__)
+variable_mapping = {
+    '2m_temperature': '2 metre temperature',
+    '2 metre temperature': '2 metre temperature',
+    '2t': '2 metre temperature',
+    '2t': '2 metre temperature',
+    }
+
+
+def format_request(request):
+    """Format the request tuple for nicer printing.
+
+    Returns:
+        str: Formatted request.
+
+    """
+    request = deepcopy(request)
+    request_dict = request[1]
+    days = []
+    for year in request_dict['year']:
+        for month in request_dict['month']:
+            n_days = calendar.monthrange(int(year), int(month))[1]
+            days.append(n_days)
+
+    if len(request_dict['day']) == max(days):
+        day_str = 'ALL'
+    else:
+        day_str = ', '.join(request_dict['day'])
+
+    if len(request_dict['time']) == 24:
+        time_str = 'ALL'
+    else:
+        time_str = ', '.join(request_dict['time'])
+
+    if len(request_dict['month']) == 12:
+        month_str = 'ALL'
+    else:
+        month_str = ', '.join(
+            calendar.month_abbr[int(month)] for month in request_dict['month'])
+
+    year_str = ', '.join(request_dict['year'])
+
+    output = ("{} from {} for year(s) {}, month(s) {}, day(s) {}, time(s) {}."
+              .format(request_dict['variable'], request[0],
+                      year_str, month_str, day_str, time_str))
+    return output
 
 
 def str_to_seconds(s):
@@ -403,6 +450,7 @@ class DownloadThread(Thread):
         super().__init__()
         self.id_index = id_index
         self.request = request
+        self.formatted_request = format_request(self.request)
         self.queue = queue
 
         # Configures a logger named after the class using the 'wildfires'
@@ -430,7 +478,7 @@ class DownloadThread(Thread):
 
     def run(self):
         try:
-            self.logger.debug('Requesting: {}'.format(self.request))
+            self.logger.info('Requesting: {}'.format(self.formatted_request))
             self.client.retrieve(*self.request)
             self.logger.debug('Completed request.')
             filename = self.request[2]
@@ -439,18 +487,19 @@ class DownloadThread(Thread):
                     "Filename '{}' not found despite request "
                     "{} having being issued.".format(
                         filename, self.request))
-            self.queue.put(filename)
+            self.queue.put(self.request)
         except Exception:
             self.queue.put(sys.exc_info())
         finally:
             self.logger.debug("Exiting.")
 
 
-class AveragingWorker(Process):
-    """Compute monthly averages using filenames passed in via a pipe."""
+class Worker(Process, ABC):
+    """Abstract base class to subclass for use as a processing_worker in
+    `retrieval_processing."""
 
-    def __init__(self, id_index, pipe):
-        super().__init__()
+    def __init__(self, id_index, pipe, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.id_index = id_index
         self.pipe = pipe
 
@@ -470,53 +519,59 @@ class AveragingWorker(Process):
             ((self.logger_name, orig_loggers_dict),))
         logging.config.dictConfig(self.config_dict)
 
+        self.logger.debug("Initialised {} with id_index={}."
+                          .format(self.__class__.__name__, self.id_index))
 
-        self.logger.debug("Initialised AveragingWorker with id_index={}."
-                          .format(self.id_index))
+    @abstractmethod
+    def output_filename(self, input_filename):
+        """Construct the output filename from the input filename."""
+        pass
 
-    def process(self, filename):
-        """Performs monthly averaging on the data in the given file.
+    @abstractmethod
+    def check_output(self, request, output):
+        """Check that the output matches the request.
 
         Args:
-            filename (str): Specifies the file holding the data to be averaged.
+            request (iterable of str, dict, str): A request tuple as returned
+                by `retrieve_hourly`.
+            output (iterable of int, str, str): Output of `self.process`.
+
+        Returns:
+            bool: True if the output matches the request, False otherwise.
+
+        """
+        pass
+
+    @abstractmethod
+    def process(self, request):
+        """Process data in the given request.
+
+        Args:
+            request (tuple): Request tuple as returned by `retrieve_monthly`.
 
         Returns:
             int: 0 for successful computation of the average. 1 is returned
                 if an error is encountered. Note that exceptions are merely
                 logged and not raised.
-            str: The original filename.
+            str: The original filename `filename`.
             str or None: The output filename (if successful) or None.
 
         """
-        self.logger.debug('Processing: {}.'.format(filename))
-        try:
-            cubes = iris.load(filename)
-            cubes = iris.cube.CubeList(
-                [cube.collapsed('time', iris.analysis.MEAN) for cube in cubes])
-            # Realise data so we don't end up storing dask operations
-            # instead of numpy arrays.
-            [cube.data for cube in cubes]
-            save_name = filename.split('.nc')[0] + '_monthly_mean.nc'
-            iris.save(cubes, save_name, zlib=False)
-            # If everything went well.
-            return (0, filename, save_name)
-        except Exception:
-            self.logger.exception("Error while processing '{}'."
-                                  .format(filename))
-            return (1, filename, None)
+        pass
 
     def run(self):
         try:
             self.logger.debug("Started listening for filenames to process.")
             while True:
-                file_to_process = self.pipe.recv()
-                if file_to_process == "STOP_WORKER":
+                request = self.pipe.recv()
+                if request == "STOP_WORKER":
                     logger.debug(
                         "STOP_WORKER received, breaking out of loop.")
                     break
+                file_to_process = request[2]
                 self.logger.debug("Received file: '{}'. Starting processing."
                                   .format(file_to_process))
-                output = self.process(file_to_process)
+                output = self.process(request)
                 self.logger.debug("Finished processing '{}' with status {}."
                                   .format(file_to_process, output))
                 self.pipe.send(output)
@@ -527,8 +582,133 @@ class AveragingWorker(Process):
             self.logger.debug("Exiting.")
 
 
-def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
-                         timeout='3d', delete_processed=True, overwrite=False):
+class AveragingWorker(Worker):
+    """Compute monthly averages using filenames passed in via a pipe."""
+
+    def __init__(self, id_index, pipe, *args, **kwargs):
+        super().__init__(id_index, pipe, *args, **kwargs)
+
+    def output_filename(self, input_filename):
+        """Construct the output filename from the input filename."""
+        return input_filename.split('.nc')[0] + '_monthly_mean.nc'
+
+    def check_output(self, request, output):
+        """Check that the output matches the request.
+
+        Args:
+            request (iterable of str, dict, str): A request tuple as returned
+                by `retrieve_hourly`.
+            output (iterable of int, str, str): Output of `self.process`.
+
+        Returns:
+            bool: True if the output matches the request, False otherwise.
+
+        """
+        if output[0] != 0:
+            self.logger.warning(
+                "Output is not as expected because processing of the "
+                "request {} failed with error code {}"
+                .format(request, output[0]))
+            return False
+        downloaded_file = request[2]
+        output_file = output[2]
+        expected_file = self.output_filename(downloaded_file)
+        if output_file != expected_file:
+            self.logger.warning(
+                "Filenames do not match. Expected '{}', got '{}'."
+                .format(expected_file, output_file))
+            return False
+
+        if not os.path.isfile(output_file):
+            self.logger.warning("Expected output file '{}' does not exist."
+                                .format(output_file))
+            return False
+
+        request_dict = request[1]
+        years = list(map(int, request_dict['year']))
+        months = list(map(int, request_dict['month']))
+        days = list(map(int, request_dict['day']))
+        hours = [int(time.replace(':00', '')) for time in request_dict['time']]
+
+        datetime_range = (
+            datetime(min(years), min(months), min(days), min(hours)),
+            datetime(
+                max(years), max(months), min((max(days),
+                calendar.monthrange(max(years), max(months))[1])), max(hours)),
+            )
+
+        output_cubes = iris.load(output_file)
+        for cube in output_cubes:
+            bounds = cube.coord('time').cell(0).bound
+            which_failed = []
+            error_details = []
+            if bounds != datetime_range:
+                which_failed.append("bounds check")
+                error_details.append("Expected bounds {}, got bounds {}."
+                                     .format(bounds, datetime_range))
+            cube_names = {cube.standard_name, cube.long_name, cube.var_name}
+            request_variable = request_dict['variable']
+            expected_names = {
+                request_variable,
+                variable_mapping[request_variable]
+                }
+            if not cube_names.intersection(expected_names):
+                which_failed.append("variable name check")
+                error_details.append(
+                    "None of {} matched one of the expected names {}."
+                    .format(', '.join(cube_names),
+                            ', '.join(expected_names)))
+            if which_failed:
+                which_failed = ' and '.join(which_failed)
+                error_details = ' '.join(error_details)
+                self.logger.warning(
+                    "Failed {} for cube {}. {}"
+                    .format(which_failed, repr(cube), error_details))
+                return False
+        return True
+
+    def process(self, request):
+        """Performs monthly averaging on the data in the given request.
+
+        Args:
+            request (tuple): Request tuple as returned by `retrieve_monthly`.
+
+        Returns:
+            int: 0 for successful computation of the average. 1 is returned
+                if an error is encountered. 2 is returned if no exception
+                was encountered, but the resulting data does not match the
+                expectations as defined by `self.check_output`. Note that
+                exceptions are merely logged and not raised.
+            str: The original filename `filename`.
+            str or None: The output filename (if successful) or None.
+
+        """
+        filename = request[2]
+        self.logger.debug('Processing: {}.'.format(filename))
+        try:
+            cubes = iris.load(filename)
+            cubes = iris.cube.CubeList(
+                [cube.collapsed('time', iris.analysis.MEAN) for cube in cubes])
+            # Realise data so we don't end up storing dask operations
+            # instead of numpy arrays.
+            [cube.data for cube in cubes]
+            save_name = self.output_filename(filename)
+            iris.save(cubes, save_name, zlib=False)
+            # If everything went well.
+            if self.check_output(request, (0, filename, save_name)):
+                return (0, filename, save_name)
+            else:
+                return (2, filename, None)
+        except Exception:
+            self.logger.exception("Error while processing '{}'."
+                                  .format(filename))
+            return (1, filename, None)
+
+
+def retrieval_processing(requests, processing_class=AveragingWorker,
+                         n_threads=4, soft_filesize_limit=1000,
+                         timeout='3d', delete_processed=True,
+                         overwrite=False):
     """Start retrieving and processing data asynchronously.
 
     The calling process spawns one non-blocking process just for the
@@ -550,6 +730,10 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
         requests (list): A list of 3 element tuples which are passed to the
             retrieve function of the CDS API client in order to retrieve
             the intended data.
+        processing_class (`Worker` subclass): A subclass of `Worker` that
+            defines a process method and takes and index (int) and a pipe
+            (multiprocessing.connection.Connection) as constructor
+            arguments. See `AveragingWorker` for a sample implementation.
         n_threads (int): The maximum number of data download threads to
             open at any one time. This corresponds to the number of open
             requests to the CDS API.
@@ -572,16 +756,15 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
         delete_processed (bool): If True, remove downloaded files that have
             been successfully processed.
         overwrite (bool): If True, download files which have already been
-            downloaded again. Note that no checks are made for broken
-            files due to interrupted downloads or some similar error (Todo).
+            downloaded again. Note that only the time coordinate and
+            variables are compared against for the existing files.
 
     Todo:
-        Soft time-out which does not cause an abrupt exit of the program
-        (using an Exception) but allows the threads/process to exit
-        gracefully.
+        Soft time-out which would not cause an abrupt exit of the program
+        (using an Exception) but would allow a graceful exit.
 
-        Check that downloaded files (or pre-existing downloaded files in
-        case of overwrite=False) are intact and match the request contents.
+        Check that downloaded files have correct grid (not relevant if grid
+        is not specified and only the default is retrieved).
 
     """
     start_time = time()
@@ -601,8 +784,8 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
 
     worker_index = 0
     pipe_start, pipe_end = Pipe()
-    averaging_worker = AveragingWorker(worker_index, pipe_end)
-    averaging_worker.start()
+    processing_worker = processing_class(worker_index, pipe_end)
+    processing_worker.start()
     worker_index += 1
 
     retrieve_queue = Queue()
@@ -621,7 +804,7 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
             completed_thread.join(1.)
             threads.remove(completed_thread)
 
-        logger.debug("Current number of threads: {}.".format(len(threads)))
+        logger.info("Active threads: {}.".format(len(threads)))
         new_threads = []
         while len(threads) < n_threads and requests:
             check_files = raw_files + processed_files
@@ -638,10 +821,19 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
                                 len(threads)))
                 new_request = requests.pop()
                 new_filename = new_request[2]
-                if os.path.isfile(new_filename) and not overwrite:
-                    logger.info("'{}' already exists. Not downloading again."
-                                .format(new_filename))
-                    continue
+                expected_output = (
+                    0,
+                    new_filename,
+                    processing_worker.output_filename(new_filename)
+                    )
+                if not overwrite and os.path.isfile(expected_output[2]):
+                    if processing_worker.check_output(
+                            new_request, expected_output):
+                        logger.info(
+                            "'{}' already contains correct data. Not "
+                            "downloading raw data."
+                            .format(new_filename))
+                        continue
                 new_thread = DownloadThread(
                     worker_index, new_request, retrieve_queue)
                 new_threads.append(new_thread)
@@ -683,7 +875,9 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
             logger.debug("DownloadThread output: {}.".format(retrieve_outputs))
             # Handle the output.
             for retrieve_output in retrieve_outputs:
-                if isinstance(retrieve_output[1], Exception):
+                if (hasattr(retrieve_output, '__len__')
+                        and len(retrieve_output) > 1
+                        and isinstance(retrieve_output[1], Exception)):
                     # Re-raise exception here complete with traceback, to
                     # use logging exception convenience function.
                     try:
@@ -695,10 +889,10 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
                 # If it is a filename and not an exception, add this to the
                 # queue for the processing worker.
                 logger.debug("Sending filename to worker: {}."
-                             .format(retrieve_output))
-                pipe_start.send(retrieve_output)
-                remaining_files.append(retrieve_output)
-                total_files.append(retrieve_output)
+                             .format(retrieve_output[2]))
+                pipe_start.send(retrieve_output[2])
+                remaining_files.append(retrieve_output[2])
+                total_files.append(retrieve_output[2])
 
         if not threads and not requests and not remaining_files:
             logger.info("No remaining requests, files or threads.")
@@ -720,7 +914,9 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
             # checking!) and [2] contains the traceback object, to be used
             # like: raise
             # sys.exc_info()[1].with_traceback(sys.exc_info()[2])
-            if isinstance(output[1], Exception):
+            if (hasattr(output, '__len__')
+                    and len(output) > 1
+                    and isinstance(output[1], Exception)):
                 # Re-raise exception here complete with traceback, to
                 # use logging exception convenience function.
                 try:
@@ -729,44 +925,52 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
                     logger.exception("Exception while processing data.")
             # The first entry of the output represents a status code.
             elif output[0] == 0:
-                logger.info("Processed file '{}' successfully. Removing it "
-                            "from list of files to process."
+                logger.info("Processed file '{}' successfully."
                             .format(output[1]))
-                remaining_files.remove(output[1])
-                processed_files.append(output[2])
-                if delete_processed:
-                    logger.info("Deleting file '{}' as it has been "
-                                "processed successfully"
-                                .format(output[1]))
-                    os.remove(output[1])
-                if not remaining_files:
-                    # Everything should have been handled so we can exit.
-                    break
             elif output[0] == 1:
-                logger.warning("Error while processing {}"
-                               .format(output[1]))
+                logger.error("Error while processing {}"
+                             .format(output[1]))
+            elif output[0] == 2:
+                logger.error(
+                    "Processing output for {} did not match expected output."
+                    .format(output[1]))
             else:
-                raise NotImplementedError("Other codes not handled yet!")
+                raise ValueError("Unknown output format:{}.".format(output))
 
-        logger.info("Remaining files to process: {}.".format(remaining_files))
-        logger.info("Threads: {}.".format(threads))
+            remaining_files.remove(output[1])
+            processed_files.append(output[2])
+            if delete_processed:
+                logger.info("Deleting file '{}' as it has been processed."
+                            .format(output[1]))
+                os.remove(output[1])
+            if not remaining_files:
+                # Everything should have been handled so we can exit.
+                break
+
+        logger.info("Remaining files to process: {}."
+                    .format(len(remaining_files)))
+        logger.debug("Remaining files to process: {}.".format(remaining_files))
+        logger.info("Active threads: {}."
+                    .format(len([thread for thread in threads
+                                 if thread.is_alive()])))
         logger.info("Number of remaining requests to process: {}."
-                    .format(requests))
+                    .format(len(requests)))
 
     # After everything is done, terminate the processing process (by force
     # if it exceeds the time-out).
     logger.info("Terminating AveragingWorker.")
     pipe_start.send("STOP_WORKER")
-    averaging_worker.join(timeout=20)
-    averaging_worker.terminate()
+    processing_worker.join(timeout=20)
+    processing_worker.terminate()
 
 
 if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
 
     requests = retrieve_hourly(
-            start=PartialDateTime(2003, 1, 1),
-            end=PartialDateTime(2003, 12, 1))
-    retrieval_processing(requests, n_threads=30,
-                         delete_processed=True,
-                         soft_filesize_limit=10)
+            variable='2t',
+            start=PartialDateTime(2004, 1, 1),
+            end=PartialDateTime(2004, 2, 1))
+    retrieval_processing(
+            requests, n_threads=30, delete_processed=True, overwrite=False,
+            soft_filesize_limit=10)
