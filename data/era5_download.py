@@ -2,6 +2,7 @@
 """Tools for downloading ERA5 data using the CDS API.
 
 """
+from copy import deepcopy
 from datetime import datetime
 import logging
 import logging.config
@@ -406,8 +407,10 @@ class DownloadThread(Thread):
 
         # Configures a logger named after the class using the 'wildfires'
         # package logging configuration.
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self.config_dict = LOGGING.copy()
+        self.logger_name = "{}.{:03d}".format(self.__class__.__name__,
+                                              self.id_index)
+        self.logger = logging.getLogger(self.logger_name)
+        self.config_dict = deepcopy(LOGGING)
         self.config_dict['formatters']['default']['format'] = (
             self.config_dict['formatters']['default']['format'].replace(
                 "%(message)s",
@@ -415,7 +418,7 @@ class DownloadThread(Thread):
         orig_loggers = self.config_dict.pop('loggers')
         orig_loggers_dict = orig_loggers[list(orig_loggers.keys())[0]]
         self.config_dict['loggers'] = dict(
-            ((self.__class__.__name__, orig_loggers_dict),))
+            ((self.logger_name, orig_loggers_dict),))
         logging.config.dictConfig(self.config_dict)
 
         # Need quiet=True, because otherwise the initialisation of Client
@@ -453,8 +456,10 @@ class AveragingWorker(Process):
 
         # Configures a logger named after the class using the 'wildfires'
         # package logging configuration.
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self.config_dict = LOGGING.copy()
+        self.logger_name = "{}.{:03d}".format(self.__class__.__name__,
+                                              self.id_index)
+        self.logger = logging.getLogger(self.logger_name)
+        self.config_dict = deepcopy(LOGGING)
         self.config_dict['formatters']['default']['format'] = (
             self.config_dict['formatters']['default']['format'].replace(
                 "%(message)s",
@@ -462,8 +467,9 @@ class AveragingWorker(Process):
         orig_loggers = self.config_dict.pop('loggers')
         orig_loggers_dict = orig_loggers[list(orig_loggers.keys())[0]]
         self.config_dict['loggers'] = dict(
-            ((self.__class__.__name__, orig_loggers_dict),))
+            ((self.logger_name, orig_loggers_dict),))
         logging.config.dictConfig(self.config_dict)
+
 
         self.logger.debug("Initialised AveragingWorker with id_index={}."
                           .format(self.id_index))
@@ -759,8 +765,8 @@ if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
 
     requests = retrieve_hourly(
-            start=PartialDateTime(2002, 1, 1),
-            end=PartialDateTime(2002, 12, 1))
+            start=PartialDateTime(2003, 1, 1),
+            end=PartialDateTime(2003, 12, 1))
     retrieval_processing(requests, n_threads=30,
                          delete_processed=True,
-                         soft_filesize_limit=50)
+                         soft_filesize_limit=10)

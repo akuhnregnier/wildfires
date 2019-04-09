@@ -11,7 +11,7 @@ LOGGING = {
     'disable_existing_loggers': False,
     'formatters': {
         'default': {
-            'format': ('%(asctime)s:%(levelname)-8s:%(name)-15s'
+            'format': ('%(asctime)s:%(levelname)-8s:%(name)-20s'
                        ':%(lineno)-5s:%(funcName)-30s:%(message)s'),
             },
     },
