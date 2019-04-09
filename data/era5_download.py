@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
+"""Tools for downloading ERA5 data using the CDS API.
+
+"""
+from datetime import datetime
 import logging
 import logging.config
 from multiprocessing import Process, Pipe, Queue
 import os
 import sys
 from threading import Thread
-from time import clock
+from time import time
 from queue import Empty
 
 import cdsapi
-from datetime import datetime
 from dateutil.relativedelta import relativedelta
+import iris
 from iris.time import PartialDateTime
 import numpy as np
 
@@ -19,6 +23,41 @@ from wildfires.logging_config import LOGGING
 
 
 logger = logging.getLogger(__name__)
+
+
+def str_to_seconds(s):
+    """Pocesses a string including time units into a float in seconds.
+
+    Args:
+        s (str): Input string, including units.
+
+    Returns:
+        float: The processed time in seconds.
+
+    Examples:
+        >>> int(round(str_to_seconds('1')))
+        1
+        >>> int(round(str_to_seconds('1s')))
+        1
+        >>> int(round(str_to_seconds('2m')))
+        120
+        >>> int(round(str_to_seconds('3h')))
+        10800
+        >>> int(round(str_to_seconds('2d')))
+        172800
+
+    """
+    if isinstance(s, str):
+        multipliers = {
+            's': 1.,
+            'm': 60.,
+            'h': 60.**2.,
+            'd': 24. * 60**2.
+            }
+        for key, multiplier in zip(multipliers, list(multipliers.values())):
+            if key in s:
+                return float(s.strip(key)) * multiplier
+    return float(s)
 
 
 def format_variable(
@@ -59,13 +98,14 @@ def format_variable(
                 raise TypeError(type_error_msg)
             formatted_variables.append(single_value_formatter(single_value))
         return formatted_variables
-    else:
-        raise TypeError(type_error_msg)
+    raise TypeError(type_error_msg)
 
 
 def retrieve_hourly(variable='2m_temperature', levels='sfc', hours=None,
                     start=PartialDateTime(2000, 1, 1),
-                    end=PartialDateTime(2000, 2, 1), target_dir=DATA_DIR):
+                    end=PartialDateTime(2000, 2, 1),
+                    target_dir=os.path.join(DATA_DIR, 'ERA5'),
+                    download=False):
     """Retrieve hourly ERA5 data for the chosen variable.
 
     Args:
@@ -87,11 +127,16 @@ def retrieve_hourly(variable='2m_temperature', levels='sfc', hours=None,
         end (datetime): Final datetime. This is not inclusive. So
             start=PartialDateTime(2000, 1, 1), end=PartialDateTime(2000, 2, 1)
             will retrieve all data for January.
-        target (str): Directory path where the output files will be stored.
+        target_dir (str): Directory path where the output files will be stored.
+        download (bool): If True, download data one requests at a time. If
+            False, simply return the list of request tuples that can be
+            used to download data.
 
     Returns:
-        list: list of output filenames. There will be one output filename
-            per month containing all of the requested variables, named like
+        list: list of request tuples. Each tuple contains the dataset
+            string, the request body as a dictionary, and the filename as a
+            string. There will be one output filename per month containing
+            all of the requested variables, named like
             era5_hourly_reanalysis_{year}_{month}.nc.
 
     Note:
@@ -104,8 +149,10 @@ def retrieve_hourly(variable='2m_temperature', levels='sfc', hours=None,
         arguments will be ignored.
 
     """
-    # TODO: Won't need this anymore when Threads are implemented.
-    client = cdsapi.Client()
+    if download:
+        client = cdsapi.Client()
+    else:
+        client = None
 
     surface_level_dataset_id = 'reanalysis-era5-single-levels'
     pressure_level_dataset_id = 'reanalysis-era5-pressure-levels'
@@ -137,7 +184,7 @@ def retrieve_hourly(variable='2m_temperature', levels='sfc', hours=None,
 
         hours = format_variable(hours, 'hours', single_hour_formatter,
                                 (str, float, np.float, int, np.integer))
-    logger.debug('Requested hours:{}.'.format(hours))
+    logger.debug('Request hours:{}.'.format(hours))
 
     # 'levels' is only relevant for the pressure level dataset.
     if dataset == pressure_level_dataset_id:
@@ -151,7 +198,7 @@ def retrieve_hourly(variable='2m_temperature', levels='sfc', hours=None,
 
         levels = format_variable(levels, 'levels', single_level_formatter,
                                  (str, float, np.float, int, np.integer))
-    logger.debug('Requested levels:{}.'.format(levels))
+    logger.debug('Request levels:{}.'.format(levels))
 
     # Accumulate the date strings.
     monthly_dates = dict()
@@ -173,8 +220,9 @@ def retrieve_hourly(variable='2m_temperature', levels='sfc', hours=None,
                 '{:02d}'.format(current_date.day))
         current_date += relativedelta(days=+1)
 
+    requests = []
     for request_date in monthly_dates.values():
-        logger.debug('Requesting dates:{}.'.format(request_date))
+        logger.debug('Request dates:{}.'.format(request_date))
         request_dict = {
             'product_type': 'reanalysis',
             'format': 'netcdf',
@@ -194,8 +242,13 @@ def retrieve_hourly(variable='2m_temperature', levels='sfc', hours=None,
                 year=request_dict['year'][0], month=request_dict['month'][0]))
 
         request = (dataset, request_dict, target_file)
-        client.retrieve(*request)
-        logger.info("Finished download to:'{}'.".format(target_file))
+        requests.append(request)
+        if download:
+            logger.info("Starting download to:'{}'.".format(target_file))
+            client.retrieve(*request)
+            logger.info("Finished download to:'{}'.".format(target_file))
+
+    return requests
 
 
 def retrieve_monthly(variable='167.128', start=PartialDateTime(2000, 1),
@@ -244,7 +297,7 @@ def retrieve_monthly(variable='167.128', start=PartialDateTime(2000, 1),
     end = PartialDateTime(end.year, end.month)
 
     decades = sorted(list(np.array(
-        list(set([year // 10 for year in range(start.year, end.year + 1)])))
+        list(set(year // 10 for year in range(start.year, end.year + 1))))
         * 10))
 
     for decade in decades:
@@ -260,11 +313,12 @@ def retrieve_monthly(variable='167.128', start=PartialDateTime(2000, 1),
 
         date_request_string = '/'.join(requested_dates)
         decade_target_file = os.path.join(
-                target_dir, 'era5_moda_{}_{}.nc'.format(variable, decade))
+            target_dir, 'era5_moda_{}_{}.nc'.format(variable, decade))
 
         logger.debug('date request:{}'.format(date_request_string))
 
-        client.retrieve("reanalysis-era5-complete",
+        client.retrieve(
+            "reanalysis-era5-complete",
             {
                 'class': 'ea',
                 'expver': '1',
@@ -275,10 +329,11 @@ def retrieve_monthly(variable='167.128', start=PartialDateTime(2000, 1),
                 'param': '167.128',
                 'levtype': 'sfc',
                 'date': date_request_string,
-                'decade': str(decade), 'grid': '0.25/0.25', # Optional. Subset (clip) to an area. Specify as N/W/S/E in
-                # Geographic lat/long degrees. Southern latitudes and western
-                # longitudes must be given as negative numbers. Requires "grid"
-                # to be set to a regular grid, e.g. "0.25/0.25".
+                'decade': str(decade), 'grid': '0.25/0.25',
+                # Optional. Subset (clip) to an area. Specify as N/W/S/E in
+                # Geographic lat/long degrees. Southern latitudes and
+                # western longitudes must be given as negative numbers.
+                # Requires "grid" to be set to a regular grid like "0.25/0.25".
                 # 'area': '89.75/-179.75/-89.75/179.75',
                 'format': 'netcdf'
             },
@@ -350,6 +405,7 @@ class LoggingMixin:
 
 
 class DownloadThread(Thread, LoggingMixin):
+    """Retrieve data using the CDS API."""
 
     def __init__(self, id_index, request, queue, logger):
         super().__init__()
@@ -380,6 +436,7 @@ class DownloadThread(Thread, LoggingMixin):
 
 
 class AveragingWorker(Process, LoggingMixin):
+    """Compute monthly averages using filenames passed in via a pipe."""
 
     def __init__(self, id_index, pipe, logger):
         super().__init__()
@@ -391,10 +448,35 @@ class AveragingWorker(Process, LoggingMixin):
                  .format(self.id_index))
 
     def process(self, filename):
-        # TODO
+        """Performs monthly averaging on the data in the given file.
+
+        Args:
+            filename (str): Specifies the file holding the data to be averaged.
+
+        Returns:
+            int: 0 for successful computation of the average. 1 is returned
+                if an error is encountered. Note that exceptions are merely
+                logged and not raised.
+            str: The original filename.
+            str or None: The output filename (if successful) or None.
+
+        """
         self.log('Processing: {}.'.format(filename))
-        # If everything went well.
-        return (0, filename)
+        try:
+            cubes = iris.load(filename)
+            cubes = iris.cube.CubeList(
+                [cube.collapsed('time', iris.analysis.MEAN) for cube in cubes])
+            # Realise data so we don't end up storing dask operations
+            # instead of numpy arrays.
+            [cube.data for cube in cubes]
+            save_name = filename.split('.nc')[0] + '_monthly_mean.nc'
+            iris.save(cubes, save_name, zlib=False)
+            # If everything went well.
+            return (0, filename, save_name)
+        except Exception:
+            logger.exception("Error during processing of '{}'."
+                             .format(filename))
+            return (1, filename, None)
 
     def run(self):
         try:
@@ -407,33 +489,19 @@ class AveragingWorker(Process, LoggingMixin):
                     break
                 self.log("Received file: '{}'. Starting processing."
                          .format(file_to_process))
-                status = self.process(file_to_process)
+                output = self.process(file_to_process)
                 self.log("Finished processing '{}' with status {}."
-                         .format(file_to_process, status))
-                self.pipe.send(status)
-                self.log("Sent status {}.".format(status))
+                         .format(file_to_process, output))
+                self.pipe.send(output)
+                self.log("Sent status {}.".format(output))
         except Exception:
             self.pipe.send(sys.exc_info())
         finally:
             self.log("Exiting.")
 
 
-def str_to_seconds(s):
-    if isinstance(s, str):
-        multipliers = {
-                's': 1.,
-                'm': 60.,
-                'h': 60.**2.,
-                'd': 24. * 60**2.
-                }
-        for key, multiplier in zip(multipliers, list(multipliers.values())):
-            if key in s:
-                return float(s.strip(key)) * multiplier
-    return float(s)
-
-
-def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
-                         timeout='3d'):
+def retrieval_processing(requests, n_threads=4, soft_filesize_limit=50,
+                         timeout='3d', delete_processed=True, overwrite=False):
     """Start retrieving and processing data asynchronously.
 
     The calling process spawns one non-blocking process just for the
@@ -458,46 +526,62 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
         n_threads (int): The maximum number of data download threads to
             open at any one time. This corresponds to the number of open
             requests to the CDS API.
-        soft_filesize_limit (float): If the cumulative size of downloaded,
-            non-processed files on disk in GB exceeds this value, downloading
-            of new files (ie. spawning of new threads) will cease until the
-            aforementioned cumulative size drops below the threshold again.
-            Please note that this threshold does not take into account the
-            file sizes of processed files, ONLY the raw downloaded files
-            resulting from the requests made to the CDS API. Exceeding the
-            threshold also does not terminate existing threads, meaning
-            that at most `n_threads - 1` downloads could still occur before
-            requests are ceased entirely. If None, no limit is applied.
+        soft_filesize_limit (float): If the cumulative size of downloaded
+            and processed files on disk (see `delete_processed`) in GB
+            exceeds this value, downloading of new files (ie. spawning of
+            new threads) will cease until the aforementioned cumulative
+            size drops below the threshold again. Exceeding the threshold
+            does not terminate existing download threads or the processing
+            worker, meaning that at most `n_threads - 1` downloads and
+            processing of files in the worker queue could still occur
+            before requests and processing are ceased entirely. If None, no
+            limit is applied.
         timeout (float or str): Time-out after which the function
             terminates and ceases downloads as well as processing. If None, no
             limit is applied. If given as a float, the units are in
             seconds. A string may be given, in which case the units may be
             dictated. For example, '1s' would refer to one second, '1m' to
             one minute, '1h' to one hour, and '2d' to two days.
+        delete_processed (bool): If True, remove downloaded files that have
+            been successfully processed.
+        overwrite (bool): If True, download files which have already been
+            downloaded again. Note that no checks are made for broken
+            files due to interrupted downloads or some similar error (Todo).
 
-    TODO:
+    Todo:
         Soft time-out which does not cause an abrupt exit of the program
         (using an Exception) but allows the threads/process to exit
         gracefully.
 
+        Check that downloaded files (or pre-existing downloaded files in
+        case of overwrite=False) are intact and match the request contents.
+
     """
-    start_time = clock()
+    start_time = time()
     if isinstance(timeout, str):
         timeout = str_to_seconds(timeout)
     requests = requests.copy()
+    timeout_ramp = RampVar(2, 30, 10)
+    threads = []
+    remaining_files = []
+    total_files = []
+    processed_files = []
+    issued_filesize_warning = False
+    if delete_processed:
+        raw_files = remaining_files
+    else:
+        raw_files = total_files
+
     worker_index = 0
     pipe_start, pipe_end = Pipe()
     averaging_worker = AveragingWorker(worker_index, pipe_end, logger)
     averaging_worker.start()
     worker_index += 1
 
-    timeout_ramp = RampVar(0.5, 20, 10)
     retrieve_queue = Queue()
 
-    threads = []
-    remaining_files = []
     while requests or remaining_files or threads:
-        if clock() - start_time > timeout:
+        if time() - start_time > timeout:
             raise RuntimeError("Timeout exceeded (timeout was {})."
                                .format(timeout))
         to_remove = []
@@ -513,20 +597,35 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
         logger.debug("Current number of threads: {}.".format(len(threads)))
         new_threads = []
         while len(threads) < n_threads and requests:
-            filesize_sum = (sum([os.path.getsize(f) for f in remaining_files])
+            check_files = raw_files + processed_files
+            filesize_sum = (sum([os.path.getsize(f) for f in check_files])
                             / 1000**3)
             if filesize_sum < soft_filesize_limit:
+                if issued_filesize_warning:
+                    issued_filesize_warning = False
+                    logger.warning(
+                        "Soft file size limit no longer exceeded. Requested "
+                        "limit: {0.1e} GB. Observed: {:0.1e} GB. Active "
+                        "threads: {}."
+                        .format(soft_filesize_limit, filesize_sum,
+                                len(threads)))
+                new_request = requests.pop()
+                new_filename = new_request[2]
+                if os.path.isfile(new_filename) and not overwrite:
+                    logger.info("'{}' already exists. Not downloading again."
+                                .format(new_filename))
+                    continue
                 new_thread = DownloadThread(
-                    worker_index, requests.pop(), retrieve_queue, logger)
+                    worker_index, new_request, retrieve_queue, logger)
                 new_threads.append(new_thread)
                 threads.append(new_thread)
                 worker_index += 1
             else:
-                logger.warning("Soft file size limit exceeded. Requested "
-                               "limit: {0.1e} GB. Observed: {:0.1e} GB. "
-                               "Active threads: {}"
-                               .format(soft_filesize_limit, filesize_sum,
-                                       len(threads)))
+                logger.warning(
+                    "Soft file size limit exceeded. Requested limit: {0.1e} "
+                    "GB. Observed: {:0.1e} GB. Active threads: {}."
+                    .format(soft_filesize_limit, filesize_sum, len(threads)))
+                issued_filesize_warning = True
 
         for new_thread in new_threads:
             new_thread.start()
@@ -536,10 +635,19 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
             # something.
             logger.debug("Waiting for a DownloadThread to finish.")
             retrieve_outputs = []
-            # TODO
-            # Check for Empty
-            # Do timeout
-            retrieve_outputs.append(retrieve_queue.get())
+            get_timeout = timeout + ((start_time - time()) / 2)
+            # This would only fail if the lines between here and the
+            # previous timeout check involving time() took an exorbitantly
+            # large time.
+            assert get_timeout > 0, (
+                "Time-out should be positive. Got {} instead."
+                .format(get_timeout))
+            try:
+                retrieve_outputs.append(
+                    retrieve_queue.get(timeout=get_timeout))
+            except Empty:
+                logger.exception("No data downloaded within {:0.1e} s."
+                                 .format(get_timeout))
             # If there is something else in the queue, retrieve this until
             # nothing is left.
             while not retrieve_queue.empty():
@@ -548,15 +656,21 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
             logger.debug("DownloadThread output: {}.".format(retrieve_outputs))
             # Handle the output.
             for retrieve_output in retrieve_outputs:
-                # TODO: Handle this?
                 if isinstance(retrieve_output[1], Exception):
-                    raise retrieve_output[1].with_traceback(retrieve_output[2])
+                    # Re-raise exception here complete with traceback, to
+                    # use logging exception convenience function.
+                    try:
+                        raise retrieve_output[1].with_traceback(
+                                retrieve_output[2])
+                    except Exception:
+                        logger.exception("Exception while downloading data.")
                 # If it is a filename and not an exception, add this to the
                 # queue for the processing worker.
                 logger.debug("Sending filename to worker: {}."
                              .format(retrieve_output))
                 pipe_start.send(retrieve_output)
                 remaining_files.append(retrieve_output)
+                total_files.append(retrieve_output)
 
         if not threads and not requests and not remaining_files:
             logger.info("No remaining requests, files or threads.")
@@ -569,6 +683,7 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
 
         logger.debug("Polling processing worker pipe with timeout={:0.1f}."
                      .format(worker_timeout))
+        # The call to poll will block for `worker_timeout` seconds.
         while pipe_start.poll(timeout=worker_timeout):
             output = pipe_start.recv()
             # The output may contain sys.exc_info() in case of an Exception.
@@ -577,18 +692,31 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
             # checking!) and [2] contains the traceback object, to be used
             # like: raise
             # sys.exc_info()[1].with_traceback(sys.exc_info()[2])
-            # TODO: handle this?
             if isinstance(output[1], Exception):
-                raise output[1].with_traceback(output[2])
-            # The output represents a status code.
+                # Re-raise exception here complete with traceback, to
+                # use logging exception convenience function.
+                try:
+                    raise output[1].with_traceback(output[2])
+                except Exception:
+                    logger.exception("Exception while processing data.")
+            # The first entry of the output represents a status code.
             if output[0] == 0:
                 logger.info("Processed file '{}' successfully. Removing it "
                             "from list of files to process."
                             .format(output[1]))
                 remaining_files.remove(output[1])
-                # Everything should have been handled if this is true.
+                processed_files.append(output[2])
+                if delete_processed:
+                    logger.info("Deleting file '{}' as it has been "
+                                "processed successfully"
+                                .format(output[1]))
+                    os.remove(output[1])
                 if not remaining_files:
+                    # Everything should have been handled so we can exit.
                     break
+            elif output[0] == 1:
+                logger.warning("Error during process of {}"
+                               .format(output[1]))
             else:
                 raise NotImplementedError("Other codes not handled yet!")
 
@@ -606,25 +734,27 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
 
 
 if __name__ == '__main__':
-    # logging.basicConfig(level=logging.DEBUG)
     logging.config.dictConfig(LOGGING)
 
-    # from logging_tree import printout
-    # printout()
+    from logging_tree import printout
+    printout()
 
-    # retrieve_monthly(start=PartialDateTime(2000, 1),
-    #                  end=PartialDateTime(2000, 1))
+    # requests = retrieve_hourly(
+    #         start=PartialDateTime(2001, 1, 1),
+    #         end=PartialDateTime(2001, 2, 1))
+    # retrieval_processing(requests, n_threads=1)
 
-    # retrieve_hourly(
-    #         variable='temperature',
-    #         start=PartialDateTime(2000, 1, 1),
-    #         end=PartialDateTime(2000, 1, 3),
-    #         levels='100',
-    #         target_dir='/tmp')
+    print(logger.handlers)
+    logger.info("Test")
+    logger.debug('Test2')
 
-    retrieval_processing([
-        ('dataset-name', {'a': 'test'}, '/tmp/filename.smth'),
-        ('dataset-name', {'a': 'test'}, '/tmp/filename.smth')
-        ],
-        n_threads=2)
+    class A(LoggingMixin):
+        def __init__(self, logger):
+            super().__init__()
+            self.logger = logger
 
+        def testing(self, msg):
+            self.log(msg)
+
+    a = A()
+    a.testing('mixing')
