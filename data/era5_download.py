@@ -6,14 +6,16 @@ from abc import ABC, abstractmethod
 import calendar
 from copy import deepcopy
 from datetime import datetime
+import json
 import logging
 import logging.config
 from multiprocessing import Process, Pipe, Queue
 import os
+from queue import Empty
 import sys
 from threading import Thread
-from time import time
-from queue import Empty
+from time import time, sleep
+import warnings
 
 import cdsapi
 from dateutil.relativedelta import relativedelta
@@ -476,6 +478,40 @@ class DownloadThread(Thread):
         self.logger.debug("Initialised DownloadThread with id_index={}."
                           .format(self.id_index))
 
+    @staticmethod
+    def get_request_log_file(request):
+        orig_dir, orig_filename = os.path.split(request[2])
+        request_log_file = os.path.join(
+                orig_dir, '.requests',
+                '.'.join(orig_filename.split('.')[:-1] + ['request']))
+        return request_log_file
+
+    @staticmethod
+    def retrieve_request(request):
+        """Retrieve the original request associated with the target
+        filename in the request.
+
+        """
+        try:
+            request_log_file = DownloadThread.get_request_log_file(request)
+            with open(request_log_file, 'r') as f:
+                stored_request = tuple(json.load(f))
+            return stored_request
+        except FileNotFoundError:
+            logger.error(
+                "Request log could not be found for the following file: {}."
+                .format(request[2]))
+            return False
+
+    def record_request(self):
+        request_log_file = self.get_request_log_file(self.request)
+        if not os.path.isdir(os.path.dirname(request_log_file)):
+            os.makedirs(os.path.dirname(request_log_file))
+        self.logger.debug("Recording request in file '{}'"
+                          .format(request_log_file))
+        with open(request_log_file, 'w') as f:
+            json.dump(self.request, f, indent=4)
+
     def run(self):
         try:
             self.logger.info('Requesting: {}'.format(self.formatted_request))
@@ -487,6 +523,7 @@ class DownloadThread(Thread):
                     "Filename '{}' not found despite request "
                     "{} having being issued.".format(
                         filename, self.request))
+            self.record_request()
             self.queue.put(self.request)
         except Exception:
             self.queue.put(sys.exc_info())
@@ -684,14 +721,21 @@ class AveragingWorker(Worker):
 
         """
         filename = request[2]
-        self.logger.debug('Processing: {}.'.format(filename))
+        self.logger.debug("Processing: '{}'.".format(filename))
         try:
             cubes = iris.load(filename)
-            cubes = iris.cube.CubeList(
-                [cube.collapsed('time', iris.analysis.MEAN) for cube in cubes])
-            # Realise data so we don't end up storing dask operations
-            # instead of numpy arrays.
-            [cube.data for cube in cubes]
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=(
+                    "Collapsing a non-contiguous coordinate. Metadata may not "
+                    "be fully descriptive for 'time'."))
+                cubes = iris.cube.CubeList(
+                    [cube.collapsed('time', iris.analysis.MEAN)
+                     for cube in cubes])
+                # TODO: Verify that dask arrays are indeed not being saved.
+                # Realise data so we don't end up storing dask arrays
+                # instead of numpy arrays.
+                # [cube.data for cube in cubes]
             save_name = self.output_filename(filename)
             iris.save(cubes, save_name, zlib=False)
             # If everything went well.
@@ -830,10 +874,46 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
                     if processing_worker.check_output(
                             new_request, expected_output):
                         logger.info(
-                            "'{}' already contains correct data. Not "
+                            "'{}' already contains correct processed data. Not "
                             "downloading raw data."
-                            .format(new_filename))
+                            .format(expected_output[2]))
                         continue
+                elif not overwrite and os.path.isfile(new_filename):
+                    if (DownloadThread.retrieve_request(new_request)
+                            == new_request):
+                        logger.warning(
+                            "'{}' already contains raw data for this "
+                            "request. But no processed data has been found. "
+                            "Sending request for processing now."
+                            .format(new_filename))
+                        # Taking a shortcut here - instead of spawning a
+                        # new DownloadThread and downloading the file,
+                        # emulate the behaviour of a DownloadThread by
+                        # sending the request (for which there is already
+                        # data, as required) to the queue normally used by
+                        # the DownloadThread instances, thereby signalling
+                        # that the file has been successfully 'downloaded',
+                        # ie. it is available for processing.
+                        retrieve_queue.put(new_request)
+                        # It takes some time for the queue to register this.
+                        # Allow up to 0.5 seconds for this to happen (just
+                        # to be sure).
+                        check_start = time()
+                        while time() - check_start < 0.5:
+                            if not retrieve_queue.empty():
+                                break
+                            sleep(0.01)
+                        else:
+                            assert not retrieve_queue.empty(), (
+                                "The queue should not be empty as we just "
+                                "called put.")
+                        continue
+                    else:
+                        logger.warning(
+                            "'{}' contains raw data for another request. "
+                            "Deleting this file and retrieving new request."
+                            .format(new_filename))
+                        os.remove(new_filename)
                 new_thread = DownloadThread(
                     worker_index, new_request, retrieve_queue)
                 new_threads.append(new_thread)
@@ -849,7 +929,9 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
         for new_thread in new_threads:
             new_thread.start()
 
-        if threads:
+        queue_empty = retrieve_queue.empty()
+        logger.debug("Retrieve queue is empty: {}.".format(queue_empty))
+        if threads or not queue_empty:
             # Wait for (at least) one of the threads to successfully download
             # something.
             logger.debug("Waiting for a DownloadThread to finish.")
@@ -890,7 +972,7 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
                 # queue for the processing worker.
                 logger.debug("Sending filename to worker: {}."
                              .format(retrieve_output[2]))
-                pipe_start.send(retrieve_output[2])
+                pipe_start.send(retrieve_output)
                 remaining_files.append(retrieve_output[2])
                 total_files.append(retrieve_output[2])
 
@@ -972,5 +1054,5 @@ if __name__ == '__main__':
             start=PartialDateTime(2004, 1, 1),
             end=PartialDateTime(2004, 2, 1))
     retrieval_processing(
-            requests, n_threads=30, delete_processed=True, overwrite=False,
+            requests, n_threads=30, delete_processed=False, overwrite=False,
             soft_filesize_limit=10)
