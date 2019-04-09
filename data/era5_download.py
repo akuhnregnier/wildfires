@@ -150,9 +150,12 @@ def retrieve_hourly(variable='2m_temperature', levels='sfc', hours=None,
 
     """
     if download:
-        client = cdsapi.Client()
+        client = cdsapi.Client(quiet=True)
     else:
         client = None
+
+    if not os.path.isdir(target_dir):
+        os.makedirs(target_dir)
 
     surface_level_dataset_id = 'reanalysis-era5-single-levels'
     pressure_level_dataset_id = 'reanalysis-era5-pressure-levels'
@@ -283,7 +286,7 @@ def retrieve_monthly(variable='167.128', start=PartialDateTime(2000, 1),
 
     """
     output_filenames = []
-    client = cdsapi.Client()
+    client = cdsapi.Client(quiet=True)
     # ERA5 monthly data is timestamped to the first of the month, hence dates
     # have to be specified as a list in this format:
     # '19950101/19950201/19950301/.../20051101/20051201'.
@@ -392,36 +395,41 @@ class RampVar:
         self.index = -1
 
 
-class LoggingMixin:
-    """Relies on child classes defining a 'logger' and 'id_index'
-    attribute to emit logging messages.
-
-    """
-
-    def log(self, msg, level=logging.DEBUG):
-        """Emit logging messages at the specified level."""
-        msg = '{:03d} | {}'.format(self.id_index, msg)
-        self.logger.log(level, msg)
-
-
-class DownloadThread(Thread, LoggingMixin):
+class DownloadThread(Thread):
     """Retrieve data using the CDS API."""
 
-    def __init__(self, id_index, request, queue, logger):
+    def __init__(self, id_index, request, queue):
         super().__init__()
         self.id_index = id_index
         self.request = request
         self.queue = queue
-        self.logger = logger
-        self.client = cdsapi.Client()
-        self.log("Initialised DownloadThread with id_index={}."
-                 .format(self.id_index))
+
+        # Configures a logger named after the class using the 'wildfires'
+        # package logging configuration.
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.config_dict = LOGGING.copy()
+        self.config_dict['formatters']['default']['format'] = (
+            self.config_dict['formatters']['default']['format'].replace(
+                "%(message)s",
+                "{:03d} | %(message)s".format(self.id_index)))
+        orig_loggers = self.config_dict.pop('loggers')
+        orig_loggers_dict = orig_loggers[list(orig_loggers.keys())[0]]
+        self.config_dict['loggers'] = dict(
+            ((self.__class__.__name__, orig_loggers_dict),))
+        logging.config.dictConfig(self.config_dict)
+
+        # Need quiet=True, because otherwise the initialisation of Client
+        # will call logging.basicConfig, which modifies the root logger and
+        # results in duplicated logging messages with our current setup.
+        self.client = cdsapi.Client(quiet=True)
+        self.logger.debug("Initialised DownloadThread with id_index={}."
+                          .format(self.id_index))
 
     def run(self):
         try:
-            self.log('Requesting: {}'.format(self.request))
+            self.logger.debug('Requesting: {}'.format(self.request))
             self.client.retrieve(*self.request)
-            self.log('Completed request.')
+            self.logger.debug('Completed request.')
             filename = self.request[2]
             if not os.path.isfile(filename):
                 raise RuntimeError(
@@ -432,20 +440,33 @@ class DownloadThread(Thread, LoggingMixin):
         except Exception:
             self.queue.put(sys.exc_info())
         finally:
-            self.log("Exiting.")
+            self.logger.debug("Exiting.")
 
 
-class AveragingWorker(Process, LoggingMixin):
+class AveragingWorker(Process):
     """Compute monthly averages using filenames passed in via a pipe."""
 
-    def __init__(self, id_index, pipe, logger):
+    def __init__(self, id_index, pipe):
         super().__init__()
         self.id_index = id_index
         self.pipe = pipe
-        self.logger = logger
 
-        self.log("Initialised AveragingWorker with id_index={}."
-                 .format(self.id_index))
+        # Configures a logger named after the class using the 'wildfires'
+        # package logging configuration.
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.config_dict = LOGGING.copy()
+        self.config_dict['formatters']['default']['format'] = (
+            self.config_dict['formatters']['default']['format'].replace(
+                "%(message)s",
+                "{:03d} | %(message)s".format(self.id_index)))
+        orig_loggers = self.config_dict.pop('loggers')
+        orig_loggers_dict = orig_loggers[list(orig_loggers.keys())[0]]
+        self.config_dict['loggers'] = dict(
+            ((self.__class__.__name__, orig_loggers_dict),))
+        logging.config.dictConfig(self.config_dict)
+
+        self.logger.debug("Initialised AveragingWorker with id_index={}."
+                          .format(self.id_index))
 
     def process(self, filename):
         """Performs monthly averaging on the data in the given file.
@@ -461,7 +482,7 @@ class AveragingWorker(Process, LoggingMixin):
             str or None: The output filename (if successful) or None.
 
         """
-        self.log('Processing: {}.'.format(filename))
+        self.logger.debug('Processing: {}.'.format(filename))
         try:
             cubes = iris.load(filename)
             cubes = iris.cube.CubeList(
@@ -474,33 +495,33 @@ class AveragingWorker(Process, LoggingMixin):
             # If everything went well.
             return (0, filename, save_name)
         except Exception:
-            logger.exception("Error during processing of '{}'."
-                             .format(filename))
+            self.logger.exception("Error while processing '{}'."
+                                  .format(filename))
             return (1, filename, None)
 
     def run(self):
         try:
-            self.log("Started listening for filenames to process.")
+            self.logger.debug("Started listening for filenames to process.")
             while True:
                 file_to_process = self.pipe.recv()
                 if file_to_process == "STOP_WORKER":
                     logger.debug(
                         "STOP_WORKER received, breaking out of loop.")
                     break
-                self.log("Received file: '{}'. Starting processing."
-                         .format(file_to_process))
+                self.logger.debug("Received file: '{}'. Starting processing."
+                                  .format(file_to_process))
                 output = self.process(file_to_process)
-                self.log("Finished processing '{}' with status {}."
-                         .format(file_to_process, output))
+                self.logger.debug("Finished processing '{}' with status {}."
+                                  .format(file_to_process, output))
                 self.pipe.send(output)
-                self.log("Sent status {}.".format(output))
+                self.logger.debug("Sent status {}.".format(output))
         except Exception:
             self.pipe.send(sys.exc_info())
         finally:
-            self.log("Exiting.")
+            self.logger.debug("Exiting.")
 
 
-def retrieval_processing(requests, n_threads=4, soft_filesize_limit=50,
+def retrieval_processing(requests, n_threads=4, soft_filesize_limit=1000,
                          timeout='3d', delete_processed=True, overwrite=False):
     """Start retrieving and processing data asynchronously.
 
@@ -574,7 +595,7 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=50,
 
     worker_index = 0
     pipe_start, pipe_end = Pipe()
-    averaging_worker = AveragingWorker(worker_index, pipe_end, logger)
+    averaging_worker = AveragingWorker(worker_index, pipe_end)
     averaging_worker.start()
     worker_index += 1
 
@@ -616,7 +637,7 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=50,
                                 .format(new_filename))
                     continue
                 new_thread = DownloadThread(
-                    worker_index, new_request, retrieve_queue, logger)
+                    worker_index, new_request, retrieve_queue)
                 new_threads.append(new_thread)
                 threads.append(new_thread)
                 worker_index += 1
@@ -664,6 +685,7 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=50,
                                 retrieve_output[2])
                     except Exception:
                         logger.exception("Exception while downloading data.")
+                        continue
                 # If it is a filename and not an exception, add this to the
                 # queue for the processing worker.
                 logger.debug("Sending filename to worker: {}."
@@ -700,7 +722,7 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=50,
                 except Exception:
                     logger.exception("Exception while processing data.")
             # The first entry of the output represents a status code.
-            if output[0] == 0:
+            elif output[0] == 0:
                 logger.info("Processed file '{}' successfully. Removing it "
                             "from list of files to process."
                             .format(output[1]))
@@ -715,7 +737,7 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=50,
                     # Everything should have been handled so we can exit.
                     break
             elif output[0] == 1:
-                logger.warning("Error during process of {}"
+                logger.warning("Error while processing {}"
                                .format(output[1]))
             else:
                 raise NotImplementedError("Other codes not handled yet!")
@@ -736,25 +758,9 @@ def retrieval_processing(requests, n_threads=4, soft_filesize_limit=50,
 if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
 
-    from logging_tree import printout
-    printout()
-
-    # requests = retrieve_hourly(
-    #         start=PartialDateTime(2001, 1, 1),
-    #         end=PartialDateTime(2001, 2, 1))
-    # retrieval_processing(requests, n_threads=1)
-
-    print(logger.handlers)
-    logger.info("Test")
-    logger.debug('Test2')
-
-    class A(LoggingMixin):
-        def __init__(self, logger):
-            super().__init__()
-            self.logger = logger
-
-        def testing(self, msg):
-            self.log(msg)
-
-    a = A()
-    a.testing('mixing')
+    requests = retrieve_hourly(
+            start=PartialDateTime(2002, 1, 1),
+            end=PartialDateTime(2002, 12, 1))
+    retrieval_processing(requests, n_threads=30,
+                         delete_processed=True,
+                         soft_filesize_limit=50)
