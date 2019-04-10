@@ -764,10 +764,6 @@ class AveragingWorker(Worker):
                 cubes = iris.cube.CubeList(
                     [cube.collapsed('time', iris.analysis.MEAN)
                      for cube in cubes])
-                # TODO: Verify that dask arrays are indeed not being saved.
-                # Realise data so we don't end up storing dask arrays
-                # instead of numpy arrays.
-                # [cube.data for cube in cubes]
             save_name = self.output_filename(filename)
             iris.save(cubes, save_name, zlib=False)
             # If everything went well.
