@@ -776,6 +776,37 @@ class AveragingWorker(Worker):
             return (1, filename, None)
 
 
+class ThreadList:
+    """A list of Thread instances."""
+    def __init__(self, threads=[]):
+        self.threads = threads
+
+    def __iter__(self):
+        return iter(self.threads)
+
+    def __len__(self):
+        return len(self.threads)
+
+    def append(self, thread):
+        self.threads.append(thread)
+
+    def prune(self):
+        """Remove stopped threads in-place.
+
+        Threads whose is_alive() method return False are removed.
+
+        """
+        to_remove = []
+        for thread in self.threads:
+            if not thread.is_alive():
+                logger.info('Worker {} has finished. Joining DownloadThread.'
+                            .format(thread.id_index))
+                to_remove.append(thread)
+        for completed_thread in to_remove:
+            completed_thread.join(1.)
+            self.threads.remove(completed_thread)
+
+
 def retrieval_processing(requests, processing_class=AveragingWorker,
                          n_threads=4, soft_filesize_limit=1000,
                          timeout='3d', delete_processed=True,
@@ -852,7 +883,7 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
         timeout = str_to_seconds(timeout)
     requests = requests.copy()
     timeout_ramp = RampVar(2, 30, 10)
-    threads = []
+    threads = ThreadList()
     remaining_files = []
     total_files = []
     processed_files = []
@@ -874,16 +905,7 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
         if time() - start_time > timeout:
             raise RuntimeError("Timeout exceeded (timeout was {})."
                                .format(timeout))
-        to_remove = []
-        for thread in threads:
-            if not thread.is_alive():
-                logger.info('Worker {} has finished. Joining DownloadThread.'
-                            .format(thread.id_index))
-                to_remove.append(thread)
-        for completed_thread in to_remove:
-            completed_thread.join(1.)
-            threads.remove(completed_thread)
-
+        threads.prune()
         logger.info("Remaining files to process: {}."
                     .format(len(remaining_files)))
         logger.debug("Remaining files to process: {}.".format(remaining_files))
