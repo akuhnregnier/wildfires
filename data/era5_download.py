@@ -1048,7 +1048,7 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
         logger.info("Remaining files to process: {}."
                     .format(len(remaining_files)))
         logger.debug("Remaining files to process: {}.".format(remaining_files))
-        logger.info("Active threads: {}."
+        logger.info("Active threads before cleanup: {}."
                     .format(len([thread for thread in threads
                                  if thread.is_alive()])))
         logger.info("Number of remaining requests to process: {}."
