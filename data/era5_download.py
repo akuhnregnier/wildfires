@@ -25,19 +25,12 @@ from iris.time import PartialDateTime
 import numpy as np
 
 from wildfires.data.datasets import DATA_DIR
+from wildfires.data.era5_tables import get_short_to_long
 from wildfires.logging_config import LOGGING
 
 
 logger = logging.getLogger(__name__)
-variable_mapping = {
-    '2m_temperature': '2 metre temperature',
-    '2 metre temperature': '2 metre temperature',
-    '2t': '2 metre temperature',
-    '2t': '2 metre temperature',
-    # FIXME
-    '10u': '10 metre U wind component',
-    '10v': '10 metre V wind component',
-    }
+variable_mapping = get_short_to_long()
 
 
 def format_request(request):
@@ -223,7 +216,6 @@ def retrieve_hourly(variable='2m_temperature', levels='sfc', hours=None,
     else:
         logger.debug('Retrieving pressure level dataset.')
         dataset = pressure_level_dataset_id
-
 
     if hours is None:
         hours = ['{:02d}:00'.format(hour) for hour in range(0, 24)]
@@ -630,9 +622,6 @@ class Worker(Process, ABC):
 class AveragingWorker(Worker):
     """Compute monthly averages using filenames passed in via a pipe."""
 
-    def __init__(self, id_index, pipe, *args, **kwargs):
-        super().__init__(id_index, pipe, *args, **kwargs)
-
     def output_filename(self, input_filename):
         """Construct the output filename from the input filename."""
         return input_filename.split('.nc')[0] + '_monthly_mean.nc'
@@ -757,8 +746,7 @@ class AveragingWorker(Worker):
             # If everything went well.
             if self.check_output(request, (0, filename, save_name)):
                 return (0, filename, save_name)
-            else:
-                return (2, filename, None)
+            return (2, filename, None)
         except Exception:
             self.logger.exception("Error while processing '{}'."
                                   .format(filename))
@@ -830,6 +818,11 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
         Check that downloaded files have correct grid (not relevant if grid
         is not specified and only the default is retrieved).
 
+        Check that downloaded files have the correct units, which can be
+        achieved by using wildfires.data.era5_tables.get_table_dict, as it
+        returns a dictionary mapping long variable names to (amongst
+        others) units.
+
     """
     start_time = time()
     if isinstance(timeout, str):
@@ -894,8 +887,8 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
                     if processing_worker.check_output(
                             new_request, expected_output):
                         logger.info(
-                            "'{}' already contains correct processed data. Not "
-                            "downloading raw data."
+                            "'{}' already contains correct processed data. "
+                            "Not downloading raw data."
                             .format(expected_output[2]))
                         continue
                 if not overwrite and os.path.isfile(new_filename):

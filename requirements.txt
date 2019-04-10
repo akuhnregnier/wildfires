@@ -1,7 +1,10 @@
+beautifulsoup4
+cdsapi
 cf_units
 gitpython
 h5py  # reading hdf5 files (.hdf5)
 iris
+joblib
 jupyter
 matplotlib
 netCDF4
@@ -14,3 +17,4 @@ scipy
 statsmodels
 tqdm
 rasterio
+requests
