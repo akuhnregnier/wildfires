@@ -861,7 +861,13 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
             completed_thread.join(1.)
             threads.remove(completed_thread)
 
+        logger.info("Remaining files to process: {}."
+                    .format(len(remaining_files)))
+        logger.debug("Remaining files to process: {}.".format(remaining_files))
+        logger.info("Number of remaining requests to process: {}."
+                    .format(len(requests)))
         logger.info("Remaining active threads: {}.".format(len(threads)))
+
         new_threads = []
         while len(threads) < n_threads and requests:
             check_files = raw_files + processed_files
@@ -993,8 +999,7 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
                 total_files.append(retrieve_output[2])
 
         if not threads and not requests and not remaining_files:
-            logger.info("No remaining requests, files or threads.")
-            break
+            continue
         elif threads:
             worker_timeout = 0
             timeout_ramp.reset()
@@ -1044,15 +1049,8 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
             if not remaining_files:
                 # Everything should have been handled so we can exit.
                 break
-
-        logger.info("Remaining files to process: {}."
-                    .format(len(remaining_files)))
-        logger.debug("Remaining files to process: {}.".format(remaining_files))
-        logger.info("Active threads before cleanup: {}."
-                    .format(len([thread for thread in threads
-                                 if thread.is_alive()])))
-        logger.info("Number of remaining requests to process: {}."
-                    .format(len(requests)))
+    else:
+        logger.info("No remaining requests, files or threads.")
 
     # After everything is done, terminate the processing process (by force
     # if it exceeds the time-out).
