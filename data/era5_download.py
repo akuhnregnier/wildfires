@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*_
 """Tools for downloading ERA5 data using the CDS API.
 
 """
@@ -33,6 +34,9 @@ variable_mapping = {
     '2 metre temperature': '2 metre temperature',
     '2t': '2 metre temperature',
     '2t': '2 metre temperature',
+    # FIXME
+    '10u': '10 metre U wind component',
+    '10v': '10 metre V wind component',
     }
 
 
@@ -204,6 +208,9 @@ def retrieve_hourly(variable='2m_temperature', levels='sfc', hours=None,
     else:
         client = None
 
+    if isinstance(variable, str):
+        variable = [variable]
+
     if not os.path.isdir(target_dir):
         os.makedirs(target_dir)
 
@@ -216,6 +223,7 @@ def retrieve_hourly(variable='2m_temperature', levels='sfc', hours=None,
     else:
         logger.debug('Retrieving pressure level dataset.')
         dataset = pressure_level_dataset_id
+
 
     if hours is None:
         hours = ['{:02d}:00'.format(hour) for hour in range(0, 24)]
@@ -674,7 +682,21 @@ class AveragingWorker(Worker):
                 calendar.monthrange(max(years), max(months))[1])), max(hours)),
             )
 
-        output_cubes = iris.load(output_file)
+        request_variables = request_dict['variable']
+        # TODO: Can this be made more fine-grained to check each individual
+        # expected name against the corresponding cube? This is impeded
+        # by not knowing how the cubes are ordered with respect to the
+        # ordering of variables in the original request.
+        expected_names = []
+        for variable in request_variables:
+            expected_names.append(variable)
+            expected_names.append(variable_mapping[variable])
+        try:
+            output_cubes = iris.load(output_file)
+        except Exception:
+            self.logger.exception("Error while loading '{}'."
+                                  .format(output_file))
+            return False
         for cube in output_cubes:
             bounds = cube.coord('time').cell(0).bound
             which_failed = []
@@ -684,16 +706,11 @@ class AveragingWorker(Worker):
                 error_details.append("Expected bounds {}, got bounds {}."
                                      .format(bounds, datetime_range))
             cube_names = {cube.standard_name, cube.long_name, cube.var_name}
-            request_variable = request_dict['variable']
-            expected_names = {
-                request_variable,
-                variable_mapping[request_variable]
-                }
             if not cube_names.intersection(expected_names):
                 which_failed.append("variable name check")
                 error_details.append(
                     "None of {} matched one of the expected names {}."
-                    .format(', '.join(cube_names),
+                    .format(', '.join(map(str, cube_names)),
                             ', '.join(expected_names)))
             if which_failed:
                 which_failed = ' and '.join(which_failed)
@@ -724,7 +741,6 @@ class AveragingWorker(Worker):
         self.logger.debug("Processing: '{}'.".format(filename))
         try:
             cubes = iris.load(filename)
-
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message=(
                     "Collapsing a non-contiguous coordinate. Metadata may not "
@@ -769,6 +785,10 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
     The main process checks the output of these download threads, and if a
     new file has been downloaded successfully, it is added to the
     processing queue for the distinct processing process.
+
+    Note:
+        Using NetCDF and a 0.25 x 0.25 grid, each variable takes up ~1.5 GB
+        per pressure level per month.
 
     Args:
         requests (list): A list of 3 element tuples which are passed to the
@@ -848,7 +868,7 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
             completed_thread.join(1.)
             threads.remove(completed_thread)
 
-        logger.info("Active threads: {}.".format(len(threads)))
+        logger.info("Remaining active threads: {}.".format(len(threads)))
         new_threads = []
         while len(threads) < n_threads and requests:
             check_files = raw_files + processed_files
@@ -878,7 +898,7 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
                             "downloading raw data."
                             .format(expected_output[2]))
                         continue
-                elif not overwrite and os.path.isfile(new_filename):
+                if not overwrite and os.path.isfile(new_filename):
                     if (DownloadThread.retrieve_request(new_request)
                             == new_request):
                         logger.warning(
@@ -926,8 +946,11 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
                     .format(soft_filesize_limit, filesize_sum, len(threads)))
                 issued_filesize_warning = True
 
+        logger.debug("Starting {} new threads.".format(len(new_threads)))
         for new_thread in new_threads:
             new_thread.start()
+
+        logger.info("Active threads: {}.".format(len(threads)))
 
         queue_empty = retrieve_queue.empty()
         logger.debug("Retrieve queue is empty: {}.".format(queue_empty))
@@ -1050,9 +1073,9 @@ if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
 
     requests = retrieve_hourly(
-            variable='2t',
-            start=PartialDateTime(2004, 1, 1),
-            end=PartialDateTime(2004, 2, 1))
+            variable=['2t', '10u', '10v'],
+            start=PartialDateTime(1990, 1, 1),
+            end=PartialDateTime(2018, 1, 1))
     retrieval_processing(
-            requests, n_threads=30, delete_processed=False, overwrite=False,
-            soft_filesize_limit=10)
+            requests, n_threads=40, delete_processed=True, overwrite=False,
+            soft_filesize_limit=30)
