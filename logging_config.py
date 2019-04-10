@@ -21,39 +21,70 @@ LOGGING = {
             'level': 'INFO',
             'formatter': 'default',
         },
-        'file': {
-            'class': 'logging.FileHandler',
-            'level': 'INFO',
-            'formatter': 'default',
-            'filename': os.path.join(log_dir, 'log.log',),
-            'mode': 'a',
-        },
-        'root_file': {
+        'debug_file': {
             'class': 'logging.FileHandler',
             'level': 'DEBUG',
             'formatter': 'default',
-            'filename': os.path.join(log_dir, 'root_log.log',),
+            'filename': os.path.join(log_dir, 'wildfires_debug.log',),
             'mode': 'a',
         },
-        'warn_file': {
+        'info_file': {
+            'class': 'logging.FileHandler',
+            'level': 'INFO',
+            'formatter': 'default',
+            'filename': os.path.join(log_dir, 'wildfires_info.log',),
+            'mode': 'a',
+        },
+        'warning_file': {
             'class': 'logging.FileHandler',
             'level': 'WARNING',
             'formatter': 'default',
-            'filename': os.path.join(log_dir, 'warning_log.log',),
+            'filename': os.path.join(log_dir, 'wildfires_warning.log',),
+            'mode': 'a',
+        },
+        'root_debug_file': {
+            'class': 'logging.FileHandler',
+            'level': 'DEBUG',
+            'formatter': 'default',
+            'filename': os.path.join(log_dir, 'root_debug.log',),
+            'mode': 'a',
+        },
+        'root_info_file': {
+            'class': 'logging.FileHandler',
+            'level': 'INFO',
+            'formatter': 'default',
+            'filename': os.path.join(log_dir, 'root_info.log',),
+            'mode': 'a',
+        },
+        'root_warning_file': {
+            'class': 'logging.FileHandler',
+            'level': 'WARNING',
+            'formatter': 'default',
+            'filename': os.path.join(log_dir, 'root_warning.log',),
             'mode': 'a',
         },
     },
     'loggers': {
         'wildfires': {
             'level': 'DEBUG',
-            'handlers': ['console', 'file']
+            'handlers': [
+                'console',
+                'debug_file',
+                'info_file',
+                'warning_file'
+                ]
         },
         '': {
             'level': 'DEBUG',
-            'handlers': ['root_file', 'warn_file']
+            'handlers': [
+                'root_debug_file',
+                'root_info_file',
+                'root_warning_file'
+                ]
         },
     }
 }
+
 LOGGING['loggers']['__main__'] = LOGGING['loggers']['wildfires']
 
 
