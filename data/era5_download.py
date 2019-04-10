@@ -676,16 +676,22 @@ class AveragingWorker(Worker):
         # expected name against the corresponding cube? This is impeded
         # by not knowing how the cubes are ordered with respect to the
         # ordering of variables in the original request.
-        expected_names = []
+        # NOTE: The current approach achieves the same thing since matches
+        # are consumed, but it is more cumbersome.
+        expected_name_sets = []
         for variable in request_variables:
-            expected_names.append(variable)
-            expected_names.append(variable_mapping[variable])
+            expected_name_sets.append({
+                variable,
+                variable_mapping[variable]
+            })
         try:
             output_cubes = iris.load(output_file)
         except Exception:
             self.logger.exception("Error while loading '{}'."
                                   .format(output_file))
             return False
+
+        # Each cube will have one variable.
         for cube in output_cubes:
             bounds = cube.coord('time').cell(0).bound
             which_failed = []
@@ -694,13 +700,34 @@ class AveragingWorker(Worker):
                 which_failed.append("bounds check")
                 error_details.append("Expected bounds {}, got bounds {}."
                                      .format(bounds, datetime_range))
-            cube_names = {cube.standard_name, cube.long_name, cube.var_name}
-            if not cube_names.intersection(expected_names):
+            raw_cube_names = (
+                cube.standard_name,
+                cube.long_name,
+                cube.var_name
+                )
+            cube_names = list(map(str, raw_cube_names))
+
+            passed_var_check = False
+            for name_index, expected_name_set in enumerate(expected_name_sets):
+                if expected_name_set.intersection(cube_names):
+                    logger.debug("Matched {} with {}"
+                                 .format(expected_name_set, cube_names))
+                    passed_var_check = True
+                    # Next time, there will be one fewer variable to compare
+                    # against.
+                    del expected_name_sets[name_index]
+                    break
+            if not passed_var_check:
                 which_failed.append("variable name check")
                 error_details.append(
                     "None of {} matched one of the expected names {}."
-                    .format(', '.join(map(str, cube_names)),
-                            ', '.join(expected_names)))
+                    .format(
+                        ', '.join(cube_names),
+                        ', '.join(
+                            [name
+                             for name_set in expected_name_sets
+                             for name in name_set])))
+
             if which_failed:
                 which_failed = ' and '.join(which_failed)
                 error_details = ' '.join(error_details)
@@ -1065,8 +1092,8 @@ if __name__ == '__main__':
 
     requests = retrieve_hourly(
             variable=['2t', '10u', '10v'],
-            start=PartialDateTime(1990, 1, 1),
-            end=PartialDateTime(2018, 1, 1))
+            start=PartialDateTime(2005, 1, 1),
+            end=PartialDateTime(2005, 2, 1))
     retrieval_processing(
-            requests, n_threads=40, delete_processed=True, overwrite=False,
+            requests, n_threads=1, delete_processed=True, overwrite=False,
             soft_filesize_limit=30)
