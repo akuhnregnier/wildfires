@@ -10,6 +10,7 @@ from datetime import datetime
 import json
 import logging
 import logging.config
+import multiprocessing
 from multiprocessing import Process, Pipe, Queue
 import os
 from queue import Empty
@@ -26,7 +27,7 @@ import numpy as np
 
 from wildfires.data.datasets import DATA_DIR
 from wildfires.data.era5_tables import get_short_to_long
-from wildfires.logging_config import LOGGING
+from wildfires.logging_config import LOGGING, log_dir
 
 
 logger = logging.getLogger(__name__)
@@ -446,14 +447,21 @@ class RampVar:
 
 
 class DownloadThread(Thread):
-    """Retrieve data using the CDS API."""
+    """Retrieve data using the CDS API.
 
-    def __init__(self, id_index, request, queue):
-        super().__init__()
-        self.id_index = id_index
+    DownloadThread.queue is the Queue shared by all DownloadThread instances
+    to communicate when they have finished downloading their request.
+
+    """
+    id_index = 1
+
+    def __init__(self, request, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.id_index = DownloadThread.id_index
+        DownloadThread.id_index += 1
         self.request = request
         self.formatted_request = format_request(self.request)
-        self.queue = queue
+        assert hasattr(self, 'queue'), "Must call assign_queue."
 
         # Configures a logger named after the class using the 'wildfires'
         # package logging configuration.
@@ -478,12 +486,24 @@ class DownloadThread(Thread):
         self.logger.debug("Initialised DownloadThread with id_index={}."
                           .format(self.id_index))
 
+    @classmethod
+    def assign_queue(cls, queue):
+        """Assign a queue to the class for shared usage.
+
+        Args:
+            queue (multiprocessing.queues.Queue): Share queue.
+
+        """
+        cls.queue = queue
+        assert isinstance(cls.queue, multiprocessing.queues.Queue)
+        return cls
+
     @staticmethod
     def get_request_log_file(request):
         orig_dir, orig_filename = os.path.split(request[2])
         request_log_file = os.path.join(
-                orig_dir, '.requests',
-                '.'.join(orig_filename.split('.')[:-1] + ['request']))
+            orig_dir, '.requests',
+            '.'.join(orig_filename.split('.')[:-1] + ['request']))
         return request_log_file
 
     @staticmethod
@@ -562,7 +582,6 @@ class Worker(Process, ABC):
     @abstractmethod
     def output_filename(self, input_filename):
         """Construct the output filename from the input filename."""
-        pass
 
     @abstractmethod
     def check_output(self, request, output):
@@ -577,7 +596,6 @@ class Worker(Process, ABC):
             bool: True if the output matches the request, False otherwise.
 
         """
-        pass
 
     @abstractmethod
     def process(self, request):
@@ -594,7 +612,6 @@ class Worker(Process, ABC):
             str or None: The output filename (if successful) or None.
 
         """
-        pass
 
     def run(self):
         try:
@@ -622,7 +639,8 @@ class Worker(Process, ABC):
 class AveragingWorker(Worker):
     """Compute monthly averages using filenames passed in via a pipe."""
 
-    def output_filename(self, input_filename):
+    @staticmethod
+    def output_filename(input_filename):
         """Construct the output filename from the input filename."""
         return input_filename.split('.nc')[0] + '_monthly_mean.nc'
 
@@ -664,12 +682,14 @@ class AveragingWorker(Worker):
         days = list(map(int, request_dict['day']))
         hours = [int(time.replace(':00', '')) for time in request_dict['time']]
 
+        # Since downloaded data can only reach the end of the calendar month.
+        max_days = min((
+            max(days),
+            calendar.monthrange(max(years), max(months))[1]
+            ))
         datetime_range = (
             datetime(min(years), min(months), min(days), min(hours)),
-            datetime(
-                max(years), max(months), min((max(days),
-                calendar.monthrange(max(years), max(months))[1])), max(hours)),
-            )
+            datetime(max(years), max(months), max_days, max(hours)))
 
         request_variables = request_dict['variable']
         # TODO: Can this be made more fine-grained to check each individual
@@ -778,7 +798,9 @@ class AveragingWorker(Worker):
 
 class ThreadList:
     """A list of Thread instances."""
-    def __init__(self, threads=[]):
+    def __init__(self, threads=None):
+        if threads is None:
+            threads = []
         self.threads = threads
 
     def __iter__(self):
@@ -805,6 +827,67 @@ class ThreadList:
         for completed_thread in to_remove:
             completed_thread.join(1.)
             self.threads.remove(completed_thread)
+
+
+def new_download_thread(new_request, overwrite, processing_worker):
+    """Start a new download thread given conditions.
+
+    Args:
+        new_request (tuple): A request tuple as returned by `retrieve_hourly`.
+        overwrite (bool): If True, overwrite existing data.
+        processing_worker (instance `Worker`): Responsible for processing
+            downloaded data. See `processing_class` in `retrieval_processing`.
+
+    Returns:
+        Thread or None: None is returned if there is no data to download. None
+            is not returned if overwrite is True.
+
+    """
+    new_filename = new_request[2]
+    output_filename = processing_worker.output_filename(new_filename)
+    expected_output = (0, new_filename, output_filename)
+    if not overwrite and os.path.isfile(output_filename):
+        if processing_worker.check_output(new_request, expected_output):
+            logger.info(
+                "'{}' already contains correct processed data. "
+                "Not downloading raw data."
+                .format(expected_output[2]))
+            return None
+    if not overwrite and os.path.isfile(new_filename):
+        if DownloadThread.retrieve_request(new_request) != new_request:
+            logger.warning(
+                "'{}' contains raw data for another request. "
+                "Deleting this file and retrieving new request."
+                .format(new_filename))
+            os.remove(new_filename)
+
+        logger.warning(
+            "'{}' contains raw data for this request, but no processed data "
+            "was found. Sending request for processing now. If processing "
+            "fails (see error logs at '{}') the raw data should be deleted "
+            "and downloaded again."
+            .format(new_filename, log_dir))
+        # Taking a shortcut here - instead of spawning a new DownloadThread
+        # and downloading the file, emulate the behaviour of a DownloadThread
+        # by sending the request (for which there is already data, as
+        # required) to the queue normally used by the DownloadThread
+        # instances, thereby signalling that the file has been successfully
+        # 'downloaded', i.e. it is available for processing.
+        DownloadThread.queue.put(new_request)
+        # It takes some time for the queue to register this. Allow up to 0.5
+        # seconds for this to happen (just to be sure).
+        check_start = time()
+        while time() - check_start < 0.5:
+            if not DownloadThread.queue.empty():
+                break
+            sleep(0.01)
+        else:
+            assert not DownloadThread.queue.empty(), (
+                "The queue should not be empty as we just "
+                "called put.")
+        return None
+    new_thread = DownloadThread(new_request)
+    return new_thread
 
 
 def retrieval_processing(requests, processing_class=AveragingWorker,
@@ -836,7 +919,7 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
         requests (list): A list of 3 element tuples which are passed to the
             retrieve function of the CDS API client in order to retrieve
             the intended data.
-        processing_class (`Worker` subclass): A subclass of `Worker` that
+        processing_class (`Worker`): A subclass of `Worker` that
             defines a process method and takes and index (int) and a pipe
             (multiprocessing.connection.Connection) as constructor
             arguments. See `AveragingWorker` for a sample implementation.
@@ -893,13 +976,15 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
     else:
         raw_files = total_files
 
-    worker_index = 0
     pipe_start, pipe_end = Pipe()
-    processing_worker = processing_class(worker_index, pipe_end)
+    processing_worker = processing_class(0, pipe_end)
     processing_worker.start()
-    worker_index += 1
 
     retrieve_queue = Queue()
+    DownloadThread.assign_queue(retrieve_queue)
+    size_limit_msg = (
+        "Soft file size limit {}exceeded. Requested limit: {:0.1e} GB. "
+        "Observed: {:0.1e} GB. Currently pending downloads: {}.")
 
     while requests or remaining_files or threads:
         if time() - start_time > timeout:
@@ -913,82 +998,29 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
                     .format(len(requests)))
         logger.info("Remaining active threads: {}.".format(len(threads)))
 
+        # Retrieve new requests by spawning new threads.
         new_threads = []
-        while len(threads) < n_threads and requests:
-            check_files = raw_files + processed_files
-            filesize_sum = (sum([os.path.getsize(f) for f in check_files])
-                            / 1000**3)
-            if filesize_sum < soft_filesize_limit:
-                if issued_filesize_warning:
-                    issued_filesize_warning = False
-                    logger.warning(
-                        "Soft file size limit no longer exceeded. Requested "
-                        "limit: {0.1e} GB. Observed: {:0.1e} GB. Active "
-                        "threads: {}."
-                        .format(soft_filesize_limit, filesize_sum,
-                                len(threads)))
+        check_files = raw_files + processed_files
+        filesize_sum = (sum([os.path.getsize(f) for f in check_files])
+                        / 1000**3)
+        if filesize_sum > soft_filesize_limit:
+            logger.warning(size_limit_msg.format(
+                '', soft_filesize_limit, filesize_sum, len(threads)))
+            issued_filesize_warning = True
+        else:
+            if issued_filesize_warning:
+                issued_filesize_warning = False
+                logger.warning(size_limit_msg.format(
+                    'no longer ', soft_filesize_limit, filesize_sum,
+                    len(threads)))
+            while len(threads) < n_threads and requests:
                 new_request = requests.pop()
-                new_filename = new_request[2]
-                expected_output = (
-                    0,
-                    new_filename,
-                    processing_worker.output_filename(new_filename)
-                    )
-                if not overwrite and os.path.isfile(expected_output[2]):
-                    if processing_worker.check_output(
-                            new_request, expected_output):
-                        logger.info(
-                            "'{}' already contains correct processed data. "
-                            "Not downloading raw data."
-                            .format(expected_output[2]))
-                        continue
-                if not overwrite and os.path.isfile(new_filename):
-                    if (DownloadThread.retrieve_request(new_request)
-                            == new_request):
-                        logger.warning(
-                            "'{}' already contains raw data for this "
-                            "request. But no processed data has been found. "
-                            "Sending request for processing now."
-                            .format(new_filename))
-                        # Taking a shortcut here - instead of spawning a
-                        # new DownloadThread and downloading the file,
-                        # emulate the behaviour of a DownloadThread by
-                        # sending the request (for which there is already
-                        # data, as required) to the queue normally used by
-                        # the DownloadThread instances, thereby signalling
-                        # that the file has been successfully 'downloaded',
-                        # ie. it is available for processing.
-                        retrieve_queue.put(new_request)
-                        # It takes some time for the queue to register this.
-                        # Allow up to 0.5 seconds for this to happen (just
-                        # to be sure).
-                        check_start = time()
-                        while time() - check_start < 0.5:
-                            if not retrieve_queue.empty():
-                                break
-                            sleep(0.01)
-                        else:
-                            assert not retrieve_queue.empty(), (
-                                "The queue should not be empty as we just "
-                                "called put.")
-                        continue
-                    else:
-                        logger.warning(
-                            "'{}' contains raw data for another request. "
-                            "Deleting this file and retrieving new request."
-                            .format(new_filename))
-                        os.remove(new_filename)
-                new_thread = DownloadThread(
-                    worker_index, new_request, retrieve_queue)
+                new_thread = new_download_thread(new_request, overwrite,
+                                                 processing_worker)
+                if new_thread is None:
+                    continue
                 new_threads.append(new_thread)
                 threads.append(new_thread)
-                worker_index += 1
-            else:
-                logger.warning(
-                    "Soft file size limit exceeded. Requested limit: {0.1e} "
-                    "GB. Observed: {:0.1e} GB. Active threads: {}."
-                    .format(soft_filesize_limit, filesize_sum, len(threads)))
-                issued_filesize_warning = True
 
         logger.debug("Starting {} new threads.".format(len(new_threads)))
         for new_thread in new_threads:
@@ -1031,7 +1063,7 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
                     # use logging exception convenience function.
                     try:
                         raise retrieve_output[1].with_traceback(
-                                retrieve_output[2])
+                            retrieve_output[2])
                     except Exception:
                         logger.exception("Exception while downloading data.")
                         continue
@@ -1094,8 +1126,8 @@ def retrieval_processing(requests, processing_class=AveragingWorker,
             if not remaining_files:
                 # Everything should have been handled so we can exit.
                 break
-    else:
-        logger.info("No remaining requests, files or threads.")
+
+    logger.info("No remaining requests, files or threads.")
 
     # After everything is done, terminate the processing process (by force
     # if it exceeds the time-out).
@@ -1109,9 +1141,9 @@ if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
 
     requests = retrieve_hourly(
-            variable=['2t', '10u', '10v'],
-            start=PartialDateTime(2005, 1, 1),
-            end=PartialDateTime(2005, 2, 1))
+        variable=['2t', '10u', '10v'],
+        start=PartialDateTime(1995, 1, 1),
+        end=PartialDateTime(1995, 2, 1))
     retrieval_processing(
-            requests, n_threads=1, delete_processed=True, overwrite=False,
-            soft_filesize_limit=30)
+        requests, n_threads=2, delete_processed=True, overwrite=False,
+        soft_filesize_limit=30)
