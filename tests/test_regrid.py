@@ -18,11 +18,11 @@ class TestRegrid(unittest.TestCase):
 
         """
         start_data = np.array([
-                [3, 1, 1],
-                [2, 2, 3],
-                [1, 1, 1],
-                [1, 3, 4]],
-                dtype=np.float64)
+            [3, 1, 1],
+            [2, 2, 3],
+            [1, 1, 1],
+            [1, 3, 4]],
+            dtype=np.float64)
         cls.source_cube = iris.cube.Cube(
             start_data,
             dim_coords_and_dims=(
@@ -43,10 +43,10 @@ class TestRegrid(unittest.TestCase):
         factor1 = factor1 / factor_sum
         # Flip along after the equator due to symmetry.
         factor_arr = np.array(
-                [factor0, factor1, factor1, factor0]).reshape(4, 1)
+            [factor0, factor1, factor1, factor0]).reshape(4, 1)
 
-        target_data = (cls.source_cube.data * factor_arr
-                ).reshape(2, 2, 3).sum(axis=1)
+        target_data = ((cls.source_cube.data * factor_arr)
+                       .reshape(2, 2, 3).sum(axis=1))
 
         cls.target_cube = iris.cube.Cube(
             target_data,
@@ -104,9 +104,9 @@ class TestRegrid(unittest.TestCase):
     def test_real_regrid(self):
         for method_bool in [True]:
             regridded = regrid(
-                    self.source_cube, area_weighted=method_bool,
-                    new_latitudes=self.target_cube.coord('latitude'),
-                    new_longitudes=self.target_cube.coord('longitude'))
+                self.source_cube, area_weighted=method_bool,
+                new_latitudes=self.target_cube.coord('latitude'),
+                new_longitudes=self.target_cube.coord('longitude'))
 
             self.assertTrue(np.all(np.isclose(
                 regridded.data,
@@ -118,20 +118,20 @@ class TestRegrid(unittest.TestCase):
         # the 3D version.
         for method_bool in [True]:
             regridded = regrid(
-                    self.target_cube, area_weighted=method_bool,
-                    new_latitudes=self.target_cube.coord('latitude'),
-                    new_longitudes=self.target_cube.coord('longitude'))
+                self.target_cube, area_weighted=method_bool,
+                new_latitudes=self.target_cube.coord('latitude'),
+                new_longitudes=self.target_cube.coord('longitude'))
 
             self.assertEqual(
-                    id(regridded), id(self.target_cube),
-                    "(2D) The regridded and target cube should be identical.")
+                id(regridded), id(self.target_cube),
+                "(2D) The regridded and target cube should be identical.")
 
     def test_time_dim_regrid(self):
         for method_bool in [True]:
             time_regridded = regrid(
-                    self.time_source_cube, area_weighted=method_bool,
-                    new_latitudes=self.time_target_cube.coord('latitude'),
-                    new_longitudes=self.time_target_cube.coord('longitude'))
+                self.time_source_cube, area_weighted=method_bool,
+                new_latitudes=self.time_target_cube.coord('latitude'),
+                new_longitudes=self.time_target_cube.coord('longitude'))
 
             self.assertTrue(np.all(np.isclose(
                 time_regridded.data,

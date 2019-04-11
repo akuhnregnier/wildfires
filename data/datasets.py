@@ -3,7 +3,6 @@
 """Module that simplifies use of various datasets.
 
 """
-
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime
@@ -33,6 +32,7 @@ import rasterio
 from tqdm import tqdm
 
 from wildfires.logging_config import LOGGING
+
 logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.expanduser('~'), 'FIREDATA')
@@ -103,15 +103,15 @@ def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180),
     n_dims = len(data.shape)
     assert n_dims in {2, 3}
     new_latitudes = get_centres(
-            np.linspace(*lat_lims, data.shape[0 + n_dims % 2] + 1))
+        np.linspace(*lat_lims, data.shape[0 + n_dims % 2] + 1))
     new_longitudes = get_centres(
-            np.linspace(*lon_lims, data.shape[1 + n_dims % 2] + 1))
+        np.linspace(*lon_lims, data.shape[1 + n_dims % 2] + 1))
     new_lat_coord = iris.coords.DimCoord(
-            new_latitudes, standard_name='latitude',
-            units='degrees')
+        new_latitudes, standard_name='latitude',
+        units='degrees')
     new_lon_coord = iris.coords.DimCoord(
-            new_longitudes, standard_name='longitude',
-            units='degrees')
+        new_longitudes, standard_name='longitude',
+        units='degrees')
 
     if n_dims == 2:
         grid_coords = [
@@ -169,11 +169,11 @@ def load_cubes(files, n=None):
 
     # Make sure files are sorted so that times increase.
     files.sort()
-    l = iris.cube.CubeList()
+    cube_list = iris.cube.CubeList()
     logger.info("Loading files.")
     for f in tqdm(files[slice(0, n, 1)]):
-        l.extend(iris.load(f))
-    return l
+        cube_list.extend(iris.load(f))
+    return cube_list
 
 
 def get_centres(data):
@@ -214,11 +214,11 @@ def regrid(cube, area_weighted=False,
     # iris.coords.DimCoord (with a 'points' attribute) as well as normal
     # numpy arrays.
     new_latitudes = iris.coords.DimCoord(
-            getattr(new_latitudes, 'points', new_latitudes),
-            standard_name='latitude', units='degrees')
+        getattr(new_latitudes, 'points', new_latitudes),
+        standard_name='latitude', units='degrees')
     new_longitudes = iris.coords.DimCoord(
-            getattr(new_longitudes, 'points', new_longitudes),
-            standard_name='longitude', units='degrees')
+        getattr(new_longitudes, 'points', new_longitudes),
+        standard_name='longitude', units='degrees')
 
     matching = False
     for (coord_old, coord_new) in (
@@ -253,7 +253,7 @@ def regrid(cube, area_weighted=False,
     assert n_dim == 2, "Need [lat, lon] dimensions for core algorithm."
 
     WGS84 = iris.coord_systems.GeogCS(
-            semi_major_axis=6378137.0, semi_minor_axis=6356752.314245179)
+        semi_major_axis=6378137.0, semi_minor_axis=6356752.314245179)
     # Make sure coordinate systems are uniform.
     systems = [cube.coord(coord_name).coord_system for coord_name in
                ['latitude', 'longitude']]
@@ -262,7 +262,7 @@ def regrid(cube, area_weighted=False,
     if systems[0] is None:
         coord_sys = None
     elif ((systems[0].semi_major_axis == WGS84.semi_major_axis)
-            and (systems[0].semi_minor_axis == WGS84.semi_minor_axis)):
+          and (systems[0].semi_minor_axis == WGS84.semi_minor_axis)):
         logger.debug('Using WGS84 coordinate system for regridding.')
         coord_sys = WGS84
         # Fix floating point 'bug' where the inverse flattening of the
@@ -291,8 +291,8 @@ def regrid(cube, area_weighted=False,
         ]
 
     new_grid = iris.cube.Cube(
-            np.zeros([coord[0].points.size for coord in grid_coords]),
-            dim_coords_and_dims=grid_coords)
+        np.zeros([coord[0].points.size for coord in grid_coords]),
+        dim_coords_and_dims=grid_coords)
 
     for coord in new_grid.coords():
         if not coord.has_bounds():
@@ -323,10 +323,10 @@ def monthly_constraint(
 
 class Dataset(ABC):
 
-    def __init__(self):
-        # self.dir = None
-        # self.cubes = None
-        raise NotImplementedError()
+    # TODO: Make sure these get overridden by the subclasses, or that every
+    # dataset uses these.
+    calendar = 'gregorian'
+    time_unit_str = 'days since 1970-01-01 00:00:00'
 
     @property
     def frequency(self):
@@ -342,8 +342,7 @@ class Dataset(ABC):
                 return 'monthly'
             elif (start + relativedelta(months=+12)) == end:
                 return 'yearly'
-            else:
-                return 'unknown'
+            return 'unknown'
 
         except iris.exceptions.CoordinateNotFoundError:
             return 'static'
@@ -394,11 +393,11 @@ class Dataset(ABC):
 
         """
         assert target_filename[-3:] == '.nc', (
-                "Data must be saved as a NetCDF file, got:'{:}'"
-                .format(target_filename))
+            "Data must be saved as a NetCDF file, got:'{:}'"
+            .format(target_filename))
         assert isinstance(cache_data, (iris.cube.Cube, iris.cube.CubeList)), (
-                "Data to be saved must either be a Cube or a CubeList. "
-                "Got:{:}".format(cache_data))
+            "Data to be saved must either be a Cube or a CubeList. "
+            "Got:{:}".format(cache_data))
 
         if isinstance(cache_data, iris.cube.Cube):
             cache_data = iris.cube.CubeList([cache_data])
@@ -410,8 +409,8 @@ class Dataset(ABC):
                         .format(target_filename))
         else:
             assert (not repo.untracked_files) and (not repo.is_dirty()), (
-                    "All changes must be committed and all files must be "
-                    "tracked.")
+                "All changes must be committed and all files must be "
+                "tracked.")
 
             # Note down the commit sha hash so that the code used to
             # generate the cached data can be retrieved easily later on.
@@ -448,10 +447,10 @@ class Dataset(ABC):
 
             commit_hashes = [cube.attributes['commit'] for cube in cubes]
             assert len(set(commit_hashes)) == 1, (
-                    "Cubes should all stem from the same commit.")
+                "Cubes should all stem from the same commit.")
             logger.debug(
-                    "File exists, returning cubes from:'{:}'"
-                    .format(target_filename))
+                "File exists, returning cubes from:'{:}'"
+                .format(target_filename))
             return cubes
         else:
             logger.info("File does not exist:'{:}'"
@@ -472,10 +471,10 @@ class Dataset(ABC):
         if cubes:
             self.cubes = cubes
             logger.info(
-                    "File exists, returning cubes from:'{:}' -> Dataset "
-                    "timespan {:} -- {:}. Generated using commit {:}"
-                    .format(self.cache_filename, self.min_time,
-                            self.max_time, self.cubes[0].attributes['commit']))
+                "File exists, returning cubes from:'{:}' -> Dataset "
+                "timespan {:} -- {:}. Generated using commit {:}"
+                .format(self.cache_filename, self.min_time,
+                        self.max_time, self.cubes[0].attributes['commit']))
             return self.cubes
 
     def select_data(self, latitude_range=(-90, 90),
@@ -492,14 +491,14 @@ class Dataset(ABC):
 
         """
         self.cubes = iris.cube.CubeList([
-                regrid(cube, area_weighted=area_weighted,
-                       new_latitudes=new_latitudes,
-                       new_longitudes=new_longitudes)
-                for cube in self.cubes])
+            regrid(cube, area_weighted=area_weighted,
+                   new_latitudes=new_latitudes,
+                   new_longitudes=new_longitudes)
+            for cube in self.cubes])
 
     @abstractmethod
-    def get_monthly_data(self):
-        pass
+    def get_monthly_data(self, start, end):
+        """Return monthly cubes between two dates."""
 
     def limit_months(self, start=PartialDateTime(2000, 1),
                      end=PartialDateTime(2000, 12)):
@@ -561,7 +560,6 @@ class Dataset(ABC):
         Limits are inclusive.
 
         """
-
         datetimes = [datetime(start.year, start.month, 1)]
         while datetimes[-1] != PartialDateTime(end.year, end.month):
             datetimes.append(datetimes[-1] + relativedelta(months=+1))
@@ -570,19 +568,19 @@ class Dataset(ABC):
         time_unit_str = 'days since 1970-01-01 00:00:00'
         time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
         time_coord = iris.coords.DimCoord(
-                cf_units.date2num(datetimes, time_unit_str, calendar),
-                standard_name='time',
-                units=time_unit)
+            cf_units.date2num(datetimes, time_unit_str, calendar),
+            standard_name='time',
+            units=time_unit)
 
         new_cubes = []
         for cube in self.cubes:
             new_data = np.ma.vstack([
                 cube.data[np.newaxis] for i in datetimes])
             coords = [
-                    (time_coord, 0),
-                    (cube.coord('latitude'), 1),
-                    (cube.coord('longitude'), 2)
-                    ]
+                (time_coord, 0),
+                (cube.coord('latitude'), 1),
+                (cube.coord('longitude'), 2)
+                ]
             new_cubes.append(iris.cube.Cube(
                 new_data,
                 dim_coords_and_dims=coords))
@@ -606,21 +604,21 @@ class Dataset(ABC):
             datetimes.append(datetimes[-1] + relativedelta(months=+1))
 
         time = iris.coords.DimCoord(
-                cf_units.date2num(datetimes, self.time_unit_str,
-                                  calendar=self.calendar),
-                standard_name='time',
-                units=time_unit)
+            cf_units.date2num(datetimes, self.time_unit_str,
+                              calendar=self.calendar),
+            standard_name='time',
+            units=time_unit)
 
         interp_cubes = iris.cube.CubeList()
         for i in range(time.points.size):
             interp_points = [
-                    ('time', time[i].points),
-                    ]
+                ('time', time[i].points),
+                ]
             interp_cubes.extend(
-                    iris.cube.CubeList([cube.interpolate(
-                        interp_points,
-                        iris.analysis.Linear())
-                     for cube in self.cubes]))
+                iris.cube.CubeList([cube.interpolate(
+                    interp_points,
+                    iris.analysis.Linear())
+                 for cube in self.cubes]))
 
         final_cubelist = interp_cubes.concatenate()
         return final_cubelist
@@ -697,27 +695,27 @@ class CHELSA(Dataset):
         files.sort()
 
         mapping = {
-                'prec': {
-                    'scale': 1,
-                    'unit': cf_units.Unit('mm/month'),
-                    'long_name': 'monthly precipitation',
-                    },
-                'tmax': {
-                    'scale': 0.1,
-                    'unit': cf_units.Unit('degrees Celsius'),
-                    'long_name': 'maximum temperature',
-                    },
-                'tmean': {
-                    'scale': 0.1,
-                    'unit': cf_units.Unit('degrees Celsius'),
-                    'long_name': 'mean temperature',
-                    },
-                'tmin': {
-                    'scale': 0.1,
-                    'unit': cf_units.Unit('degrees Celsius'),
-                    'long_name': 'minimum temperature',
-                    }
+            'prec': {
+                'scale': 1,
+                'unit': cf_units.Unit('mm/month'),
+                'long_name': 'monthly precipitation',
+                },
+            'tmax': {
+                'scale': 0.1,
+                'unit': cf_units.Unit('degrees Celsius'),
+                'long_name': 'maximum temperature',
+                },
+            'tmean': {
+                'scale': 0.1,
+                'unit': cf_units.Unit('degrees Celsius'),
+                'long_name': 'mean temperature',
+                },
+            'tmin': {
+                'scale': 0.1,
+                'unit': cf_units.Unit('degrees Celsius'),
+                'long_name': 'minimum temperature',
                 }
+            }
 
         year_pattern = re.compile(r'_(\d{4})_')
         month_pattern = re.compile(r'_(\d{2})_')
@@ -743,7 +741,7 @@ class CHELSA(Dataset):
             nc_file = f.replace('.tif', '.nc')
             try:
                 cubes = self.read_data(nc_file)
-            except:
+            except Exception:
                 # Try again, removing a potentially corrupt file
                 # beforehand.
                 logger.exception("Read failed, recreating:'{:}'"
@@ -751,7 +749,7 @@ class CHELSA(Dataset):
                 cubes = None
                 try:
                     os.remove(nc_file)
-                except:
+                except Exception:
                     logger.exception("File did not exist:'{:}'"
                                      .format(nc_file))
 
@@ -763,12 +761,12 @@ class CHELSA(Dataset):
             try:
                 with rasterio.open(f) as dataset:
                     pass
-            except rasterio.RasterioIOError as e:
+            except rasterio.RasterioIOError:
                 logger.exception("Corrupted file.")
                 # Try to download file again.
                 url = f.replace(
-                        os.path.join(DATA_DIR, 'CHELSA'),
-                        'https://www.wsl.ch/lud/chelsa')
+                    os.path.join(DATA_DIR, 'CHELSA'),
+                    'https://www.wsl.ch/lud/chelsa')
 
                 command = ("curl --connect-timeout 20 -L -o {:} {:}"
                            .format(f, url))
@@ -787,19 +785,19 @@ class CHELSA(Dataset):
                                          np.isinf(data), dtype=data.dtype)
 
                 latitudes = iris.coords.DimCoord(
-                        get_centres(np.linspace(
-                            dataset.bounds.top,
-                            dataset.bounds.bottom,
-                            dataset.shape[0] + 1)),
-                        standard_name='latitude',
-                        units='degrees')
+                    get_centres(np.linspace(
+                        dataset.bounds.top,
+                        dataset.bounds.bottom,
+                        dataset.shape[0] + 1)),
+                    standard_name='latitude',
+                    units='degrees')
                 longitudes = iris.coords.DimCoord(
-                        get_centres(np.linspace(
-                            dataset.bounds.left,
-                            dataset.bounds.right,
-                            dataset.shape[1] + 1)),
-                        standard_name='longitude',
-                        units='degrees')
+                    get_centres(np.linspace(
+                        dataset.bounds.left,
+                        dataset.bounds.right,
+                        dataset.shape[1] + 1)),
+                    standard_name='longitude',
+                    units='degrees')
 
             grid_coords = [
                 (latitudes, 0),
@@ -808,22 +806,22 @@ class CHELSA(Dataset):
 
             split_f = os.path.split(f)[1]
             time_coord = iris.coords.DimCoord(
-                    cf_units.date2num(
-                        datetime(
-                            int(year_pattern.search(split_f).group(1)),
-                            int(month_pattern.search(split_f).group(1)),
-                            1),
-                        time_unit_str,
-                        calendar),
-                    standard_name='time',
-                    units=time_unit)
+                cf_units.date2num(
+                    datetime(
+                        int(year_pattern.search(split_f).group(1)),
+                        int(month_pattern.search(split_f).group(1)),
+                        1),
+                    time_unit_str,
+                    calendar),
+                standard_name='time',
+                units=time_unit)
 
             cube = iris.cube.Cube(
-                    data, dim_coords_and_dims=grid_coords,
-                    units=mapping[variable_key]['unit'],
-                    var_name=variable_key,
-                    long_name=mapping[variable_key]['long_name'],
-                    aux_coords_and_dims=[(time_coord, None)])
+                data, dim_coords_and_dims=grid_coords,
+                units=mapping[variable_key]['unit'],
+                var_name=variable_key,
+                long_name=mapping[variable_key]['long_name'],
+                aux_coords_and_dims=[(time_coord, None)])
 
             # Regrid cubes to the same lat-lon grid.
             # TODO: change lat and lon limits and also the number of points!!
@@ -900,8 +898,8 @@ class Copernicus_SWI(Dataset):
         # If a CubeList has been loaded successfully, exit __init__
         if self.cubes:
             self.cubes = iris.cube.CubeList(
-                    [c for c in self.cubes if
-                     c.attributes['processing_mode'] == 'Reprocessing'])
+                [c for c in self.cubes if
+                 c.attributes['processing_mode'] == 'Reprocessing'])
             logger.debug('Found Copernicus cubes, returning.')
             return
 
@@ -956,12 +954,12 @@ class Copernicus_SWI(Dataset):
                 if 'monthly' in f:
                     selected_monthly_files.append(f)
                     selected_monthly_intervals.append(
-                            [dt, dt + relativedelta(months=+1)])
+                        [dt, dt + relativedelta(months=+1)])
 
         # Fuse the monthly intervals into easier-to-use contiguous
         # intervals.
         contiguous_monthly_intervals = join_adjacent_intervals(
-                selected_monthly_intervals)
+            selected_monthly_intervals)
 
         logger.debug('Contiguous monthly intervals:{:}'.format(
             contiguous_monthly_intervals))
@@ -1030,8 +1028,8 @@ class Copernicus_SWI(Dataset):
                     ['month_number', 'year'], iris.analysis.MEAN)
 
                 assert averaged_cube.core_data().shape[0] == 1, (
-                        "There should be only 1 element in the time dimension "
-                        "(ie. 1 month).")
+                    "There should be only 1 element in the time dimension "
+                    "(ie. 1 month).")
 
                 monthly_cubes.append(averaged_cube[0])
 
@@ -1050,13 +1048,13 @@ class Copernicus_SWI(Dataset):
                     time=lambda t: dt == t.point))
 
                 commit_hash = self.save_data(
-                        cubes,
-                        os.path.join(
-                            monthly_dir,
-                            ("c_gls_SWI_{:04d}{:02d}{:02d}_monthly"
-                             "_GLOBE_ASCAT_V3.1.1.nc").format(
-                                 # The day is always 1 for monthly files.
-                                 dt.year, dt.month, 1)))
+                    cubes,
+                    os.path.join(
+                        monthly_dir,
+                        ("c_gls_SWI_{:04d}{:02d}{:02d}_monthly"
+                         "_GLOBE_ASCAT_V3.1.1.nc").format(
+                             # The day is always 1 for monthly files.
+                             dt.year, dt.month, 1)))
 
                 # If None is returned, then the file already exists and is not
                 # being overwritten, which should not happen, as we check for
@@ -1080,8 +1078,8 @@ class Copernicus_SWI(Dataset):
         # TODO: Verify that this works as expected.
         self.cubes = monthly_cubes.merge()
         self.cubes = iris.cube.CubeList(
-                [c for c in self.cubes if
-                 c.attributes['processing_mode'] == 'Reprocessing'])
+            [c for c in self.cubes if
+             c.attributes['processing_mode'] == 'Reprocessing'])
 
         logger.debug('Finished merging.')
 
@@ -1108,7 +1106,7 @@ class CRU(Dataset):
             # about the measurement stations, the files have to be handled
             # individually so that we can keep track of which stn cube
             # belongs to which data cube.
-            self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+            self.cubes = iris.load(os.path.join(self.dir, '*.nc'))
 
         # TODO: For now, remove the 'stn' cubes (see above).
         self.cubes = iris.cube.CubeList(
@@ -1178,10 +1176,10 @@ class ESA_CCI_Landcover(Dataset):
 
         for i in range(n_years):
             time = iris.coords.DimCoord(
-                    [cf_units.date2num(datetime(years[i], 1, 1),
-                                       self.time_unit_str, self.calendar)],
-                    standard_name='time',
-                    units=time_unit)
+                [cf_units.date2num(datetime(years[i], 1, 1),
+                                   self.time_unit_str, self.calendar)],
+                standard_name='time',
+                units=time_unit)
             for j in range(17):
                 cube = self.raw_cubes[(17*i) + j]
 
@@ -1224,7 +1222,7 @@ class ESA_CCI_Landcover_PFT(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'ESA-CCI-LC_landcover',
                                 '0d25_lc2pft')
-        self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+        self.cubes = iris.load(os.path.join(self.dir, '*.nc'))
 
         time_coord = None
         for cube in self.cubes:
@@ -1253,7 +1251,7 @@ class ESA_CCI_Soilmoisture(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'ESA-CCI-SM_soilmoisture')
-        self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+        self.cubes = iris.load(os.path.join(self.dir, '*.nc'))
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
@@ -1352,39 +1350,39 @@ class GFEDv4(Dataset):
         time_unit_str = 'days since 1970-01-01 00:00:00'
         time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
         time_coord = iris.coords.DimCoord(
-                [cf_units.date2num(dt, time_unit_str, calendar)
-                 for dt in datetimes],
-                standard_name='time',
-                units=time_unit)
+            [cf_units.date2num(dt, time_unit_str, calendar)
+             for dt in datetimes],
+            standard_name='time',
+            units=time_unit)
 
         latitudes = iris.coords.DimCoord(
-                get_centres(np.linspace(90, -90, 721)),
-                standard_name='latitude',
-                units='degrees')
+            get_centres(np.linspace(90, -90, 721)),
+            standard_name='latitude',
+            units='degrees')
         longitudes = iris.coords.DimCoord(
-                get_centres(np.linspace(-180, 180, 1441)),
-                standard_name='longitude',
-                units='degrees')
+            get_centres(np.linspace(-180, 180, 1441)),
+            standard_name='longitude',
+            units='degrees')
 
         latitudes.guess_bounds()
         longitudes.guess_bounds()
 
         burned_area_cube = iris.cube.Cube(
-                data,
-                long_name=long_name,
-                units=unit,
-                dim_coords_and_dims=[
-                    (time_coord, 0),
-                    (latitudes, 1),
-                    (longitudes, 2)
-                    ])
+            data,
+            long_name=long_name,
+            units=unit,
+            dim_coords_and_dims=[
+                (time_coord, 0),
+                (latitudes, 1),
+                (longitudes, 2)
+                ])
 
         # Normalise using the areas, divide by 10000 to convert from m2 to
         # hectares (the burned areas are in hectares originally).
         # NOTE: Some burned area percentages may be above 1!
         burned_area_cube.data /= (
-                iris.analysis.cartography.area_weights(burned_area_cube)
-                / 10000)
+            iris.analysis.cartography.area_weights(burned_area_cube)
+            / 10000)
         burned_area_cube.units = cf_units.Unit('percent')
 
         self.cubes = iris.cube.CubeList([burned_area_cube])
@@ -1437,11 +1435,11 @@ class GFEDv4s(Dataset):
         assert np.all(latitudes.T[0] == latitudes.T)
 
         longitudes = iris.coords.DimCoord(
-                longitudes[0], standard_name='longitude',
-                units='degrees')
+            longitudes[0], standard_name='longitude',
+            units='degrees')
         latitudes = iris.coords.DimCoord(
-                latitudes.T[0], standard_name='latitude',
-                units='degrees')
+            latitudes.T[0], standard_name='latitude',
+            units='degrees')
 
         time_unit_str = 'hours since 1970-01-01 00:00:00'
         calendar = 'gregorian'
@@ -1464,11 +1462,11 @@ class GFEDv4s(Dataset):
             coord.guess_bounds()
 
         self.cubes = iris.cube.CubeList([iris.cube.Cube(
-                np.vstack(data), dim_coords_and_dims=[
-                    (time_coord, 0),
-                    (latitudes, 1),
-                    (longitudes, 2)
-                    ])])
+            np.vstack(data), dim_coords_and_dims=[
+                (time_coord, 0),
+                (latitudes, 1),
+                (longitudes, 2)
+                ])])
 
         self.cubes[0].units = cf_units.Unit('percent')
         self.cubes[0].var_name = 'Burnt_Area'
@@ -1484,7 +1482,7 @@ class GlobFluo_SIF(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'GlobFluo_SIF')
         self.cubes = iris.cube.CubeList(
-                [iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))])
+            [iris.load_cube(os.path.join(self.dir, '*.nc'))])
 
         # Need to convert to time coordinate, as values are relative to
         # 1582-10-14, which is not supported by the cf_units gregorian
@@ -1500,9 +1498,9 @@ class GlobFluo_SIF(Dataset):
 
         self.cubes[0].remove_coord('time')
         new_time = iris.coords.DimCoord(
-                days_since_1582_10_16,
-                standard_name='time',
-                units=new_time_unit)
+            days_since_1582_10_16,
+            standard_name='time',
+            units=new_time_unit)
         self.cubes[0].add_dim_coord(new_time, 0)
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
@@ -1522,35 +1520,35 @@ class GPW_v4_pop_dens(Dataset):
         datetimes = [datetime(year, 1, 1) for year in
                      [2000, 2005, 2010, 2015, 2020]]
         self.time_unit_str = 'days since {:}'.format(
-                str(datetime(1970, 1, 1)))
+            str(datetime(1970, 1, 1)))
         self.calendar = 'gregorian'
         self.time_unit = cf_units.Unit(self.time_unit_str,
                                        calendar=self.calendar)
         time = iris.coords.DimCoord(
-                cf_units.date2num(datetimes, self.time_unit_str,
-                                  calendar='gregorian'),
-                standard_name='time',
-                units=self.time_unit)
+            cf_units.date2num(datetimes, self.time_unit_str,
+                              calendar='gregorian'),
+            standard_name='time',
+            units=self.time_unit)
 
         latitudes = iris.coords.DimCoord(
-                netcdf_dataset['latitude'][:], standard_name='latitude',
-                units='degrees')
+            netcdf_dataset['latitude'][:], standard_name='latitude',
+            units='degrees')
         longitudes = iris.coords.DimCoord(
-                netcdf_dataset['longitude'][:], standard_name='longitude',
-                units='degrees')
+            netcdf_dataset['longitude'][:], standard_name='longitude',
+            units='degrees')
 
         coords = [
-                (time, 0),
-                (latitudes, 1),
-                (longitudes, 2)
-                ]
+            (time, 0),
+            (latitudes, 1),
+            (longitudes, 2)
+            ]
 
         self.cubes = iris.cube.CubeList([iris.cube.Cube(
-                data[:5],
-                long_name=data.long_name,
-                var_name='Population_Density',
-                units=cf_units.Unit('1/km2'),
-                dim_coords_and_dims=coords)])
+            data[:5],
+            long_name=data.long_name,
+            var_name='Population_Density',
+            units=cf_units.Unit('1/km2'),
+            dim_coords_and_dims=coords)])
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
@@ -1566,8 +1564,8 @@ class GSMaP_precipitation(Dataset):
 
     def __init__(self, times='00Z-23Z'):
         self.dir = os.path.join(
-                DATA_DIR, 'GSMaP_Precipitation', 'hokusai.eorc.jaxa.jp',
-                'realtime_ver', 'v6', 'daily_G', times)
+            DATA_DIR, 'GSMaP_Precipitation', 'hokusai.eorc.jaxa.jp',
+            'realtime_ver', 'v6', 'daily_G', times)
 
         self.cubes = self.read_cache()
         # If a CubeList has been loaded successfully, exit __init__
@@ -1623,9 +1621,9 @@ class GSMaP_precipitation(Dataset):
                                        axis=0)
 
                 coords = [
-                        (monthly_cube.coord('latitude'), 0),
-                        (monthly_cube.coord('longitude'), 1)
-                        ]
+                    (monthly_cube.coord('latitude'), 0),
+                    (monthly_cube.coord('longitude'), 1)
+                    ]
                 dry_days_cubes.append(iris.cube.Cube(
                     dry_days_data, dim_coords_and_dims=coords,
                     units=cf_units.Unit('days'),
@@ -1663,46 +1661,45 @@ class HYDE(Dataset):
         # TODO: Consider upper and lower estimates as well, not just
         # baseline??
         files = glob.glob(
-                os.path.join(self.dir, 'baseline', '*.asc'),
-                recursive=True)
+            os.path.join(self.dir, 'baseline', '*.asc'), recursive=True)
 
         cube_list = iris.cube.CubeList()
         mapping = {
-                'uopp': {
-                    },
-                'urbc': {
-                    },
-                'tot_rice': {
-                    },
-                'tot_rainfed': {
-                    },
-                'tot_irri': {
-                    },
-                'rurc': {
-                    },
-                'rf_rice': {
-                    },
-                'rf_norice': {
-                    },
-                'rangeland': {
-                    },
-                'popd': {
-                    },
-                'popc': {
-                    },
-                'pasture': {
-                    },
-                'ir_rice': {
-                    },
-                'ir_norice': {
-                    },
-                'grazing': {
-                    },
-                'cropland': {
-                    },
-                'conv_rangeland': {
-                    },
-                }
+            'uopp': {
+                },
+            'urbc': {
+                },
+            'tot_rice': {
+                },
+            'tot_rainfed': {
+                },
+            'tot_irri': {
+                },
+            'rurc': {
+                },
+            'rf_rice': {
+                },
+            'rf_norice': {
+                },
+            'rangeland': {
+                },
+            'popd': {
+                },
+            'popc': {
+                },
+            'pasture': {
+                },
+            'ir_rice': {
+                },
+            'ir_norice': {
+                },
+            'grazing': {
+                },
+            'cropland': {
+                },
+            'conv_rangeland': {
+                },
+            }
         pattern = re.compile(r'(.*)(\d{4})AD')
 
         for f in tqdm(files):
@@ -1715,15 +1712,13 @@ class HYDE(Dataset):
             data = np.ma.MaskedArray(data, mask=np.isclose(data, -9999))
 
             new_latitudes = get_centres(
-                    np.linspace(90, -90, data.shape[0] + 1))
+                np.linspace(90, -90, data.shape[0] + 1))
             new_longitudes = get_centres(
-                    np.linspace(-180, 180, data.shape[1] + 1))
+                np.linspace(-180, 180, data.shape[1] + 1))
             new_lat_coord = iris.coords.DimCoord(
-                    new_latitudes, standard_name='latitude',
-                    units='degrees')
+                new_latitudes, standard_name='latitude', units='degrees')
             new_lon_coord = iris.coords.DimCoord(
-                    new_longitudes, standard_name='longitude',
-                    units='degrees')
+                new_longitudes, standard_name='longitude', units='degrees')
 
             grid_coords = [
                 (new_lat_coord, 0),
@@ -1731,19 +1726,19 @@ class HYDE(Dataset):
                 ]
 
             time_coord = iris.coords.DimCoord(
-                    cf_units.date2num(
-                        datetime(year, 1, 1),
-                        self.time_unit_str,
-                        self.calendar),
-                    standard_name='time',
-                    units=self.time_unit)
+                cf_units.date2num(
+                    datetime(year, 1, 1),
+                    self.time_unit_str,
+                    self.calendar),
+                standard_name='time',
+                units=self.time_unit)
 
             cube = iris.cube.Cube(
-                    data, dim_coords_and_dims=grid_coords,
-                    units=mapping[variable_key].get('unit'),
-                    var_name=variable_key,
-                    long_name=mapping[variable_key].get('long_name'),
-                    aux_coords_and_dims=[(time_coord, None)])
+                data, dim_coords_and_dims=grid_coords,
+                units=mapping[variable_key].get('unit'),
+                var_name=variable_key,
+                long_name=mapping[variable_key].get('long_name'),
+                aux_coords_and_dims=[(time_coord, None)])
             regrid_cube = regrid(cube)
             cube_list.append(regrid_cube)
 
@@ -1763,9 +1758,9 @@ class LIS_OTD_lightning_climatology(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'LIS_OTD_lightning_climatology')
         self.cubes = iris.cube.CubeList(
-                [iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
-                 .extract_strict(iris.Constraint(
-                     name='Combined Flash Rate Monthly Climatology'))])
+            [iris.load(os.path.join(self.dir, '*.nc'))
+             .extract_strict(iris.Constraint(
+                 name='Combined Flash Rate Monthly Climatology'))])
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
@@ -1808,28 +1803,28 @@ class LIS_OTD_lightning_climatology(Dataset):
         output_data = np.vstack(output_arrs)
 
         time_unit_str = 'days since {:}'.format(
-                str(datetime(start_year, start_month, 1)))
+            str(datetime(start_year, start_month, 1)))
         time_unit = cf_units.Unit(time_unit_str, calendar='gregorian')
         time_coord = iris.coords.DimCoord(
-                cf_units.date2num(datetimes, time_unit_str,
-                                  calendar='gregorian'),
-                standard_name='time',
-                units=time_unit)
+            cf_units.date2num(datetimes, time_unit_str,
+                              calendar='gregorian'),
+            standard_name='time',
+            units=time_unit)
 
         new_coords = [
-                (time_coord, 0),
-                (cube.coords()[0], 1),
-                (cube.coords()[1], 2)
-                ]
+            (time_coord, 0),
+            (cube.coords()[0], 1),
+            (cube.coords()[1], 2)
+            ]
 
         output_cube = iris.cube.Cube(
-                output_data,
-                dim_coords_and_dims=new_coords,
-                standard_name=cube.standard_name,
-                long_name=cube.long_name,
-                var_name=cube.var_name,
-                units=cube.units,
-                attributes=cube.attributes)
+            output_data,
+            dim_coords_and_dims=new_coords,
+            standard_name=cube.standard_name,
+            long_name=cube.long_name,
+            var_name=cube.var_name,
+            units=cube.units,
+            attributes=cube.attributes)
 
         return iris.cube.CubeList([output_cube])
 
@@ -1845,13 +1840,13 @@ class LIS_OTD_lightning_time_series(Dataset):
             return
 
         # Otherwise keep loading the data.
-        raw_cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+        raw_cubes = iris.load(os.path.join(self.dir, '*.nc'))
         # TODO: Use other attributes as well? Eg. separate LIS / OTD data,
         # grid cell area, or Time Series Sampling (km^2 / day)?
 
         # Isolate single combined flash rate.
         raw_cubes = raw_cubes.extract(
-                iris.Constraint(name='Combined Flash Rate Time Series'))
+            iris.Constraint(name='Combined Flash Rate Time Series'))
 
         for cube in raw_cubes:
             iris.coord_categorisation.add_month_number(cube, 'time')
@@ -1867,17 +1862,17 @@ class LIS_OTD_lightning_time_series(Dataset):
         # reshaped/reordered) are assigned.
 
         new_coords = [
-                (monthly_cubes[0].coord('time'), 0),
-                (monthly_cubes[0].coord('latitude'), 1),
-                (monthly_cubes[0].coord('longitude'), 2)
-                ]
+            (monthly_cubes[0].coord('time'), 0),
+            (monthly_cubes[0].coord('latitude'), 1),
+            (monthly_cubes[0].coord('longitude'), 2)
+            ]
 
         self.cubes = iris.cube.CubeList()
         for cube in monthly_cubes:
             # NOTE: This does not use any lazy data whatsoever, starting
             # with the monthly aggregation above.
             assert cube.shape[-1] == len(cube.coord('time').points), (
-                    "Old and new time dimension should have the same length")
+                "Old and new time dimension should have the same length")
             data_arrs = []
             for time_index in range(cube.shape[-1]):
                 data_arrs.append(cube.data[..., time_index][np.newaxis])
@@ -1885,8 +1880,8 @@ class LIS_OTD_lightning_time_series(Dataset):
             new_data = np.ma.vstack(data_arrs)
 
             new_cube = iris.cube.Cube(
-                    new_data,
-                    dim_coords_and_dims=new_coords)
+                new_data,
+                dim_coords_and_dims=new_coords)
             new_cube.metadata = deepcopy(cube.metadata)
             self.cubes.append(new_cube)
 
@@ -1902,7 +1897,7 @@ class Liu_VOD(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'Liu_VOD')
         self.cubes = iris.cube.CubeList([iris.load_cube(
-            glob.glob(os.path.join(self.dir, '*.nc')))])
+            os.path.join(self.dir, '*.nc'))])
 
         # Need to convert to time coordinate, as values are relative to
         # 1582-10-14, which is not supported by the cf_units gregorian
@@ -1918,9 +1913,9 @@ class Liu_VOD(Dataset):
 
         self.cubes[0].remove_coord('time')
         new_time = iris.coords.DimCoord(
-                days_since_1582_10_16,
-                standard_name='time',
-                units=new_time_unit)
+            days_since_1582_10_16,
+            standard_name='time',
+            units=new_time_unit)
         self.cubes[0].add_dim_coord(new_time, 0)
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
@@ -1933,14 +1928,14 @@ class MOD15A2H_LAI_fPAR(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'MOD15A2H_LAI-fPAR')
         self.cubes = iris.load(
-                os.path.join(self.dir, '*.nc'))
+            os.path.join(self.dir, '*.nc'))
 
         months = []
         for i in range(self.cubes[0].shape[0]):
             months.append(self.cubes[0].coords()[0].cell(i).point.month)
 
         assert np.all(np.diff(np.where(np.diff(months) != 1)) == 12), (
-                "The year should increase every 12 samples!")
+            "The year should increase every 12 samples!")
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
@@ -1956,7 +1951,7 @@ class Simard_canopyheight(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, 'Simard_canopyheight')
         self.cubes = iris.cube.CubeList(
-                [iris.load_cube(glob.glob(os.path.join(self.dir, '*.nc')))])
+            [iris.load_cube(os.path.join(self.dir, '*.nc'))])
 
     def get_monthly_data(self, start=PartialDateTime(2000, 1),
                          end=PartialDateTime(2000, 12)):
@@ -1971,22 +1966,22 @@ class Thurner_AGB(Dataset):
         # Ignore warning about units, which are fixed below.
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=(
-                "Ignoring netCDF variable 'biomass\_totalag' invalid units"
-                " 'kg\[C\]\/m2'"))
+                "Ignoring netCDF variable 'biomass_totalag' invalid units"
+                r" 'kg\[C]/m2'"))
             warnings.filterwarnings("ignore", message=(
-                "Ignoring netCDF variable 'biomass\_branches' invalid units"
-                " 'kg\[C\]\/m2'"))
+                "Ignoring netCDF variable 'biomass_branches' invalid units"
+                r" 'kg\[C]/m2'"))
             warnings.filterwarnings("ignore", message=(
-                "Ignoring netCDF variable 'biomass\_foliage' invalid units"
-                " 'kg\[C\]\/m2'"))
+                "Ignoring netCDF variable 'biomass_foliage' invalid units"
+                r" 'kg\[C]/m2'"))
             warnings.filterwarnings("ignore", message=(
-                "Ignoring netCDF variable 'biomass\_roots' invalid units"
-                " 'kg\[C\]\/m2'"))
+                "Ignoring netCDF variable 'biomass_roots' invalid units"
+                r" 'kg\[C]/m2'"))
             warnings.filterwarnings("ignore", message=(
-                "Ignoring netCDF variable 'biomass\_stem' invalid units"
-                " 'kg\[C\]\/m2'"))
+                "Ignoring netCDF variable 'biomass_stem' invalid units"
+                r" 'kg\[C]/m2'"))
 
-            self.cubes = iris.load(glob.glob(os.path.join(self.dir, '*.nc')))
+            self.cubes = iris.load(os.path.join(self.dir, '*.nc'))
 
         for cube in self.cubes:
             cube.units = cf_units.Unit('kg(C)/m2')
@@ -2025,29 +2020,29 @@ def dataset_times(datasets=None):
     """
     if datasets is None:
         datasets = [
-                AvitabileThurnerAGB(),
-                CHELSA(),
-                Copernicus_SWI(),
-                ESA_CCI_Landcover_PFT(),
-                GFEDv4(),
-                GSMaP_precipitation(),
-                GlobFluo_SIF(),
-                HYDE(),
-                LIS_OTD_lightning_time_series(),
-                Liu_VOD(),
-                MOD15A2H_LAI_fPAR(),
-                Simard_canopyheight(),
-                Thurner_AGB(),
-                ]
+            AvitabileThurnerAGB(),
+            CHELSA(),
+            Copernicus_SWI(),
+            ESA_CCI_Landcover_PFT(),
+            GFEDv4(),
+            GSMaP_precipitation(),
+            GlobFluo_SIF(),
+            HYDE(),
+            LIS_OTD_lightning_time_series(),
+            Liu_VOD(),
+            MOD15A2H_LAI_fPAR(),
+            Simard_canopyheight(),
+            Thurner_AGB(),
+            ]
 
-    time_dict = dict(
-            [(dataset.name,
-              list(map(str, (
-                  dataset.min_time,
-                  dataset.max_time,
-                  dataset.frequency
-                  ))))
-             for dataset in datasets])
+    time_dict = dict((
+        dataset.name,
+        list(map(str, (
+            dataset.min_time,
+            dataset.max_time,
+            dataset.frequency
+            )))
+        ) for dataset in datasets)
 
     min_times = [dataset.min_time for dataset in datasets
                  if dataset.min_time != 'static']
@@ -2066,17 +2061,17 @@ def dataset_times(datasets=None):
     dataset_names.append('Overall')
     dataset_names = pd.Series(dataset_names, name='Dataset')
     min_times_series = pd.Series(
-            [time_dict[name][0] for name in dataset_names],
-            name='Minimum')
+        [time_dict[name][0] for name in dataset_names],
+        name='Minimum')
     max_times_series = pd.Series(
-            [time_dict[name][1] for name in dataset_names],
-            name='Maximum')
+        [time_dict[name][1] for name in dataset_names],
+        name='Maximum')
     frequency_series = pd.Series(
-            [time_dict[name][2] for name in dataset_names],
-            name='Frequency')
+        [time_dict[name][2] for name in dataset_names],
+        name='Frequency')
     times_df = pd.DataFrame(
-            [dataset_names, min_times_series, max_times_series,
-             frequency_series]).T
+        [dataset_names, min_times_series, max_times_series,
+         frequency_series]).T
 
     return min_time, max_time, times_df
 
@@ -2089,20 +2084,20 @@ def load_dataset_cubes():
         return cubes
 
     datasets = [
-            AvitabileThurnerAGB(),
-            CHELSA(),
-            Copernicus_SWI(),
-            ESA_CCI_Landcover_PFT(),
-            GFEDv4(),
-            GSMaP_precipitation(),
-            GlobFluo_SIF(),
-            HYDE(),
-            LIS_OTD_lightning_time_series(),
-            Liu_VOD(),
-            MOD15A2H_LAI_fPAR(),
-            Simard_canopyheight(),
-            Thurner_AGB(),
-            ]
+        AvitabileThurnerAGB(),
+        CHELSA(),
+        Copernicus_SWI(),
+        ESA_CCI_Landcover_PFT(),
+        GFEDv4(),
+        GSMaP_precipitation(),
+        GlobFluo_SIF(),
+        HYDE(),
+        LIS_OTD_lightning_time_series(),
+        Liu_VOD(),
+        MOD15A2H_LAI_fPAR(),
+        Simard_canopyheight(),
+        Thurner_AGB(),
+        ]
 
     min_time, max_time, times_df = dataset_times(datasets)
     print(times_df)
@@ -2137,4 +2132,3 @@ def load_dataset_cubes():
 if __name__ == '__main__':
     logging.config.dictConfig(LOGGING)
     cubes = load_dataset_cubes()
-
