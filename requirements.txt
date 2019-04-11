@@ -11,6 +11,7 @@ netCDF4
 numpy
 pandas
 pyhdf  # reading hdf4 files (.hdf)
+pytest
 rasterio
 scikit-learn
 scipy

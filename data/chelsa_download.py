@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 import os
 from tqdm import tqdm
-from datasets import DATA_DIR
+from wildfires.data.datasets import DATA_DIR
+
+
+"""
+# URLs e.g.
+https://www.wsl.ch/lud/chelsa/data/timeseries/prec/CHELSA_prec_1979_01_V1.2.1.tif
+https://www.wsl.ch/lud/chelsa/data/timeseries/prec/CHELSA_prec_2013_12_V1.2.1.tif
+
+https://www.wsl.ch/lud/chelsa/data/timeseries/tmean/CHELSA_tmean_1979_01_V1.2.1.tif
+https://www.wsl.ch/lud/chelsa/data/timeseries/tmean/CHELSA_tmean_1979_02_V1.2.1.tif
+
+"""
 
 
 def download(dataset, year, month, ignore_existing=True,
              size_threshold=8.8e7):
-
     url = ("https://www.wsl.ch/lud/chelsa/data/timeseries/{:}/"
            "CHELSA_{:}_{:}_{:02d}_V1.2.1.tif").format(
                    dataset,
@@ -32,24 +41,15 @@ def download(dataset, year, month, ignore_existing=True,
         os.system(command)
 
 
-"""
-# eg
-https://www.wsl.ch/lud/chelsa/data/timeseries/prec/CHELSA_prec_1979_01_V1.2.1.tif
-https://www.wsl.ch/lud/chelsa/data/timeseries/prec/CHELSA_prec_2013_12_V1.2.1.tif
-
-https://www.wsl.ch/lud/chelsa/data/timeseries/tmean/CHELSA_tmean_1979_01_V1.2.1.tif
-https://www.wsl.ch/lud/chelsa/data/timeseries/tmean/CHELSA_tmean_1979_02_V1.2.1.tif
-
-"""
-datasets = ['prec', 'tmax', 'tmean', 'tmin']
-
-combinations = []
-
-for year in range(1979, 2014):
-    for month in range(1, 13):
-        for dataset in datasets:
-            combinations.append((dataset, year, month))
-
 if __name__ == '__main__':
+    datasets = ['prec', 'tmax', 'tmean', 'tmin']
+
+    combinations = []
+
+    for year in range(1979, 2014):
+        for month in range(1, 13):
+            for dataset in datasets:
+                combinations.append((dataset, year, month))
+
     for i in tqdm(range(len(combinations))):
         download(*combinations[i])
