@@ -159,6 +159,17 @@ def retrieve_hourly(
 ):
     """Retrieve hourly ERA5 data for the chosen variable.
 
+    Possible values for the variable parameter can be taken from the short names
+    (shortName column) in the tables at
+    https://confluence.ecmwf.int/display/CKB/ERA5+data+documentation.
+
+    Note:
+        Variables may have different names depending on whether the 'sfc'
+        level or a pressure level is requested.
+
+        Time information (ie. hours, minutes, etc...) in the start and end
+        arguments will be ignored.
+
     Args:
         variable (str or list of str): Variable of interest: eg.
             variable='2t' or variable='2m_temperature' refers to
@@ -181,7 +192,7 @@ def retrieve_hourly(
         target_dir (str): Directory path where the output files will be stored.
         download (bool): If True, download data one requests at a time. If
             False, simply return the list of request tuples that can be
-            used to download data.
+            used to download data (e.g. using `retrieval_processing`).
 
     Returns:
         list: list of request tuples. Each tuple contains the dataset
@@ -189,15 +200,6 @@ def retrieve_hourly(
             string. There will be one output filename per month containing
             all of the requested variables, named like
             era5_hourly_reanalysis_{year}_{month}.nc.
-
-    Note:
-        Reanalysis data is retrieved.
-
-        Variables may have different names depending on whether the 'sfc'
-        level or a pressure level is requested.
-
-        Time information (ie. hours, minutes, etc...) in the start and end
-        arguments will be ignored.
 
     """
     if download:
@@ -326,6 +328,18 @@ def retrieve_monthly(
     target_dir=DATA_DIR,
 ):
     """Retrieve monthly ERA5 data for the chosen variable.
+
+    Possible values for the variable parameter can be taken from the short names
+    (shortName column) in the tables at
+    https://confluence.ecmwf.int/display/CKB/ERA5+data+documentation.
+
+    Note:
+        Retrieval times for these requests will be very long (because the queue these
+        requests are submitted to is not assigned a very high priority by the
+        operators of the archive). It is faster to generate requests using
+        `retrieve_hourly` and then use `retrieval_processing` to handle these requests
+        in parallel while carrying out processing (like monthly averaging with
+        `processing_class`=`AveragingWorker`).
 
     Args:
         variable (str): Variable of interest: eg. variable='167.128' refers to
@@ -1150,7 +1164,7 @@ def retrieval_processing(
             while len(threads) < n_threads and requests:
                 new_request = requests.pop()
                 new_thread = new_download_thread(
-                    new_request, overwrite, processing_worker
+                    new_request, overwrite, processing_class
                 )
                 if new_thread is None:
                     logger.debug("No new download requested.")
