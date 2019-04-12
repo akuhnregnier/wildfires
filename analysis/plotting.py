@@ -11,11 +11,21 @@ import logging
 import logging.config
 
 from wildfires.logging_config import LOGGING
+
 logger = logging.getLogger(__name__)
 
-def partial_dependence_plot(model, X, features, n_cols=3, grid_resolution=100,
-                            percentiles=(0.05, 0.95), coverage=1,
-                            random_state=None, predicted_name='burned area'):
+
+def partial_dependence_plot(
+    model,
+    X,
+    features,
+    n_cols=3,
+    grid_resolution=100,
+    percentiles=(0.05, 0.95),
+    coverage=1,
+    random_state=None,
+    predicted_name="burned area",
+):
     """Plot 1 dimensional partial dependence plots.
 
     Args:
@@ -46,22 +56,21 @@ def partial_dependence_plot(model, X, features, n_cols=3, grid_resolution=100,
 
     quantiles = X[features].quantile(percentiles)
     quantile_data = pd.DataFrame(
-            np.linspace(quantiles.iloc[0], quantiles.iloc[1],
-                        grid_resolution),
-            columns=features)
+        np.linspace(quantiles.iloc[0], quantiles.iloc[1], grid_resolution),
+        columns=features,
+    )
 
     datasets = []
 
     if not np.isclose(coverage, 1):
-        logger.debug('Selecting subset of data with coverage:{:}'
-                .format(coverage))
+        logger.debug("Selecting subset of data with coverage:{:}".format(coverage))
         np.random.seed(random_state)
 
         # Select a random subset of the data.
         permuted_indices = np.random.permutation(np.arange(X.shape[0]))
-        permuted_indices = permuted_indices[:int(coverage * X.shape[0])]
+        permuted_indices = permuted_indices[: int(coverage * X.shape[0])]
     else:
-        logger.debug('Selecting all data.')
+        logger.debug("Selecting all data.")
         # Select all of the data.
         permuted_indices = np.arange(X.shape[0])
 
@@ -85,8 +94,8 @@ def partial_dependence_plot(model, X, features, n_cols=3, grid_resolution=100,
     results = pd.DataFrame(datasets, columns=features)
 
     fig, axes = plt.subplots(
-            nrows=int(math.ceil(float(len(features)) / n_cols)),
-            ncols=n_cols, squeeze=False)
+        nrows=int(math.ceil(float(len(features)) / n_cols)), ncols=n_cols, squeeze=False
+    )
 
     axes = axes.flatten()
 
@@ -96,7 +105,7 @@ def partial_dependence_plot(model, X, features, n_cols=3, grid_resolution=100,
         if i % n_cols == 0:
             ax.set_ylabel(predicted_name)
 
-    for ax in axes[len(features):]:
+    for ax in axes[len(features) :]:
         ax.set_axis_off()
 
     plt.tight_layout()
@@ -104,8 +113,9 @@ def partial_dependence_plot(model, X, features, n_cols=3, grid_resolution=100,
     return fig, axes
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import string
+
     logging.config.dictConfig(LOGGING)
 
     m = 10000
@@ -117,11 +127,7 @@ if __name__ == '__main__':
             return np.sum(X, axis=1)
 
     model = A()
-    X = pd.DataFrame(
-            np.random.random((m, n)),
-            columns=list(string.ascii_lowercase)[:n])
-    features = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']
+    X = pd.DataFrame(np.random.random((m, n)), columns=list(string.ascii_lowercase)[:n])
+    features = ["a", "b", "c", "d", "e", "f", "g", "h", "i"]
 
-    fig, axes = partial_dependence_plot(
-            model, X, features,
-            grid_resolution=100)
+    fig, axes = partial_dependence_plot(model, X, features, grid_resolution=100)

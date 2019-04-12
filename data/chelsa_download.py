@@ -16,33 +16,33 @@ https://www.wsl.ch/lud/chelsa/data/timeseries/tmean/CHELSA_tmean_1979_02_V1.2.1.
 """
 
 
-def download(dataset, year, month, ignore_existing=True,
-             size_threshold=8.8e7):
-    url = ("https://www.wsl.ch/lud/chelsa/data/timeseries/{:}/"
-           "CHELSA_{:}_{:}_{:02d}_V1.2.1.tif").format(
-                   dataset,
-                   dataset,
-                   year,
-                   month)
+def download(dataset, year, month, ignore_existing=True, size_threshold=8.8e7):
+    url = (
+        "https://www.wsl.ch/lud/chelsa/data/timeseries/{:}/"
+        "CHELSA_{:}_{:}_{:02d}_V1.2.1.tif"
+    ).format(dataset, dataset, year, month)
 
     save_as = url[23:]
     save_as = save_as[:6].upper() + save_as[6:]
     save_as = os.path.join(DATA_DIR, save_as)
     if not os.path.isdir(os.path.dirname(save_as)):
         os.makedirs(os.path.dirname(save_as))
-    if (os.path.isfile(save_as) and ignore_existing
-            and os.path.getsize(save_as) > size_threshold):
-        print("File exists and is large enough, not "
-              "downloading:'{:}'".format(save_as))
+    if (
+        os.path.isfile(save_as)
+        and ignore_existing
+        and os.path.getsize(save_as) > size_threshold
+    ):
+        print(
+            "File exists and is large enough, not " "downloading:'{:}'".format(save_as)
+        )
     else:
-        command = "curl --connect-timeout 20 -L -o {:} {:}".format(save_as,
-                                                                   url)
-        print(command + '\n')
+        command = "curl --connect-timeout 20 -L -o {:} {:}".format(save_as, url)
+        print(command + "\n")
         os.system(command)
 
 
-if __name__ == '__main__':
-    datasets = ['prec', 'tmax', 'tmean', 'tmin']
+if __name__ == "__main__":
+    datasets = ["prec", "tmax", "tmean", "tmin"]
 
     combinations = []
 
