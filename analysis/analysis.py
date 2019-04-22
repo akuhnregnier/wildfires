@@ -3,9 +3,6 @@
 
 import logging
 import logging.config
-import os
-import pickle
-
 from pprint import pprint
 
 import iris
@@ -13,8 +10,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-
-# import statsmodels.genmod.families.links as links
 
 from wildfires.data.datasets import load_dataset_cubes, data_map_plot
 from wildfires.logging_config import LOGGING
