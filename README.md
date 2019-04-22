@@ -2,7 +2,6 @@
 
 Running Tests
 =============
-`nose2 --plugin nose2.plugins.doctests --with-doctest -v`
+Simply run `pytest` in the **root** directory of the project, so that all tests will be discovered.
 
-This needs to be executed in the **root** dir of the project.
-
+If DeprecationWarning warnings are desired, run `pytest -Wd` instead.
