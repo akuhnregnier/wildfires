@@ -3,7 +3,6 @@
 """Module that simplifies use of various datasets.
 
 """
-
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime
@@ -166,11 +165,11 @@ def load_cubes(files, n=None):
 
     # Make sure files are sorted so that times increase.
     files.sort()
-    l = iris.cube.CubeList()
+    cube_list = iris.cube.CubeList()
     logger.info("Loading files.")
     for f in tqdm(files[slice(0, n, 1)]):
-        l.extend(iris.load(f))
-    return l
+        cube_list.extend(iris.load(f))
+    return cube_list
 
 
 def get_centres(data):
@@ -335,10 +334,11 @@ def monthly_constraint(
 
 
 class Dataset(ABC):
-    def __init__(self):
-        # self.dir = None
-        # self.cubes = None
-        raise NotImplementedError()
+
+    # TODO: Make sure these get overridden by the subclasses, or that every
+    # dataset uses these.
+    calendar = "gregorian"
+    time_unit_str = "days since 1970-01-01 00:00:00"
 
     @property
     def frequency(self):
@@ -354,8 +354,7 @@ class Dataset(ABC):
                 return "monthly"
             elif (start + relativedelta(months=+12)) == end:
                 return "yearly"
-            else:
-                return "unknown"
+            return "unknown"
 
         except iris.exceptions.CoordinateNotFoundError:
             return "static"
@@ -523,8 +522,8 @@ class Dataset(ABC):
         )
 
     @abstractmethod
-    def get_monthly_data(self):
-        pass
+    def get_monthly_data(self, start, end):
+        """Return monthly cubes between two dates."""
 
     def limit_months(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
@@ -591,7 +590,6 @@ class Dataset(ABC):
         Limits are inclusive.
 
         """
-
         datetimes = [datetime(start.year, start.month, 1)]
         while datetimes[-1] != PartialDateTime(end.year, end.month):
             datetimes.append(datetimes[-1] + relativedelta(months=+1))
@@ -778,14 +776,14 @@ class CHELSA(Dataset):
             nc_file = f.replace(".tif", ".nc")
             try:
                 cubes = self.read_data(nc_file)
-            except:
+            except Exception:
                 # Try again, removing a potentially corrupt file
                 # beforehand.
                 logger.exception("Read failed, recreating:'{:}'".format(nc_file))
                 cubes = None
                 try:
                     os.remove(nc_file)
-                except:
+                except Exception:
                     logger.exception("File did not exist:'{:}'".format(nc_file))
 
             if cubes:
@@ -796,7 +794,7 @@ class CHELSA(Dataset):
             try:
                 with rasterio.open(f) as dataset:
                     pass
-            except rasterio.RasterioIOError as e:
+            except rasterio.RasterioIOError:
                 logger.exception("Corrupted file.")
                 # Try to download file again.
                 url = f.replace(
@@ -1183,7 +1181,7 @@ class CRU(Dataset):
             # about the measurement stations, the files have to be handled
             # individually so that we can keep track of which stn cube
             # belongs to which data cube.
-            self.cubes = iris.load(glob.glob(os.path.join(self.dir, "*.nc")))
+            self.cubes = iris.load(os.path.join(self.dir, "*.nc"))
 
         # TODO: For now, remove the 'stn' cubes (see above).
         self.cubes = iris.cube.CubeList(
@@ -1311,7 +1309,7 @@ class ESA_CCI_Landcover(Dataset):
 class ESA_CCI_Landcover_PFT(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-LC_landcover", "0d25_lc2pft")
-        self.cubes = iris.load(glob.glob(os.path.join(self.dir, "*.nc")))
+        self.cubes = iris.load(os.path.join(self.dir, "*.nc"))
 
         time_coord = None
         for cube in self.cubes:
@@ -1340,7 +1338,7 @@ class ESA_CCI_Landcover_PFT(Dataset):
 class ESA_CCI_Soilmoisture(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-SM_soilmoisture")
-        self.cubes = iris.load(glob.glob(os.path.join(self.dir, "*.nc")))
+        self.cubes = iris.load(os.path.join(self.dir, "*.nc"))
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
@@ -1582,7 +1580,7 @@ class GlobFluo_SIF(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "GlobFluo_SIF")
         self.cubes = iris.cube.CubeList(
-            [iris.load_cube(glob.glob(os.path.join(self.dir, "*.nc")))]
+            [iris.load_cube(os.path.join(self.dir, "*.nc"))]
         )
 
         # Need to convert to time coordinate, as values are relative to
@@ -1849,7 +1847,7 @@ class LIS_OTD_lightning_climatology(Dataset):
         self.dir = os.path.join(DATA_DIR, "LIS_OTD_lightning_climatology")
         self.cubes = iris.cube.CubeList(
             [
-                iris.load(glob.glob(os.path.join(self.dir, "*.nc"))).extract_strict(
+                iris.load(os.path.join(self.dir, "*.nc")).extract_strict(
                     iris.Constraint(name="Combined Flash Rate Monthly Climatology")
                 )
             ]
@@ -1931,7 +1929,7 @@ class LIS_OTD_lightning_time_series(Dataset):
             return
 
         # Otherwise keep loading the data.
-        raw_cubes = iris.load(glob.glob(os.path.join(self.dir, "*.nc")))
+        raw_cubes = iris.load(os.path.join(self.dir, "*.nc"))
         # TODO: Use other attributes as well? Eg. separate LIS / OTD data,
         # grid cell area, or Time Series Sampling (km^2 / day)?
 
@@ -1989,7 +1987,7 @@ class Liu_VOD(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "Liu_VOD")
         self.cubes = iris.cube.CubeList(
-            [iris.load_cube(glob.glob(os.path.join(self.dir, "*.nc")))]
+            [iris.load_cube(os.path.join(self.dir, "*.nc"))]
         )
 
         # Need to convert to time coordinate, as values are relative to
@@ -2044,7 +2042,7 @@ class Simard_canopyheight(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "Simard_canopyheight")
         self.cubes = iris.cube.CubeList(
-            [iris.load_cube(glob.glob(os.path.join(self.dir, "*.nc")))]
+            [iris.load_cube(os.path.join(self.dir, "*.nc"))]
         )
 
     def get_monthly_data(
@@ -2063,40 +2061,40 @@ class Thurner_AGB(Dataset):
             warnings.filterwarnings(
                 "ignore",
                 message=(
-                    "Ignoring netCDF variable 'biomass\_totalag' invalid units"
-                    " 'kg\[C\]\/m2'"
+                    "Ignoring netCDF variable 'biomass_totalag' invalid units"
+                    r" 'kg\[C]/m2'"
                 ),
             )
             warnings.filterwarnings(
                 "ignore",
                 message=(
-                    "Ignoring netCDF variable 'biomass\_branches' invalid units"
-                    " 'kg\[C\]\/m2'"
+                    "Ignoring netCDF variable 'biomass_branches' invalid units"
+                    r" 'kg\[C]/m2'"
                 ),
             )
             warnings.filterwarnings(
                 "ignore",
                 message=(
-                    "Ignoring netCDF variable 'biomass\_foliage' invalid units"
-                    " 'kg\[C\]\/m2'"
+                    "Ignoring netCDF variable 'biomass_foliage' invalid units"
+                    r" 'kg\[C]/m2'"
                 ),
             )
             warnings.filterwarnings(
                 "ignore",
                 message=(
-                    "Ignoring netCDF variable 'biomass\_roots' invalid units"
-                    " 'kg\[C\]\/m2'"
+                    "Ignoring netCDF variable 'biomass_roots' invalid units"
+                    r" 'kg\[C]/m2'"
                 ),
             )
             warnings.filterwarnings(
                 "ignore",
                 message=(
-                    "Ignoring netCDF variable 'biomass\_stem' invalid units"
-                    " 'kg\[C\]\/m2'"
+                    "Ignoring netCDF variable 'biomass_stem' invalid units"
+                    r" 'kg\[C]/m2'"
                 ),
             )
 
-            self.cubes = iris.load(glob.glob(os.path.join(self.dir, "*.nc")))
+            self.cubes = iris.load(os.path.join(self.dir, "*.nc"))
 
         for cube in self.cubes:
             cube.units = cf_units.Unit("kg(C)/m2")
@@ -2152,13 +2150,11 @@ def dataset_times(datasets=None):
         ]
 
     time_dict = dict(
-        [
-            (
-                dataset.name,
-                list(map(str, (dataset.min_time, dataset.max_time, dataset.frequency))),
-            )
-            for dataset in datasets
-        ]
+        (
+            dataset.name,
+            list(map(str, (dataset.min_time, dataset.max_time, dataset.frequency))),
+        )
+        for dataset in datasets
     )
 
     min_times = [

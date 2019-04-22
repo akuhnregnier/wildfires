@@ -3,9 +3,6 @@
 
 import logging
 import logging.config
-import os
-import pickle
-
 from pprint import pprint
 
 import iris
@@ -14,9 +11,7 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 
-# import statsmodels.genmod.families.links as links
-
-from wildfires.data.datasets import load_dataset_cubes
+from wildfires.data.datasets import load_dataset_cubes, data_map_plot
 from wildfires.logging_config import LOGGING
 
 logger = logging.getLogger(__name__)
@@ -189,7 +184,7 @@ if __name__ == "__main__":
         "diurnal temperature range",
         "wet day frequency",
         "Combined Flash Rate Monthly Climatology",
-        ("Population Density, v4.10 (2000, 2005, 2010, 2015, 2020)" ": 30 arc-minutes"),
+        "Population Density, v4.10 (2000, 2005, 2010, 2015, 2020): 30 arc-minutes",
     }
 
     burned_area_name = "monthly burned area"
