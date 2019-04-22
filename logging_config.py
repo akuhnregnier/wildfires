@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 import os
 
-log_dir = os.path.join(os.path.dirname(__file__), "logs")
+
+log_dir = os.path.expanduser(os.path.join("~", "Documents", "wildfire_logs"))
 if not os.path.isdir(log_dir):
     os.makedirs(log_dir)
 
