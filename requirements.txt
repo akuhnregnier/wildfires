@@ -1,9 +1,12 @@
+black
 cdsapi
 cf_units
 gitpython
 h5py  # reading hdf5 files (.hdf5)
 iris
 jupyter
+jupyter_contrib_nbextensions  # conda-forge
+jupyter_nbextensions_configurator  # conda-forge, https://github.com/Jupyter-contrib/jupyter_nbextensions_configurator
 matplotlib
 netCDF4
 numpy
