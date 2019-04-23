@@ -699,19 +699,28 @@ class AveragingWorker(Worker):
         return input_filename.split(".nc")[0] + "_monthly_mean.nc"
 
     @staticmethod
-    def check_output(request, output):
+    def check_output(request, output=None):
         """Check that the output matches the request.
 
         Args:
             request (iterable of str, dict, str): A request tuple as returned
                 by `retrieve_hourly`.
-            output (iterable of int, str, str): Output of
-                `AveragingWorker.process`.
+            output (None or iterable of int, str, str): Output of
+                `AveragingWorker.process`. If None, this 3-element tuple will be
+                recreated from the input request as expected in case of successful
+                processing.
 
         Returns:
             bool: True if the output matches the request, False otherwise.
 
         """
+        downloaded_file = request[2]
+        if output is None:
+            output = (
+                0,
+                downloaded_file,
+                AveragingWorker.output_filename(downloaded_file),
+            )
         logger.debug("Comparing request {} and output {}.".format(request, output))
         if output[0] != 0:
             logger.warning(
@@ -719,7 +728,6 @@ class AveragingWorker(Worker):
                 "request {} failed with error code {}".format(request, output[0])
             )
             return False
-        downloaded_file = request[2]
         output_file = output[2]
         expected_file = AveragingWorker.output_filename(downloaded_file)
         if output_file != expected_file:
