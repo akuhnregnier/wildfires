@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 from pyhdf.SD import SD, SDC
 import rasterio
+import scipy.ndimage
 from tqdm import tqdm
 
 from wildfires.logging_config import LOGGING
@@ -1659,6 +1660,170 @@ class GPW_v4_pop_dens(Dataset):
         return final_cubelist
 
 
+class GSMaP_dry_day_period(Dataset):
+    """Calculate the length of the longest preceding dry day period.
+
+    This definition only considers dry day periods within the current month, or dry
+    day periods that occur within the current month AND previous months, ONLY if these
+    join up contiguously at the month boundaries.
+
+    Other definitions taking into account (only) dry day periods in a certain number
+    of months leading up to the current month may be possible as well, although this
+    could also be implemented in post-processing.
+
+    """
+
+    def __init__(self, times="00Z-23Z"):
+        self.dir = os.path.join(
+            DATA_DIR,
+            "GSMaP_Precipitation",
+            "hokusai.eorc.jaxa.jp",
+            "realtime_ver",
+            "v6",
+            "daily_G",
+            times,
+        )
+
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
+        # Sort so that time is increasing.
+        filenames = sorted(glob.glob(os.path.join(self.dir, "**", "*.nc")))
+
+        calendar = "gregorian"
+        time_unit_str = "days since 1970-01-01 00:00:00"
+        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
+
+        # Above this mm/h threshold, a day is a 'wet day'.
+        mm_per_hr_threshold = 0.1 / 24
+
+        logger.info("Constructing dry day period cube.")
+        dry_day_period_cubes = iris.cube.CubeList()
+
+        prev_dry_day_period = None
+        prev_end = None
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=(
+                    "Collapsing a non-contiguous coordinate. Metadata may not "
+                    "be fully descriptive for 'time'."
+                ),
+            )
+            for filename in tqdm(filenames):
+                # Clip outer values which are duplicated in the data
+                # selection below and not needed here.
+                raw_cube = iris.load_cube(filename)[..., 1:1441]
+                n_days = raw_cube.shape[0]
+                n_lats = raw_cube.shape[1]
+                n_lons = raw_cube.shape[2]
+
+                # The first time around only, create empty arrays. This will introduce
+                # some negative bias for the first month(s), but this should be
+                # negligible overall (especially since the first year is probably not
+                # being used anyway).
+                if prev_dry_day_period is None:
+                    assert prev_end is None
+                    prev_dry_day_period = np.zeros((n_lats, n_lons), dtype=np.int64)
+                    prev_end = np.zeros((n_lats, n_lons), dtype=np.bool_)
+
+                longitude_points = raw_cube.coord("longitude").points
+                assert np.min(longitude_points) == 0.125
+                assert np.max(longitude_points) == 359.875
+
+                # No need to calculate mean cube here, as we are only interested in
+                # the raw daily precipitation data.
+
+                # Calculate dry days.
+                dry_days = raw_cube.data < mm_per_hr_threshold
+
+                # Find contiguous blocks where dry_days is True.
+                structure = np.zeros((3, 3, 3), dtype=np.int64)
+                structure[:, 1, 1] = 1
+                labelled = scipy.ndimage.label(dry_days, structure=structure)
+                slices = scipy.ndimage.find_objects(labelled[0])
+
+                dry_day_period = np.zeros((n_lats, n_lons), dtype=np.int64)
+                beginning = np.zeros((n_lats, n_lons), dtype=np.bool_)
+                end = np.zeros_like(beginning)
+
+                for slice_object in slices:
+                    time_slice = slice_object[0]
+                    lat_slice = slice_object[1]
+                    lon_slice = slice_object[2]
+                    assert lat_slice.stop - lat_slice.start == 1
+                    assert lon_slice.stop - lon_slice.start == 1
+
+                    latitude = lat_slice.start
+                    longitude = lon_slice.start
+
+                    period_length = time_slice.stop - time_slice.start
+
+                    if period_length > dry_day_period[latitude, longitude]:
+                        dry_day_period[latitude, longitude] = period_length
+                        if time_slice.start == 0:
+                            beginning[latitude, longitude] = True
+                        else:
+                            beginning[latitude, longitude] = False
+                        if time_slice.stop == n_days:
+                            end[latitude, longitude] = True
+                        else:
+                            end[latitude, longitude] = False
+
+                # Once the data for the current month has been processed, look at the
+                # previous month to see if dry day periods may be joined up.
+                overlap = prev_end & beginning
+                dry_day_period[overlap] += prev_dry_day_period[overlap]
+
+                # Prepare for the next month's analysis.
+                prev_dry_day_period = dry_day_period
+                prev_end = end
+
+                # Create new Cube with the same latitudes and longitudes, and an
+                # averaged time.
+                coords = [
+                    (raw_cube.coord("latitude"), 0),
+                    (raw_cube.coord("longitude"), 1),
+                ]
+
+                # Modify the time coordinate such that it is recorded with
+                # respect to a common date, as opposed to relative to the
+                # beginning of the respective month as is the case for the
+                # cube loaded above.
+
+                # Take the new 'mean' time as the average of the first and last time.
+                min_time = raw_cube.coord("time").cell(0).point
+                max_time = raw_cube.coord("time").cell(-1).point
+                centre_datetime = min_time + ((max_time - min_time) / 2)
+
+                new_time = cf_units.date2num(centre_datetime, time_unit_str, calendar)
+                time_coord = iris.coords.DimCoord(
+                    new_time, units=time_unit, standard_name="time"
+                )
+
+                dry_day_period_cube = iris.cube.Cube(
+                    dry_day_period,
+                    dim_coords_and_dims=coords,
+                    units=cf_units.Unit("days"),
+                    var_name="dry_day_period",
+                    aux_coords_and_dims=[(time_coord, None)],
+                )
+                dry_day_period_cube.units = cf_units.Unit("days")
+
+                dry_day_period_cubes.append(dry_day_period_cube)
+
+        self.cubes = iris.cube.CubeList([dry_day_period_cubes.merge_cube()])
+        self.write_cache()
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
 class GSMaP_precipitation(Dataset):
     def __init__(self, times="00Z-23Z"):
         self.dir = os.path.join(
@@ -1697,10 +1862,10 @@ class GSMaP_precipitation(Dataset):
                     "be fully descriptive for 'time'."
                 ),
             )
-            for f in tqdm(filenames):
+            for filename in tqdm(filenames):
                 # Clip outer values which are duplicated in the data
                 # selection below and not needed here.
-                raw_cube = iris.load_cube(f)[..., 1:1441]
+                raw_cube = iris.load_cube(filename)[..., 1:1441]
                 monthly_cube = raw_cube.collapsed("time", iris.analysis.MEAN)
 
                 longitude_points = monthly_cube.coord("longitude").points
@@ -2205,6 +2370,7 @@ def load_dataset_cubes():
         ESA_CCI_Landcover_PFT(),
         GFEDv4(),
         GSMaP_precipitation(),
+        GSMaP_dry_day_period(),
         GlobFluo_SIF(),
         HYDE(),
         LIS_OTD_lightning_time_series(),
