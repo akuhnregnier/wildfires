@@ -3,18 +3,22 @@ black
 cdsapi
 cf_units
 gitpython
-h5py  # reading hdf5 files (.hdf5)
+h5py
 iris
 joblib
 jupyter
 # These packages don't work well at the moment!
-# jupyter_contrib_nbextensions  # conda-forge
-# jupyter_nbextensions_configurator  # conda-forge, https://github.com/Jupyter-contrib/jupyter_nbextensions_configurator
+# conda-forge
+# jupyter_contrib_nbextensions  
+# conda-forge, https://github.com/Jupyter-contrib/jupyter_nbextensions_configurator
+# jupyter_nbextensions_configurator  
 matplotlib
 netCDF4
+# conda-forge
+nbstripout
 numpy
 pandas
-pyhdf  # reading hdf4 files (.hdf)
+pyhdf
 pytest
 rasterio
 scikit-learn
