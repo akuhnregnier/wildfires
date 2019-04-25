@@ -55,7 +55,6 @@ def join_adjacent_intervals(intervals):
         list of list: Contiguous intervals.
 
     Examples:
-        >>> from wildfires.data.datasets import join_adjacent_intervals
         >>> join_adjacent_intervals([[1, 2], [2, 3], [-1, 1]])
         [[-1, 3]]
         >>> from datetime import datetime
@@ -177,7 +176,6 @@ def get_centres(data):
     """Get the elements between elements of an array.
 
     Examples:
-        >>> from wildfires.data.datasets import get_centres
         >>> import numpy as np
         >>> a = np.array([1,2,3])
         >>> b = get_centres(a)
