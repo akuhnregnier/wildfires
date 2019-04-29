@@ -1,3 +1,5 @@
 *.ipynb filter=nbstripout
 
-*.ipynb diff=ipynb
+*.ipynb diff=jupyternotebook
+
+*.ipynb merge=jupyternotebook
