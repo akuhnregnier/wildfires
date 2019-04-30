@@ -3,10 +3,6 @@
 """Module that simplifies use of various datasets.
 
 """
-from abc import ABC, abstractmethod
-from copy import deepcopy
-from datetime import datetime
-from dateutil.relativedelta import relativedelta
 import glob
 import logging
 import logging.config
@@ -15,21 +11,25 @@ import os
 import pickle
 import re
 import warnings
+from abc import ABC, abstractmethod
+from copy import deepcopy
+from datetime import datetime
 
 import cf_units
-from git import Repo
 import h5py
 import iris
 import iris.coord_categorisation
-from iris.time import PartialDateTime
 import iris.quickplot as qplt
 import matplotlib.pyplot as plt
 import netCDF4
 import numpy as np
 import pandas as pd
-from pyhdf.SD import SD, SDC
 import rasterio
 import scipy.ndimage
+from dateutil.relativedelta import relativedelta
+from git import Repo
+from iris.time import PartialDateTime
+from pyhdf.SD import SD, SDC
 from tqdm import tqdm
 
 from wildfires.logging_config import LOGGING

@@ -7,12 +7,11 @@ import logging
 import logging.config
 import re
 
+import requests
 from bs4 import BeautifulSoup
 from joblib import Memory
-import requests
 
 from wildfires.logging_config import LOGGING
-
 
 logger = logging.getLogger(__name__)
 URL = "https://confluence.ecmwf.int/display/CKB/ERA5+data+documentation"

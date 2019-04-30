@@ -1,13 +1,13 @@
 #!/usr/bin/env pytyhon3
 # -*- coding: utf-8 -*-
-from datetime import datetime
-from dateutil.relativedelta import relativedelta
 import os
-from pprint import pprint
 import re
+from datetime import datetime
+from pprint import pprint
+
+from dateutil.relativedelta import relativedelta
 
 from wildfires.data.datasets import DATA_DIR
-
 
 if __name__ == "__main__":
     files = os.listdir(os.path.join(DATA_DIR, "Copernicus_SWI", "monthly"))

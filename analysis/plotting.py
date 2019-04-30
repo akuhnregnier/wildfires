@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import logging
+import logging.config
 import math
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-
-import logging
-import logging.config
 
 from wildfires.logging_config import LOGGING
 

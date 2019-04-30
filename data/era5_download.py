@@ -3,31 +3,30 @@
 """Tools for downloading ERA5 data using the CDS API.
 
 """
-from abc import ABC, abstractmethod
 import calendar
-from copy import deepcopy
-from datetime import datetime
 import json
 import logging
 import logging.config
 import multiprocessing
-from multiprocessing import Process, Pipe, Queue
 import os
 import sys
-from threading import Thread
-from time import time, sleep
 import warnings
+from abc import ABC, abstractmethod
+from copy import deepcopy
+from datetime import datetime
+from multiprocessing import Pipe, Process, Queue
+from threading import Thread
+from time import sleep, time
 
 import cdsapi
-from dateutil.relativedelta import relativedelta
 import iris
-from iris.time import PartialDateTime
 import numpy as np
+from dateutil.relativedelta import relativedelta
+from iris.time import PartialDateTime
 
 from wildfires.data.datasets import DATA_DIR
 from wildfires.data.era5_tables import get_short_to_long
 from wildfires.logging_config import LOGGING, log_dir
-
 
 logger = logging.getLogger(__name__)
 variable_mapping = get_short_to_long()

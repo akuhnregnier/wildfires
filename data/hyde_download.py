@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
-from tqdm import tqdm
-from wildfires.data.datasets import DATA_DIR
 
+from tqdm import tqdm
+
+from wildfires.data.datasets import DATA_DIR
 
 if __name__ == "__main__":
     combinations = []
