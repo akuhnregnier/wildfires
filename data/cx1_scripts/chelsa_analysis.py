@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import sys
-import os
 import logging
 import logging.config
-
+import os
+import sys
 
 logger = logging.getLogger(__name__)
 

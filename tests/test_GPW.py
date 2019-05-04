@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import unittest
 from datetime import datetime
+
 from dateutil.relativedelta import relativedelta
 from iris.time import PartialDateTime
-import unittest
 
 from wildfires.data.datasets import GPW_v4_pop_dens
 

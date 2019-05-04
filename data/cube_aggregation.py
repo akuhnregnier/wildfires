@@ -16,7 +16,7 @@ import iris.coord_categorisation
 import numpy as np
 from tqdm import tqdm
 
-from wildfires.data.datasets import load_dataset_cubes, DATA_DIR
+from wildfires.data.datasets import DATA_DIR, load_dataset_cubes
 from wildfires.logging_config import LOGGING
 
 logger = logging.getLogger(__name__)

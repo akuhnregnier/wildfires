@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+"""Data analysis."""
 import logging
 import logging.config
 from pprint import pprint
@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 
-from wildfires.data.datasets import load_dataset_cubes, data_map_plot
+from wildfires.data.datasets import data_map_plot, load_dataset_cubes
 from wildfires.logging_config import LOGGING
 
 logger = logging.getLogger(__name__)

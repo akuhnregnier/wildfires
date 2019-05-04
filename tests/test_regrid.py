@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import unittest
+
 import cf_units
 import iris
 import numpy as np
-import unittest
 
-from wildfires.data.datasets import regrid
-from wildfires.data.datasets import get_centres
+from wildfires.data.datasets import get_centres, regrid
 
 
 class TestRegrid(unittest.TestCase):
