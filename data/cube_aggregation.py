@@ -11,9 +11,13 @@ import logging.config
 import os
 import pickle
 
+import fiona
 import iris
 import iris.coord_categorisation
 import numpy as np
+import rasterio
+from affine import Affine
+from rasterio import features
 from tqdm import tqdm
 
 from wildfires.data.datasets import DATA_DIR, load_dataset_cubes
@@ -157,6 +161,55 @@ def aggregate_cubes():
         pickle.dump(averaged_cubes, f, protocol=-1)
 
     return None
+
+
+def land_mask(n_lon=1440):
+    """Create land mask at the desired resolution.
+
+    Data is taken from https://www.naturalearthdata.com/
+
+    Args:
+        n_lon (int): The number of longitude points of the final mask array. As the
+            ratio between number of longitudes and latitudes has to be 2 in order for
+            uniform scaling to work, the number of latitudes points is calculated as
+            n_lon / 2.
+
+    Returns:
+        numpy.ndarray: Array of shape (n_lon / 2, n_lon) and dtype np.bool_. True
+            where there is land, False otherwise.
+
+    Examples:
+        >>> import numpy as np
+        >>> mask = land_mask(n_lon=1440)
+        >>> mask.dtype == np.bool_
+        True
+        >>> mask.sum()
+        343928
+        >>> mask.shape
+        (720, 1440)
+
+    """
+    assert n_lon % 2 == 0, (
+        "The number of longitude points has to be an even number for the number of "
+        "latitude points to be an integer."
+    )
+    n_lat = round(n_lon / 2)
+    geom_np = np.zeros((n_lat, n_lon), dtype=np.uint8)
+    with fiona.open(
+        os.path.join(DATA_DIR, "land_mask", "ne_110m_land.shp"), "r"
+    ) as shapefile:
+        for geom in shapefile:
+            geom_np += features.rasterize(
+                [geom["geometry"]],
+                out_shape=geom_np.shape,
+                dtype=np.uint8,
+                transform=~(
+                    Affine.translation(n_lat, n_lat / 2) * Affine.scale(n_lon / 360)
+                ),
+            )
+
+    geom_np = geom_np.astype(np.bool_)
+    return geom_np
 
 
 if __name__ == "__main__":
