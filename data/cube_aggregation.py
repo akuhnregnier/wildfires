@@ -35,6 +35,24 @@ target_pickles = tuple(
 )
 
 
+def get_all_dataset_variables():
+    import wildfires.data.datasets as datasets
+
+    for name in dir(wildfires.data.datasets):
+        print(name)
+        obj = getattr(datasets, name)
+        if (
+            obj != datasets.Dataset
+            and hasattr(object, "__mro__")
+            and datasets.Dataset in obj.__mro__
+        ):
+            try:
+                instance = obj()
+                print([cube.name() for cube in instance.cubes])
+            except NotImplementedError:
+                print(name, "not implemented")
+
+
 def aggregate_cubes():
     logger.info(
         "Checking for the existence of the target pickles: {}".format(target_pickles)
@@ -214,4 +232,5 @@ def land_mask(n_lon=1440):
 
 if __name__ == "__main__":
     logging.config.dictConfig(LOGGING)
-    aggregate_cubes()
+    # aggregate_cubes()
+    get_all_dataset_variables()

@@ -37,7 +37,6 @@ from wildfires.logging_config import LOGGING
 logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.expanduser("~"), "FIREDATA")
-pickle_file = os.path.join(DATA_DIR, "cubes.pickle")
 
 repo_dir = os.path.join(os.path.dirname(__file__), os.pardir)
 repo = Repo(repo_dir)
@@ -1347,7 +1346,7 @@ class ESA_CCI_Soilmoisture(Dataset):
 
 class ESA_CCI_Soilmoisture_Daily(Dataset):
     def __init__(self):
-        raise Exception("Use ESA_CCI_Soilmoisture Dataset for monthly data!")
+        raise NotImplementedError("Use ESA_CCI_Soilmoisture Dataset for monthly data!")
         self.dir = os.path.join(DATA_DIR, "soil-moisture", "daily_files", "COMBINED")
         files = sorted(glob.glob(os.path.join(self.dir, "**", "*.nc")))
         raw_cubes = load_cubes(files, 100)
