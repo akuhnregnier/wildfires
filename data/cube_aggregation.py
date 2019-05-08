@@ -38,12 +38,12 @@ target_pickles = tuple(
 def get_all_dataset_variables():
     import wildfires.data.datasets as datasets
 
-    for name in dir(wildfires.data.datasets):
+    for name in dir(datasets):
         print(name)
         obj = getattr(datasets, name)
         if (
             obj != datasets.Dataset
-            and hasattr(object, "__mro__")
+            and hasattr(obj, "__mro__")
             and datasets.Dataset in obj.__mro__
         ):
             try:
