@@ -16,6 +16,7 @@ dependencies:
   - hdf4=4.2.13=h9a582f1_1002
   - hdf5=1.10.4=nompi_h3c11f04_1106
   - ipdb=0.12=py_0
+  - ipykernel=5.1.0=py37h24bf2e0_1002
   - ipython=7.4.0=py37h24bf2e0_0
   - iris=2.2.0=py37_1003
   - isort=4.3.16=py37_0
@@ -27,6 +28,7 @@ dependencies:
   - jupyterlab_server=0.2.0=py_0
   - matplotlib=3.0.3=py37_1
   - matplotlib-base=3.0.3=py37h5f35d83_1
+  - nb_conda_kernels=2.2.1=py37_0
   - nbconvert=5.4.1=py_2
   - nbdime=1.0.5=py37_0
   - nbformat=4.4.0=py_1
