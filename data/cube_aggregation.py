@@ -19,6 +19,7 @@ from affine import Affine
 from rasterio import features
 from tqdm import tqdm
 
+import wildfires.data.datasets as datasets
 from wildfires.data.datasets import DATA_DIR, load_dataset_cubes
 from wildfires.logging_config import LOGGING
 
@@ -35,7 +36,6 @@ target_pickles = tuple(
 
 
 def get_all_dataset_variables():
-    import wildfires.data.datasets as datasets
 
     for name in dir(datasets):
         print(name)

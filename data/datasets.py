@@ -1381,7 +1381,7 @@ class ESA_CCI_Soilmoisture_Daily(Dataset):
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
     ):
-        raise NotImplementedError("See note above.")
+        raise NotImplementedError("Use ESA_CCI_Soilmoisture Dataset for monthly data!")
         # TODO: Isolate actual soil moisture.
         return self.monthly_means.extract(
             iris.Constraint(time=lambda t: end >= t.point >= start)
