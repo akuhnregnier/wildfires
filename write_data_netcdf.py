@@ -4,7 +4,6 @@ import argparse
 import calendar
 import glob
 import os
-import shutil
 from textwrap import dedent
 
 

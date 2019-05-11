@@ -15,7 +15,6 @@ import fiona
 import iris
 import iris.coord_categorisation
 import numpy as np
-import rasterio
 from affine import Affine
 from rasterio import features
 from tqdm import tqdm

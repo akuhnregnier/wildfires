@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import os
-
-from tqdm import tqdm
-
-from wildfires.data.datasets import DATA_DIR
-
-
 """
 # URLs e.g.
 https://www.wsl.ch/lud/chelsa/data/timeseries/prec/CHELSA_prec_1979_01_V1.2.1.tif
@@ -16,6 +9,11 @@ https://www.wsl.ch/lud/chelsa/data/timeseries/tmean/CHELSA_tmean_1979_01_V1.2.1.
 https://www.wsl.ch/lud/chelsa/data/timeseries/tmean/CHELSA_tmean_1979_02_V1.2.1.tif
 
 """
+import os
+
+from tqdm import tqdm
+
+from wildfires.data.datasets import DATA_DIR
 
 
 def download(dataset, year, month, ignore_existing=True, size_threshold=8.8e7):

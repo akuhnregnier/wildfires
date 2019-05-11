@@ -9,12 +9,9 @@ import os
 import cartopy.crs as ccrs
 import iris
 import matplotlib as mpl
-import matplotlib.cm as mpl_cm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from iris.time import PartialDateTime
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from tqdm import tqdm
 
 from wildfires.analysis.processing import log_modulus

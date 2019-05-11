@@ -1,4 +1,4 @@
-name: root
+name: wildfires
 channels:
   - conda-forge
   - defaults
@@ -38,6 +38,7 @@ dependencies:
   - numpy=1.16.3=py37he5ce36f_0
   - pandas=0.24.2=py37hf484d3e_0
   - pip=19.0.3=py37_0
+  - pre_commit=1.16.1=py37_0
   - pyflakes=2.1.1=py_0
   - pyhdf=0.10.1=py37h6053bd1_0
   - pylint=2.3.1=py37_0
@@ -54,10 +55,9 @@ dependencies:
   - statsmodels=0.9.0=py37h3010b51_1000
   - tqdm=4.31.1=py_0
   - pip:
-    - clean-ipynb==0.1.2
+    - https://github.com/akuhnregnier/clean_ipynb/archive/own-working.zip
     - jupyterlab-code-formatter==0.2.1
     - logging-tree==1.8
     - neovim==0.3.1
     - neovim-remote==2.1.7
     - pynvim==0.3.2
-prefix: /home/alexander/.pyenv/versions/miniconda3-latest
