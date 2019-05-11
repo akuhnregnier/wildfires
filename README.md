@@ -2,35 +2,60 @@
 
 ## Development
 
+**All** essential configuration steps detailed in the section [Prerequisites](#prerequisites) are automatically carried out by `dev/bootstrap.py`.
+To view options for this initial setup, run
+```sh
+dev/bootstrap.py --help
+```
+
+#### Installing JupyterLab extensions
+
+```sh
+dev/install_jupyter_extensions.py
+```
+
+## Prerequisites
+
 ### Installing Dependencies
 
-#### Creating a new Conda Environment
+This information is mainly for reference and additional documentation of `dev/bootstrap.py`, or if individual parts (like using `pytest`) should be carried out independently.
 
-Creating a new environment called 'wildfires' (the default specified in `requirements.yaml`):
-```sh
-conda env create --file requirements.yaml
-```
-
-Overwriting an existing environment of the same name:
-```sh
-conda env create --file requirements.yaml --force
-```
-
-Creating a new environment called 'foo':
-```sh
-conda env create --file requirements.yaml --name foo
-```
 
 #### Installing Into an Existing Environment
 
-Installing all packages and configuring JupyterLab extensions:
+Installing all packages and configuring all tools:
 ```sh
-./install_packages.py
+dev/bootstrap.py existing
 ```
 
-Installing all packages without configuring JupyterLab extensions:
+#### Installing Into a New Environment
+
+By default, the new environment will be called 'wildfires'.
+Installation will fail if an environment with this name is already present, unless the `--force` flag is supplied, as shown below:
 ```sh
-./install_packages.py --skip-jupyter
+dev/bootstrap.py new --force
+```
+
+Internally `dev/bootstrap.py new` uses `conda env create` with support for the `--name` and `--force` options.
+
+#### Creating a new Conda Environment Manually
+
+Creating a new environment called 'wildfires':
+```sh
+conda env create --file requirements.yaml --name wildfires
+```
+
+Overwriting an existing environment called 'wildfires':
+```sh
+conda env create --file requirements.yaml --name wildfires --force
+```
+
+#### Using a New Environment
+
+Making a new environment the local default environment for the repository using pyenv (assuming `--name wildfires` was used):
+```sh
+pyenv activate wildfires
+pyenv local $PYENV_VERSION
 ```
 
 ### Hooks and Tests
@@ -39,11 +64,10 @@ To set up pre-commit hooks, run
 ```sh
 pre-commit install
 ```
-This needs to be done **every time** the repository is cloned!
+This needs to be done **every time** the repository is cloned (as is done by `dev/bootstrap.py`)!
 
 #### Manual pre-commit Testing
 
-Run
 ```sh
 pre-commit run --verbose --all-files
 ```

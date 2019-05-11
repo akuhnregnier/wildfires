@@ -20,14 +20,12 @@ repos:
       hooks:
           - id: jupyter-clean
             name: jupyter-clean
-            entry: clean_ipynb -no-py -no-autoflake -keep-output ./
+            entry: clean_ipynb --no-py --no-autoflake --keep-output
             language: system
-            pass_filenames: false
             files: \.ipynb$
           - id: python-clean
             name: python-clean
-            entry: clean_ipynb -no-ipynb ./
-            pass_filenames: false
+            entry: clean_ipynb --no-ipynb
             language: system
             files: \.py$
           - id: pytest
