@@ -12,8 +12,8 @@ LOGGING = {
     "formatters": {
         "default": {
             "format": (
-                "%(asctime)s:%(levelname)-8s:%(name)-20s"
-                ":%(lineno)-5s:%(funcName)-30s:%(message)s"
+                "%(asctime)s:%(levelname)-8s:%(name)-20s:%(filename)-25s:%(lineno)-5s"
+                ":%(funcName)-30s:%(message)s"
             )
         }
     },
