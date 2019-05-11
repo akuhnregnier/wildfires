@@ -37,9 +37,11 @@ target_pickles = tuple(
 
 def get_all_dataset_variables():
 
-    for name in dir(datasets):
-        print(name)
-        obj = getattr(datasets, name)
+    dataset_variables = dict()
+    dataset_names = sorted(dir(datasets))
+    for dataset_name in dataset_names:
+        print(dataset_name)
+        obj = getattr(datasets, dataset_name)
         if (
             obj != datasets.Dataset
             and hasattr(obj, "__mro__")
@@ -47,9 +49,13 @@ def get_all_dataset_variables():
         ):
             try:
                 instance = obj()
-                print([cube.name() for cube in instance.cubes])
+                var_names = sorted([cube.name() for cube in instance.cubes])
+                dataset_variables[dataset_name] = var_names
             except NotImplementedError:
-                print(name, "not implemented")
+                print(dataset_name, "is not implemented.")
+    from pprint import pprint
+
+    pprint(dataset_variables)
 
 
 def aggregate_cubes():
