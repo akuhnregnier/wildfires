@@ -106,11 +106,6 @@ def main():
 
     args = parser.parse_args()
 
-    run(("clean_ipynb", "--help"))
-    run(("which", "clean_ipynb"))
-
-    raise Exception()
-
     if args.command == "existing":
         install_into_existing_env()
     elif args.command == "new":
@@ -125,11 +120,19 @@ def main():
         ]
         if args.force:
             new_env_cmd.append("--force")
+
         if run(new_env_cmd).returncode:
             raise RuntimeError(
                 "Installation into new environment failed. Use `./bootstrap.py new "
                 "--force` to overwrite an existing environment."
             )
+        env_activate_instructions = (
+            "To activate the new environment and make it the local default using "
+            "pyenv, run the following commands:\n\n"
+            "\tpyenv activate {}\n"
+            "\tpyenv local $PYENV_VERSION\n"
+        ).format(args.name)
+        print(env_activate_instructions)
     else:
         raise ValueError("Unknown command '{}'.".format(args.command))
 
