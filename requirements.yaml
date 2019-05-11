@@ -1,4 +1,4 @@
-name: root
+name: wildfires
 channels:
   - conda-forge
   - defaults
@@ -16,6 +16,7 @@ dependencies:
   - hdf4=4.2.13=h9a582f1_1002
   - hdf5=1.10.4=nompi_h3c11f04_1106
   - ipdb=0.12=py_0
+  - ipykernel=5.1.0=py37h24bf2e0_1002
   - ipython=7.4.0=py37h24bf2e0_0
   - iris=2.2.0=py37_1003
   - isort=4.3.16=py37_0
@@ -27,6 +28,7 @@ dependencies:
   - jupyterlab_server=0.2.0=py_0
   - matplotlib=3.0.3=py37_1
   - matplotlib-base=3.0.3=py37h5f35d83_1
+  - nb_conda_kernels=2.2.1=py37_0
   - nbconvert=5.4.1=py_2
   - nbdime=1.0.5=py37_0
   - nbformat=4.4.0=py_1
@@ -36,6 +38,7 @@ dependencies:
   - numpy=1.16.3=py37he5ce36f_0
   - pandas=0.24.2=py37hf484d3e_0
   - pip=19.0.3=py37_0
+  - pre_commit=1.16.1=py37_0
   - pyflakes=2.1.1=py_0
   - pyhdf=0.10.1=py37h6053bd1_0
   - pylint=2.3.1=py37_0
@@ -52,10 +55,9 @@ dependencies:
   - statsmodels=0.9.0=py37h3010b51_1000
   - tqdm=4.31.1=py_0
   - pip:
-    - clean-ipynb==0.1.2
+    - https://github.com/akuhnregnier/clean_ipynb/archive/own-working.zip
     - jupyterlab-code-formatter==0.2.1
     - logging-tree==1.8
     - neovim==0.3.1
     - neovim-remote==2.1.7
     - pynvim==0.3.2
-prefix: /home/alexander/.pyenv/versions/miniconda3-latest

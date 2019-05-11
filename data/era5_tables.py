@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*_
+# -*- coding: utf-8 -*-
 """Determining the available datasets by parsing the documentation website.
 
 """

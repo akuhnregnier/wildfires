@@ -1,0 +1,37 @@
+fail_fast: false
+minimum_pre_commit_version: '1.16.1'
+repos:
+    - repo: https://github.com/pre-commit/pre-commit-hooks
+      rev: v2.2.1
+      hooks:
+          - id: check-added-large-files
+            args: ['--maxkb=400']
+          - id: check-ast
+          - id: check-docstring-first
+          - id: check-executables-have-shebangs
+          - id: check-json
+          - id: check-merge-conflict
+          - id: check-symlinks
+          - id: check-yaml
+          - id: debug-statements
+          - id: fix-encoding-pragma
+          - id: trailing-whitespace
+    - repo: local
+      hooks:
+          - id: jupyter-clean
+            name: jupyter-clean
+            entry: clean_ipynb -no-py -no-autoflake -keep-output ./
+            language: system
+            pass_filenames: false
+            files: \.ipynb$
+          - id: python-clean
+            name: python-clean
+            entry: clean_ipynb -no-ipynb ./
+            pass_filenames: false
+            language: system
+            files: \.py$
+          - id: pytest
+            name: pytest
+            entry: pytest -v
+            pass_filenames: false
+            language: system
