@@ -8,7 +8,6 @@ import logging
 import logging.config
 import operator
 import os
-import pickle
 import re
 import warnings
 from abc import ABC, abstractmethod
@@ -31,8 +30,6 @@ from git import Repo
 from iris.time import PartialDateTime
 from pyhdf.SD import SD, SDC
 from tqdm import tqdm
-
-from wildfires.logging_config import LOGGING
 
 logger = logging.getLogger(__name__)
 
@@ -371,12 +368,6 @@ class Dataset(ABC):
         except iris.exceptions.CoordinateNotFoundError:
             return "static"
 
-    def get_data(self):
-        """Returns either lazy data (dask array) or a numpy array.
-
-        """
-        return self.cube.core_data()
-
     @property
     def name(self):
         return type(self).__name__
@@ -687,6 +678,10 @@ class CarvalhaisGPP(Dataset):
         self.cubes = iris.cube.CubeList(
             [iris.load_cube(os.path.join(self.dir, "Carvalhais.gpp_50.360.720.1.nc"))]
         )
+        # There is only one time coordinate, and its value is of no relevance.
+        # Therefore, remove this coordinate.
+        self.cubes[0] = self.cubes[0][0]
+        self.cubes[0].remove_coord("time")
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
@@ -908,7 +903,7 @@ class Copernicus_SWI(Dataset):
     """For primary analysis, it is advisable to use hpc
     (cx1_scipts/run_swi_script.sh) in order to process the daily nc files
     into monthly nc files as a series of jobs, which would take an
-    incredibly long time and large amounts of RAM ontherwise (on the order
+    incredibly long time and large amounts of RAM otherwise (on the order
     of days).
 
     Once that script has been run, the resulting nc files can be used to
@@ -2014,6 +2009,34 @@ class LIS_OTD_lightning_climatology(Dataset):
                 )
             ]
         )
+        # Fix time units so they do not refer months, as this can't be processed by
+        # iris / cf_units.
+        # Realign times so they are at the centre of each month.
+
+        # Check that existing time coordinate is as expected.
+        assert self.cubes[0].coord("time").units.origin == "months since 2014-1-1 0:0:0"
+        assert all(self.cubes[0].coord("time").points == np.arange(1, 13))
+
+        datetimes = [
+            (
+                (
+                    (datetime(2014, month, 1) + relativedelta(months=+1))
+                    - datetime(2014, month, 1)
+                )
+                / 2
+            )
+            + datetime(2014, month, 1)
+            for month in np.arange(1, 13)
+        ]
+        time_unit_str = "days since {:}".format(str(datetime(2014, 1, 1)))
+        time_unit = cf_units.Unit(time_unit_str, calendar="gregorian")
+        time_coord = iris.coords.DimCoord(
+            cf_units.date2num(datetimes, time_unit_str, calendar="gregorian"),
+            standard_name="time",
+            units=time_unit,
+        )
+        self.cubes[0].coord("time").points = time_coord.points
+        self.cubes[0].coord("time").units = time_coord.units
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
@@ -2351,62 +2374,3 @@ def dataset_times(datasets=None):
     ).T
 
     return min_time, max_time, times_df
-
-
-def load_dataset_cubes():
-
-    if os.path.isfile(pickle_file):
-        with open(pickle_file, "rb") as f:
-            cubes = pickle.load(f)
-        return cubes
-
-    datasets = [
-        AvitabileThurnerAGB(),
-        CHELSA(),
-        Copernicus_SWI(),
-        ESA_CCI_Landcover_PFT(),
-        GFEDv4(),
-        GSMaP_precipitation(),
-        GSMaP_dry_day_period(),
-        GlobFluo_SIF(),
-        HYDE(),
-        LIS_OTD_lightning_time_series(),
-        Liu_VOD(),
-        MOD15A2H_LAI_fPAR(),
-        Simard_canopyheight(),
-        Thurner_AGB(),
-    ]
-
-    min_time, max_time, times_df = dataset_times(datasets)
-    print(times_df)
-
-    # Limit the amount of data that has to be processed.
-    logger.info("Limiting data")
-    for dataset in datasets:
-        dataset.limit_months(min_time, max_time)
-    logger.info("Finished limiting data")
-
-    # Regrid cubes to the same lat-lon grid.
-    # TODO: change lat and lon limits and also the number of points!!
-    # Always work in 0.25 degree steps? From the same starting point?
-    logger.info("Starting regridding of all datasets")
-    for dataset in datasets:
-        dataset.regrid()
-    logger.info("Finished regridding of all datasets")
-
-    logger.info("Starting temporal upscaling")
-    # Join up all the cubes.
-    cubes = iris.cube.CubeList()
-    for dataset in datasets:
-        cubes.extend(dataset.get_monthly_data(min_time, max_time))
-    logger.info("Finished temporal upscaling")
-
-    with open(pickle_file, "wb") as f:
-        pickle.dump(cubes, f, -1)
-
-    return cubes
-
-
-if __name__ == "__main__":
-    logging.config.dictConfig(LOGGING)
-    cubes = load_dataset_cubes()

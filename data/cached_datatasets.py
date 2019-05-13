@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from joblib import Memory
-from wildfires.data.datasets import HYDE, DATA_DIR
+
+from wildfires.data.datasets import DATA_DIR, HYDE
 
 mem = Memory(location=DATA_DIR, verbose=2)
 
