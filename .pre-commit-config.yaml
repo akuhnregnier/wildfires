@@ -30,6 +30,7 @@ repos:
             files: \.py$
           - id: pytest
             name: pytest
-            entry: pytest -v
+            entry: pytest -v -rs
             pass_filenames: false
             language: system
+            verbose: true
