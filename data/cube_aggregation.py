@@ -5,6 +5,9 @@
 A subset of variables is selected. This selected subset, its total time average, and
 its monthly climatology are all stored as pickle files.
 
+TODO: Enable regex based processing of dataset names too (e.g. for
+TODO: Selection.remove_datasets or Selection.select_datasets).
+
 """
 import logging
 import logging.config
@@ -1114,6 +1117,52 @@ def prepare_selection(selection):
     # Get list of names for further selection.
     # pprint(selection.raw_variable_names)
 
+    # # Realise data - not necessary when using iris.save, but necessary here as pickle
+    # # files are being used!
+    # [c.data for c in selected_cubes]
+    # with open(TARGET_PICKLES[0], "wb") as f:
+    #     pickle.dump(selected_cubes, f, protocol=-1)
+
+    # mean_cubes = iris.cube.CubeList(
+    #     [c.collapsed("time", iris.analysis.MEAN) for c in selected_cubes]
+    # )
+    # logger.info(mean_cubes)
+
+    # # Realise data - not necessary when using iris.save, but necessary here as pickle
+    # # files are being used!
+    # [c.data for c in mean_cubes]
+    # with open(TARGET_PICKLES[1], "wb") as f:
+    #     pickle.dump(mean_cubes, f, protocol=-1)
+
+    # # Generate monthly climatology.
+    # averaged_cubes = iris.cube.CubeList([])
+    # for cube in tqdm(selected_cubes):
+    #     if not cube.coords("month_number"):
+    #         iris.coord_categorisation.add_month_number(cube, "time")
+    #     averaged_cubes.append(cube.aggregated_by("month_number", iris.analysis.MEAN))
+
+    # # Store monthly climatology.
+    # # Realise data - not necessary when using iris.save, but necessary here as pickle
+    # # files are being used!
+    # [c.data for c in averaged_cubes]
+    # with open(TARGET_PICKLES[2], "wb") as f:
+    #     pickle.dump(averaged_cubes, f, protocol=-1)
+
+
+if __name__ == "__main__":
+    logging.config.dictConfig(LOGGING)
+
+    selection = get_all_datasets()
+
+    selection.remove_datasets(
+        (
+            "AvitabileAGB",
+            "ESA_CCI_Landcover",
+            "GFEDv4s",
+            "GPW_v4_pop_dens",
+            "Thurner_AGB",
+        )
+    )
     selected_names = [
         "AGBtree",
         # 'mean temperature',
@@ -1185,47 +1234,7 @@ def prepare_selection(selection):
         # 'biomass_roots',
         # 'biomass_stem'
     ]
-
     selection.select_variables(selected_names)
 
-    # # Realise data - not necessary when using iris.save, but necessary here as pickle
-    # # files are being used!
-    # [c.data for c in selected_cubes]
-    # with open(TARGET_PICKLES[0], "wb") as f:
-    #     pickle.dump(selected_cubes, f, protocol=-1)
-
-    # mean_cubes = iris.cube.CubeList(
-    #     [c.collapsed("time", iris.analysis.MEAN) for c in selected_cubes]
-    # )
-    # logger.info(mean_cubes)
-
-    # # Realise data - not necessary when using iris.save, but necessary here as pickle
-    # # files are being used!
-    # [c.data for c in mean_cubes]
-    # with open(TARGET_PICKLES[1], "wb") as f:
-    #     pickle.dump(mean_cubes, f, protocol=-1)
-
-    # # Generate monthly climatology.
-    # averaged_cubes = iris.cube.CubeList([])
-    # for cube in tqdm(selected_cubes):
-    #     if not cube.coords("month_number"):
-    #         iris.coord_categorisation.add_month_number(cube, "time")
-    #     averaged_cubes.append(cube.aggregated_by("month_number", iris.analysis.MEAN))
-
-    # # Store monthly climatology.
-    # # Realise data - not necessary when using iris.save, but necessary here as pickle
-    # # files are being used!
-    # [c.data for c in averaged_cubes]
-    # with open(TARGET_PICKLES[2], "wb") as f:
-    #     pickle.dump(averaged_cubes, f, protocol=-1)
-
-
-if __name__ == "__main__":
-    logging.config.dictConfig(LOGGING)
-
-    selection = get_all_datasets()
-    print(selection.pretty_dataset_names)
-    selection.remove_datasets(("ESA_CCI_Landcover",))
-    print(selection.pretty_dataset_names)
     selection.show("pretty")
     prepare_selection(selection)
