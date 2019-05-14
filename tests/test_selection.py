@@ -187,6 +187,11 @@ def test_hash(sel):
 def test_selection(sel, long_sel):
     # Selection using a dataset: name dict.
     assert sel.select_variables(("burned area", "popd", "raw_name")) == sel
+
+    # # Testing regex support as well.
+    assert sel.select_variables(("burned", "pop", "raw_")) == sel
+    assert sel.select_variables(("b*area", "pop", "r*name")) == sel
+
     assert set(
         sel.select_variables(("burned area", "raw_name")).pretty_variable_names
     ) == set(("burned area", "raw_name"))

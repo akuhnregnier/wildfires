@@ -9,16 +9,14 @@ its monthly climatology are all stored as pickle files.
 import logging
 import logging.config
 import os
+import re
 from collections import OrderedDict, defaultdict, namedtuple
 from copy import deepcopy
+from functools import total_ordering
 from pprint import pformat, pprint
 
-import fiona
 import iris
 import iris.coord_categorisation
-import numpy as np
-from affine import Affine
-from rasterio import features
 
 import wildfires.data.datasets as wildfire_datasets
 from wildfires.data.datasets import DATA_DIR, dataset_times
@@ -34,6 +32,105 @@ TARGET_PICKLES = tuple(
         "monthly_climatologies.pickle",
     )
 )
+
+
+@total_ordering
+class Entry:
+    """Blueprint for a dataset or variable entry in `Selection`.
+
+    Examples:
+        >>> # Dataset = Entry("Dataset", ("x", "y"))
+        >>> Dataset = type("Dataset", (Entry,) ,{"field_names": ("x", "y")})
+        >>> dataset = Dataset(x=1, y=2)
+        >>> dataset.entry == namedtuple("Dataset", ("x", "y"))(1, 2)
+        True
+        >>> dataset == namedtuple("Dataset", ("x", "y"))(1, 2)
+        True
+        >>> dataset.x
+        1
+        >>> getattr(dataset, "y")
+        2
+        >>> for number in dataset:
+        ...     print(number)
+        1
+        2
+        >>> assert 1 in dataset
+        >>> assert 99 not in dataset
+        >>> dataset2 = Dataset(x=3, y=4)
+        >>> dataset2
+        Dataset(x=3, y=4)
+        >>> dataset
+        Dataset(x=1, y=2)
+        >>> assert id(dataset) != id(dataset2)
+        >>> from copy import deepcopy
+        >>> from copy import copy
+        >>> assert copy(dataset) == dataset
+        >>> assert copy(dataset) is not dataset
+        >>> assert deepcopy(dataset) == dataset
+        >>> assert deepcopy(dataset) is not dataset
+        >>> raw_tuple1 = namedtuple("Dataset", ("x", "y"))(1, 2)
+        >>> raw_tuple2 = namedtuple("Dataset", ("x", "y"))(2, 3)
+        >>> assert raw_tuple1 < raw_tuple2
+        >>> entry1 = Dataset(1, 2)
+        >>> entry2 = Dataset(2, 3)
+        >>> assert entry1 < entry2
+        >>> assert entry1 != entry2
+        >>> assert entry2 > entry1
+
+    """
+
+    def __init__(self, *args, **kwargs):
+        self.entry = namedtuple(self.__class__.__name__, self.field_names)(
+            *args, **kwargs
+        )
+
+    def __copy__(self, *args, **kwargs):
+        return self.__class__(*self.entry)
+
+    def __deepcopy__(self, *args, **kwargs):
+        return self.__class__(*(deepcopy(value) for value in self.entry))
+
+    def __len__(self):
+        return len(self.entry)
+
+    def __getitem__(self, key):
+        return self.entry[key]
+
+    def __iter__(self):
+        return iter(self.entry)
+
+    def __getattr__(self, attr):
+        return getattr(self.entry, attr)
+
+    def __eq__(self, other):
+        return self.entry == other
+
+    def __lt__(self, other):
+        if not isinstance(other, Entry):
+            return NotImplemented
+        return self.entry < other.entry
+
+    def __hash__(self):
+        return hash(self.entry)
+
+    def __str__(self):
+        return str(self.entry)
+
+    def __repr__(self):
+        return repr(self.entry)
+
+    def __contains__(self, item):
+        """String matching for selected fields."""
+        for field in self.entry._fields:
+            value = getattr(self.entry, field)
+            # If they are both strings, use regular expressions.
+            if all(isinstance(obj, str) for obj in (item, value)):
+                if re.search(item, value):
+                    return True
+            else:
+                if item == value:
+                    return True
+        return False
 
 
 class Selection:
@@ -102,10 +199,14 @@ class Selection:
     """
 
     def __init__(self, dataset_variables=None):
-        self.__dataset = namedtuple("Dataset", ("raw", "pretty", "instance"))
-        self.__variable = namedtuple("Variable", ("raw", "pretty"))
+        # self.__dataset = Entry("Dataset", ("raw", "pretty", "instance"))
+        # self.__variable = Entry("Variable", ("raw", "pretty"))
+        self.__dataset = type(
+            "Dataset", (Entry,), {"field_names": ("raw", "pretty", "instance")}
+        )
+        self.__variable = type("Variable", (Entry,), {"field_names": ("raw", "pretty")})
 
-        # Set up the cache (sets to empty dicts).
+        # Set up the cache (assign empty dicts to cache-related variables).
         self.clear_cache()
 
         self.dataset_variables = defaultdict(list)
@@ -380,11 +481,11 @@ class Selection:
 
         dataset_match_count = 0
         prev_match_key = None
-        for dataset_key_names in self.dataset_variables:
+        for stored_dataset in self.dataset_variables:
             increment = sum(
                 (
-                    dataset.raw == dataset_key_names.raw,
-                    dataset.pretty == dataset_key_names.pretty,
+                    dataset.raw == stored_dataset.raw,
+                    dataset.pretty == stored_dataset.pretty,
                 )
             )
             if increment:
@@ -393,13 +494,13 @@ class Selection:
                         (
                             "A match between the new dataset '{}' and "
                             "both the existing datasets '{}' and '{}' was found."
-                        ).format(dataset, prev_match_key, dataset_key_names)
+                        ).format(dataset, prev_match_key, stored_dataset)
                     )
 
                 # If there was a name match, make sure that the instances match too.
-                increment += dataset.instance == dataset_key_names.instance
+                increment += dataset.instance == stored_dataset.instance
 
-                prev_match_key = dataset_key_names
+                prev_match_key = stored_dataset
                 dataset_match_count += increment
 
         if dataset_match_count not in {0, len(dataset._fields)}:
@@ -894,7 +995,7 @@ class Selection:
         pprint(self.get(dataset="all", variable_format=variable_format))
 
 
-def get_all_dataset_variables(pretty_dataset_names={}, pretty_variable_names={}):
+def get_all_datasets(pretty_dataset_names={}, pretty_variable_names={}):
     """Get all valid datasets defined in the `wildfires.data.datasets` module.
 
     Args:
@@ -935,10 +1036,7 @@ def get_all_dataset_variables(pretty_dataset_names={}, pretty_variable_names={})
     return selection
 
 
-def get_data():
-
-    selection = get_all_dataset_variables()
-
+def prepare_selection(selection):
     min_time, max_time, times_df = dataset_times(selection.instances)
     print(times_df)
 
@@ -1054,10 +1152,7 @@ def get_data():
         # 'biomass_stem'
     ]
 
-    print("Before vs after:")
-    print(len(selection.raw_variable_names))
     selection.select_variables(selected_names)
-    print(len(selection.raw_variable_names))
 
     # # Realise data - not necessary when using iris.save, but necessary here as pickle
     # # files are being used!
@@ -1091,55 +1186,12 @@ def get_data():
     #     pickle.dump(averaged_cubes, f, protocol=-1)
 
 
-def land_mask(n_lon=1440):
-    """Create land mask at the desired resolution.
-
-    Data is taken from https://www.naturalearthdata.com/
-
-    Args:
-        n_lon (int): The number of longitude points of the final mask array. As the
-            ratio between number of longitudes and latitudes has to be 2 in order for
-            uniform scaling to work, the number of latitudes points is calculated as
-            n_lon / 2.
-
-    Returns:
-        numpy.ndarray: Array of shape (n_lon / 2, n_lon) and dtype np.bool_. True
-            where there is land, False otherwise.
-
-    Examples:
-        >>> import numpy as np
-        >>> mask = land_mask(n_lon=1440)
-        >>> mask.dtype == np.bool_
-        True
-        >>> mask.sum()
-        343928
-        >>> mask.shape
-        (720, 1440)
-
-    """
-    assert n_lon % 2 == 0, (
-        "The number of longitude points has to be an even number for the number of "
-        "latitude points to be an integer."
-    )
-    n_lat = round(n_lon / 2)
-    geom_np = np.zeros((n_lat, n_lon), dtype=np.uint8)
-    with fiona.open(
-        os.path.join(DATA_DIR, "land_mask", "ne_110m_land.shp"), "r"
-    ) as shapefile:
-        for geom in shapefile:
-            geom_np += features.rasterize(
-                [geom["geometry"]],
-                out_shape=geom_np.shape,
-                dtype=np.uint8,
-                transform=~(
-                    Affine.translation(n_lat, n_lat / 2) * Affine.scale(n_lon / 360)
-                ),
-            )
-
-    geom_np = geom_np.astype(np.bool_)
-    return geom_np
-
-
 if __name__ == "__main__":
     logging.config.dictConfig(LOGGING)
-    get_data()
+
+    # selection = get_all_datasets()
+    # print(selection.pretty_dataset_names)
+    # selection.remove_datasets(("ESA_CCI_Landcover",))
+    # print(selection.pretty_dataset_names)
+    # selection.show("pretty")
+    # prepare_selection(selection)
