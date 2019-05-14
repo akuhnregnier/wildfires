@@ -475,8 +475,6 @@ class Selection:
 
         """
         logger.debug("Get() called with Selection '{}'".format(id(self)))
-        logger.debug(self.__last_state[variable_format])
-        logger.debug(self.dataset_variables)
         if self.__last_state[variable_format] == self.immutable:
             # Return previously calculated dictionary.
             logger.debug(
