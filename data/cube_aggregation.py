@@ -97,16 +97,7 @@ class Selection:
         >>> from ..tests.test_datasets import data_availability
         >>> instance_sel = Selection()
         >>> if not data_availability.args[0]:
-        ...     instance = HYDE()
-        ...     instance_sel = instance_sel.add(
-        ...         {"raw": "HYDE", "instance": instance},
-        ...         "popd"
-        ...     )
-        ...     instance_sel == Selection().add(("HYDE", "HYDE", instance), "popd")
-        ... else:
-        ...     # If data is not available, skip this test.
-        ...     True
-        True
+        ...     assert Selection().add(("HYDE", "HYDE", HYDE()), "popd").instances
 
     """
 
