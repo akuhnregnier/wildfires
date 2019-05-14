@@ -119,15 +119,26 @@ class Entry:
     def __repr__(self):
         return repr(self.entry)
 
-    def __contains__(self, item):
-        """String matching for selected fields."""
+    def __contains__(self, item, exact=True, str_only=False):
+        """String matching for selected fields.
+
+        Args:
+            item: Item to look for.
+            exact (bool): If True, only accept exact matches for strings,
+                ie. replace `item` with `^item$` before using `re.search`.
+            str_only (bool): If True, only compare strings and ignore other items in
+                `self.entry`.
+
+        """
         for field in self.entry._fields:
             value = getattr(self.entry, field)
             # If they are both strings, use regular expressions.
             if all(isinstance(obj, str) for obj in (item, value)):
+                if exact:
+                    item = "^" + item + "$"
                 if re.search(item, value):
                     return True
-            else:
+            elif not str_only:
                 if item == value:
                     return True
         return False
@@ -439,6 +450,7 @@ class Selection:
                 and instance (unless it is None) must not already be present.
             variable (str, iterable, or dict): Same as above without the "instance"
                 key so at most 2 names can be given.
+
         Raises:
             ValueError: If the provided dataset names match multiple existing
                 datasets (partially). Matches are made using all combinations of raw
@@ -757,7 +769,9 @@ class Selection:
         """Add a dataset's variable entry in-place."""
         selection.add(dataset, variable)
 
-    def dict_process_variables(self, selection, search_dict, processing_func):
+    def dict_process_variables(
+        self, selection, search_dict, processing_func, exact=True
+    ):
         """Modify the selection's matching variable entries using the given function.
 
         Args:
@@ -769,6 +783,8 @@ class Selection:
             processing_func (`function`): Function which takes arguments
                 (`Selection`, `Selection.__dataset`, `Selection.__variable`)
                 and modifies the input selection in-place.
+            exact (bool, optional): If False, accept partial matches for variable
+                names using `re.search`.
 
         Returns:
             `selection` processed using `processing_func`.
@@ -787,7 +803,7 @@ class Selection:
                 ).items()
                 for stored_variable in stored_variables
             ):
-                if search_variable in stored_variable:
+                if stored_variable.__contains__(search_variable, exact=exact):
                     # We found a match, process this.
                     processing_func(selection, stored_dataset, stored_variable)
                     # Move on to the next next desired variable.
@@ -800,7 +816,7 @@ class Selection:
                 )
         return selection
 
-    def dict_select_variables(self, search_dict):
+    def dict_select_variables(self, search_dict, exact=True):
         """Return a new `Selection` containing only variables matching `search_dict`.
 
         Args:
@@ -808,6 +824,8 @@ class Selection:
                   {dataset_name: (variable_name, ...), ...}, where `dataset_name` and
                   `variable_name` are of type `str`. This is used to select the
                   variables to process.
+            exact (bool, optional): If False, accept partial matches for variable
+                names using `re.search`.
 
         Raises:
             KeyError: If a key or value in `search_dict` is not found in the
@@ -818,9 +836,11 @@ class Selection:
 
         """
         selection = Selection()
-        return self.dict_process_variables(selection, search_dict, self.__add_entry)
+        return self.dict_process_variables(
+            selection, search_dict, self.__add_entry, exact=exact
+        )
 
-    def dict_remove_variables(self, search_dict, inplace=True):
+    def dict_remove_variables(self, search_dict, inplace=True, exact=True):
         """Remove variables matching `search_dict`.
 
         Cube pruning is performed after removal of entries to remove redundant cubes
@@ -835,6 +855,8 @@ class Selection:
                 without creating a copy. The returned selection will be the same
                 selection as the original selection, but without the removed entries.
                 If False, make a copy of the selection before removing entries.
+            exact (bool, optional): If False, accept partial matches for variable
+                names using `re.search`.
 
         Raises:
             KeyError: If a key or value in `search_dict` is not found in the
@@ -849,12 +871,12 @@ class Selection:
         else:
             selection = deepcopy(self)
         selection = self.dict_process_variables(
-            selection, search_dict, self.__remove_entry
+            selection, search_dict, self.__remove_entry, exact=exact
         )
         self.prune_cubes()
         return selection
 
-    def process_variables(self, selection, names, processing_func):
+    def process_variables(self, selection, names, processing_func, exact=True):
         """Modify the selection's matching variable entries using the given function.
 
         Args:
@@ -865,6 +887,8 @@ class Selection:
             processing_func (`function`): Function which takes arguments
                 (`Selection`, `Selection.__dataset`, `Selection.__variable`)
                 and modifies the input selection in-place.
+            exact (bool, optional): If False, accept partial matches for variable
+                names using `re.search`.
 
         Raises:
             ValueError: If raw and pretty names are not unique across all stored
@@ -917,6 +941,7 @@ class Selection:
             )
 
         # Look for a match for each desired variable.
+        logger.debug("Selecting the following: '{}'.".format(names))
         for search_variable in names:
             # Check against all stored datasets.
             for stored_dataset, stored_variable in (
@@ -927,8 +952,11 @@ class Selection:
                 for stored_variable in stored_variables
             ):
                 # Check against all variables in the dataset.
-                if search_variable in stored_variable:
+                if stored_variable.__contains__(search_variable, exact=exact):
                     # We found a match, process this.
+                    logger.debug(
+                        "Selecting '{}: {}'.".format(stored_dataset, stored_variable)
+                    )
                     processing_func(selection, stored_dataset, stored_variable)
                     # Move on to the next next variable.
                     break
@@ -936,13 +964,15 @@ class Selection:
                 raise KeyError("Variable '{}' not found.".format(search_variable))
         return selection
 
-    def select_variables(self, names):
+    def select_variables(self, names, exact=True):
         """Return a new `Selection` containing only variables matching `criteria`.
 
         Args:
             names (str or iterable): A name or series of names (variable_name, ...),
                 for which a match with either raw or pretty names is sufficient. This
                 is used to determine which variables to process.
+            exact (bool, optional): If False, accept partial matches for variable
+                names using `re.search`.
 
         Raises:
             ValueError: If raw and pretty names are not unique across all stored
@@ -955,9 +985,9 @@ class Selection:
 
         """
         selection = Selection()
-        return self.process_variables(selection, names, self.__add_entry)
+        return self.process_variables(selection, names, self.__add_entry, exact=exact)
 
-    def remove_variables(self, names, inplace=True):
+    def remove_variables(self, names, inplace=True, exact=True):
         """Return a new `Selection` without the variables matching `criteria`.
 
         Cube pruning is performed after removal of entries to remove redundant cubes
@@ -971,6 +1001,8 @@ class Selection:
                 without creating a copy. The returned selection will be the same
                 object as the original selection, but without the removed entries. If
                 False, make a copy of the selection before removing entries.
+            exact (bool, optional): If False, accept partial matches for variable
+                names using `re.search`.
 
         Raises:
             ValueError: If raw and pretty names are not unique across all stored
@@ -986,7 +1018,9 @@ class Selection:
             selection = self
         else:
             selection = deepcopy(self)
-        selection = self.process_variables(selection, names, self.__remove_entry)
+        selection = self.process_variables(
+            selection, names, self.__remove_entry, exact=exact
+        )
         selection.prune_cubes()
         return selection
 
@@ -1189,9 +1223,9 @@ def prepare_selection(selection):
 if __name__ == "__main__":
     logging.config.dictConfig(LOGGING)
 
-    # selection = get_all_datasets()
-    # print(selection.pretty_dataset_names)
-    # selection.remove_datasets(("ESA_CCI_Landcover",))
-    # print(selection.pretty_dataset_names)
-    # selection.show("pretty")
-    # prepare_selection(selection)
+    selection = get_all_datasets()
+    print(selection.pretty_dataset_names)
+    selection.remove_datasets(("ESA_CCI_Landcover",))
+    print(selection.pretty_dataset_names)
+    selection.show("pretty")
+    prepare_selection(selection)

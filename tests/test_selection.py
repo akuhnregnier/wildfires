@@ -189,8 +189,18 @@ def test_selection(sel, long_sel):
     assert sel.select_variables(("burned area", "popd", "raw_name")) == sel
 
     # # Testing regex support as well.
-    assert sel.select_variables(("burned", "pop", "raw_")) == sel
-    assert sel.select_variables(("b*area", "pop", "r*name")) == sel
+    assert sel.select_variables(("burned", "pop", "raw_"), exact=False) == sel
+    assert sel.select_variables(("b.*area", "pop", "r.*name"), exact=False) == sel
+
+    with pytest.raises(KeyError, match=re.escape("Variable 'bu*area' not found.")):
+        sel.select_variables(("bu*area",), exact=False)
+
+    with pytest.raises(KeyError, match=re.escape("Variable 'b+area' not found.")):
+        sel.select_variables(("b+area",), exact=False)
+
+    assert sel.select_variables(("urned", "pop", "raw_"), exact=False) == sel
+    with pytest.raises(KeyError, match=re.escape("Variable 'urned' not found.")):
+        sel.select_variables(("urned", "pop", "raw_"), exact=True)
 
     assert set(
         sel.select_variables(("burned area", "raw_name")).pretty_variable_names
