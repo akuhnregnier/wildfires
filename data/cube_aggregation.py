@@ -155,6 +155,9 @@ class Selection:
     def __repr__(self):
         return pformat(self.immutable)
 
+    def copy(self):
+        return deepcopy(self)
+
     def _add_dict(self, dataset_variables):
         for dataset, variables in dataset_variables.items():
             for variable in variables:
@@ -162,8 +165,9 @@ class Selection:
         return self
 
     def clear_cache(self):
-        self.__formatted = defaultdict(dict)
-        self.__last_state = defaultdict(dict)
+        logger.debug("Resetting cache to initial state (id '{}').".format(id(self)))
+        self.__formatted = defaultdict(OrderedDict)
+        self.__last_state = defaultdict(tuple)
         return self
 
     @property
@@ -185,17 +189,17 @@ class Selection:
     @property
     def raw_dataset_names(self):
         """Return a tuple of all raw dataset names."""
-        return tuple(self.get("all", "raw").keys())
+        return tuple(self.get("all", "raw"))
 
     @property
     def pretty_dataset_names(self):
         """Return a tuple of all pretty dataset names."""
-        return tuple(self.get("all", "pretty").keys())
+        return tuple(self.get("all", "pretty"))
 
     @property
     def instances(self):
         """Return a tuple of dataset instances."""
-        return tuple(dataset.instance for dataset in self.dataset_variables)
+        return tuple(dataset.instance for dataset in self.get("all", "all"))
 
     @property
     def cubes(self):
@@ -209,8 +213,8 @@ class Selection:
     def immutable(self):
         """Retrieve underlying data using tuples of variable names instead of lists."""
         immutable_repr = dict()
-        for dataset, names in self.dataset_variables.items():
-            immutable_repr[dataset] = tuple(sorted(names))
+        for dataset, variables in self.dataset_variables.items():
+            immutable_repr[dataset] = tuple(sorted(variables))
         return tuple(sorted(immutable_repr.items()))
 
     @staticmethod
@@ -320,7 +324,7 @@ class Selection:
         The given name may match either the raw or the pretty name.
 
         """
-        for dataset_name_tuple in self.dataset_variables.keys():
+        for dataset_name_tuple in self.dataset_variables:
             if dataset in dataset_name_tuple:
                 return dataset_name_tuple
 
@@ -385,7 +389,7 @@ class Selection:
 
         dataset_match_count = 0
         prev_match_key = None
-        for dataset_key_names in self.dataset_variables.keys():
+        for dataset_key_names in self.dataset_variables:
             increment = sum(
                 (
                     dataset.raw == dataset_key_names.raw,
@@ -426,6 +430,7 @@ class Selection:
                         key, var_name, dataset, self.dataset_variables[dataset]
                     )
                 )
+        logger.debug("Adding variable '{}' for dataset '{}'.".format(variable, dataset))
         self.dataset_variables[dataset].append(variable)
         return self
 
@@ -478,7 +483,10 @@ class Selection:
                 therein.
 
         """
-        if self.__last_state[variable_format] == self.dataset_variables:
+        logger.debug("Get() called with Selection '{}'".format(id(self)))
+        logger.debug(self.__last_state[variable_format])
+        logger.debug(self.dataset_variables)
+        if self.__last_state[variable_format] == self.immutable:
             # Return previously calculated dictionary.
             logger.debug(
                 "Using cached representation for params: {}, {}.".format(
@@ -506,12 +514,14 @@ class Selection:
                         for variable in stored_variables
                     ),
                 )
-                for stored_dataset, stored_variables in self.dataset_variables.items()
+                for stored_dataset, stored_variables in OrderedDict(
+                    self.immutable
+                ).items()
             )
 
         # Record that the dictionary now stored in
         # self.__formatted[variable_format] reflects the current database status.
-        self.__last_state[variable_format] = self.dataset_variables
+        self.__last_state[variable_format] = self.immutable
 
         logger.debug(
             "Returning newly calculated representation for dataset: {}.".format(dataset)
@@ -534,7 +544,7 @@ class Selection:
                 instance.
 
         """
-        if self.__last_state["prune"] == self.dataset_variables:
+        if self.__last_state["prune"] == self.immutable:
             logger.debug("No change in dataset_variables since last pruning.")
             return
 
@@ -570,7 +580,7 @@ class Selection:
 
         if clear_cache:
             self.clear_cache()
-        self.__last_state["prune"] = self.dataset_variables
+        self.__last_state["prune"] = self.immutable
         return self
 
     def process_datasets(self, selection, names, operation="select"):
@@ -974,7 +984,7 @@ def get_data():
     )
     if all(os.path.isfile(filename) for filename in TARGET_PICKLES):
         logger.info("All target pickles exist, not aggregating cubes.")
-        return None
+        return
 
     logger.info("One or more target pickles did not exist, aggregating cubes.")
     logger.info("Loading cubes")
@@ -1091,8 +1101,6 @@ def get_data():
     # with open(TARGET_PICKLES[2], "wb") as f:
     #     pickle.dump(averaged_cubes, f, protocol=-1)
 
-    # return None
-
 
 def land_mask(n_lon=1440):
     """Create land mask at the desired resolution.
@@ -1145,6 +1153,4 @@ def land_mask(n_lon=1440):
 
 if __name__ == "__main__":
     logging.config.dictConfig(LOGGING)
-    # aggregate_cubes()
-
     get_data()

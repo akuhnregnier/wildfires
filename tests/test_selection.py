@@ -282,12 +282,33 @@ def test_instances():
     sel2 = Selection().add({"raw": "HYDE", "instance": hyde}, "popd")
 
     assert sel1 == sel2
+    assert sel1.instances == sel2.instances
 
     sel3 = Selection().add(
         {"raw": "HYDE", "instance": wildfire_datasets.HYDE()}, "popd"
     )
 
     assert sel1 != sel3
+
+    agb = wildfire_datasets.AvitabileThurnerAGB()
+
+    multi_sel = sel1.copy()
+
+    assert multi_sel != sel1
+    assert multi_sel.get("all", "raw") == sel1.get("all", "raw")
+    assert multi_sel.get("all", "pretty") == sel1.get("all", "pretty")
+    assert multi_sel is not sel1
+
+    multi_sel.add({"raw": "AGB", "instance": agb}, "agb")
+
+    names = multi_sel.raw_dataset_names
+    instances = multi_sel.instances
+
+    assert names.index("AGB") == instances.index(agb)
+    # Need to get reference to hyde instance anew here, since the stored instance
+    # won't match the hyde instance in `sel1`, as `sel1.copy()` was used to create
+    # `multi_sel`.
+    assert names.index("HYDE") == instances.index(multi_sel.get_index("HYDE").instance)
 
 
 def test_pack_input():
