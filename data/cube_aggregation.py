@@ -39,10 +39,13 @@ TARGET_PICKLES = tuple(
 class Selection:
     """Keep track of datasets and associated variables.
 
-    Both the original (raw) and a more user-friendly (pretty) version of the variable
-    names are recorded. Every raw and pretty name is guaranteed to be unique amongst
-    all raw and pretty names in its dataset (but not necessarily amongst all
-    datasets!).
+    Both original (raw) and user-friendly (pretty) versions of variable names are
+    recorded. Every dataset's raw and pretty variable names are guaranteed to be
+    unique amongst all raw and pretty variable names in that dataset (this is not
+    guaranteed amongst all datasets!).
+
+    A raw and pretty name is also stored for each dataset. These names are guaranteed
+    to be unique amongst all raw and pretty dataset names in the selection.
 
     Examples:
         >>> sel = Selection()
@@ -220,17 +223,29 @@ class Selection:
             single_type (class or tuple of class): Atomic type(s) that will be treated
                 as single items.
             elements (int): Number of elements in the final tuple.
-            fill_source (int or None): Only applies if `var` is not of type
-                `single_type`. If `fill_source` is an int, the element of `var` at
-                index `fill_source` will be appended to the output tuple until it
-                contains `elements` items. Here, `fill_source` < `elements`. If
-                `fill_source` is None, a value of None will be appended instead.
-
+            fill_source (int, None, or iterable of int or None): Determines how to pad
+                input such that it contains `elements` items. No existing items in
+                `var will be altered. If `fill_source` is an int or None, it is
+                treated as an iterable containing `fill_source` (`elements` -
+                len(`var`)) times, where len(`var`) refers to the number of
+                `single_type` items supplied in `var` (which may be only one, in which
+                case `var` is internally transformed to be a 1-element iterable
+                containing `var`). The `fill_source` iterable must contain at least
+                (`elements` - len(`var`)) items, since this is the number of slots
+                that need to be filled in order for the output to contain `elements`
+                items. If `fill_source[-i]` is an int, `output[-i]` will be inserted into
+                `output` at index `elements - i`. If `fill_source[-i]` is None, None
+                will be inserted. Surplus `fill_source` items will be trimmed starting
+                from the left (thus the -i index notation above).
         Raises:
             ValueError: If `var` is an iterable of `single_type` and contains more than
                 `elements` items.
             TypeError: If `var` is an iterable and its items are not all of type
                 `single_type`.
+            TypeError: If `fill_source` contains types other than int and NoneType.
+            IndexError: If `len(fill_source)` < (`elements` - len(`var`)).
+            IndexError: If `fill_source[-i]` is an int and
+                `fill_source[-i]` >= `elements` - i.
 
         Returns:
             tuple: tuple with `elements` items.
@@ -245,6 +260,13 @@ class Selection:
             ('foo', 'bar', 'bar')
             >>> pack_input("foo", elements=2, fill_source=None)
             ('foo', None)
+            >>> pack_input("foo", elements=3, fill_source=(0, None))
+            ('foo', 'foo', None)
+            >>> # Surplus `fill_source` items will be trimmed starting from the left.
+            >>> pack_input("foo", elements=3, fill_source=(99, 0, None))
+            ('foo', 'foo', None)
+            >>> pack_input(("foo", "bar"), elements=5, fill_source=(1, 2, None))
+            ('foo', 'bar', 'bar', 'bar', None)
 
         """
         if not isinstance(var, single_type):
@@ -260,16 +282,37 @@ class Selection:
                 )
             if len(var) == elements:
                 return tuple(var)
+            # Guarantee that `var` is a list, and make a copy so the input is not
+            # changed unintentionally.
+            var = list(var)
         else:
-            var = (var,)
+            var = [var]
 
-        if fill_source is None:
-            fill_value = None
+        fill_source_types = (int, type(None))
+        if not isinstance(fill_source, fill_source_types):
+            if not all(
+                isinstance(single_source, fill_source_types)
+                for single_source in fill_source
+            ):
+                raise TypeError(
+                    "Expected fill_source to be of types '{}', but got types '{}'.".format(
+                        fill_source_types,
+                        [type(single_source) for single_source in fill_source],
+                    )
+                )
+            # Again, make a copy.
+            fill_source = fill_source[:]
         else:
-            fill_value = var[fill_source]
+            fill_source = [fill_source] * (elements - len(var))
+
         n_missing = elements - len(var)
-        fill_values = [fill_value] * n_missing
-        return tuple(list(var) + fill_values)
+        for i in range(-n_missing, 0):
+            if fill_source[i] is None:
+                fill_value = None
+            else:
+                fill_value = var[fill_source[i]]
+            var.append(fill_value)
+        return tuple(var)
 
     def get_index(self, dataset):
         """Get dataset index tuple from a dataset string.
@@ -301,30 +344,33 @@ class Selection:
             variable (str, iterable, or dict): Same as above without the "instance"
                 key so at most 2 names can be given.
         Raises:
-            ValueError: If allow_duplicates=False and a variable name is already
-                present in the dataset.
-            ValueError: If either, but NOT both of the raw and pretty names matches an
-                existing dataset.
-            ValueError: If there is a partial match between the given and
-                existing raw and pretty dataset names.
+            ValueError: If the provided dataset names match multiple existing
+                datasets (partially). Matches are made using all combinations of raw
+                and pretty names.
+            ValueError: If the provided dataset matches a single existing dataset only
+                partially, not wholly (eg. only their raw names, but not their pretty
+                names match).
+            ValueError: If either the given raw or pretty variable name matches a
+                any of the existing raw and pretty variable names for the given
+                dataset.
 
         """
-        if isinstance(dataset, str):
-            dataset = self.__dataset(dataset, dataset, None)
-        elif isinstance(dataset, dict):
+        if isinstance(dataset, dict):
             dataset = self.__dataset(
                 raw=dataset.get("raw"),
                 pretty=dataset.get("pretty", dataset.get("raw")),
                 instance=dataset.get("instance", None),
             )
         else:
+            # Handles cases (str, str), (str,), or (str, str, Dataset). Cases like
+            # (str, Dataset) won't fail, but will produce unexpected results.
             dataset = self.__dataset(
                 *self.pack_input(
                     dataset,
                     # Use type(None) as a placeholder for missing dataset instances.
                     single_type=(str, wildfire_datasets.Dataset, type(None)),
                     elements=3,
-                    fill_source=None,
+                    fill_source=(0, None),
                 )
             )
         if isinstance(variable, dict):
@@ -337,7 +383,7 @@ class Selection:
                 *self.pack_input(variable, single_type=str, elements=2, fill_source=0)
             )
 
-        match_count = 0
+        dataset_match_count = 0
         prev_match_key = None
         for dataset_key_names in self.dataset_variables.keys():
             increment = sum(
@@ -359,14 +405,14 @@ class Selection:
                 increment += dataset.instance == dataset_key_names.instance
 
                 prev_match_key = dataset_key_names
-                match_count += increment
+                dataset_match_count += increment
 
-        if match_count not in {0, len(dataset._fields)}:
+        if dataset_match_count not in {0, len(dataset._fields)}:
             raise ValueError(
                 (
                     "Expected either no matches or a complete match, but matched "
                     "{} field(s). The dataset '{}' is already partially present."
-                ).format(match_count, dataset)
+                ).format(dataset_match_count, dataset)
             )
 
         for key, var_name in zip(variable._fields, variable):
