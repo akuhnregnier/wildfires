@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
 import re
 
 import pytest
@@ -10,7 +11,7 @@ import wildfires.data.datasets as wildfire_datasets
 from test_datasets import data_availability
 from wildfires.data.cube_aggregation import Selection
 
-memory = Memory(location="/tmp")
+memory = Memory(location=os.environ.get("TMPDIR", "/tmp"))
 
 
 @pytest.fixture(scope="module")
