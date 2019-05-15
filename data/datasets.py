@@ -11,6 +11,7 @@ import os
 import re
 import warnings
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime
 
@@ -335,6 +336,97 @@ class Dataset(ABC):
     calendar = "gregorian"
     time_unit_str = "days since 1970-01-01 00:00:00"
 
+    def __eq__(self, other):
+        """Equality testing that ignores data values and only looks at metadata.
+
+        The equality is derived solely from the `self.cubes` attribute, and the
+        coordinates and metadata of each cube in this CubeList. This means that
+        changes in the stored data are ignored!
+
+        """
+        if isinstance(other, Dataset):
+            return self.__hash_str == other.__hash_str
+        return NotImplemented
+
+    def __hash__(self):
+        """Hash function that ignores data values and only looks at metadata.
+
+        The hash value is derived solely from the `self.cubes` attribute, and the
+        coordinates and metadata of each cube in this CubeList. This means that
+        changes in the stored data are ignored!
+
+        """
+        # Computing the self.__hash_str (not its hash) takes the bulk of the time.
+        # This is especially true the very first time a Dataset instance accesses this
+        # function, as some data will have to be read from the stored file for the
+        # first time.
+        return hash(self.__hash_str)
+
+    @property
+    def __hash_str(self):
+        """Create a hashable shallow description of the CubeList.
+
+        Note:
+            Only metadata and coordinates are considered.
+            Takes much longer to compute than __shallow_description.
+
+
+        Returns:
+            tuple
+
+        """
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message=((r".*guessing contiguous bounds."))
+            )
+            # Join up the elements in this list later to construct the string.
+            cubelist_hash_items = []
+            for cube in self.cubes:
+                # Compute each coordinate's string representation (the coord's __hash__
+                # attribute only returns the output of id()).
+                for coord in cube.coords():
+                    cubelist_hash_items += list(
+                        map(
+                            str,
+                            (
+                                tuple(sorted(coord.attributes.items())),
+                                coord.circular if hasattr(coord, "circular") else None,
+                                tuple(coord.contiguous_bounds())
+                                if coord.is_monotonic()
+                                and coord.contiguous_bounds() is not None
+                                else None,
+                                coord.coord_system,
+                                coord.dtype,
+                                coord.has_bounds(),
+                                coord.is_contiguous(),
+                                coord.is_monotonic(),
+                                coord.long_name,
+                                coord.name(),
+                                tuple(coord.points),
+                                coord.shape,
+                                coord.standard_name,
+                                coord.var_name,
+                            ),
+                        )
+                    )
+                cubelist_hash_items += [str(tuple(sorted(cube.attributes.items())))]
+                for key, value in sorted(cube.metadata._asdict().items()):
+                    if key == "attributes":
+                        # Get string representation of the attributes dictionary.
+                        cubelist_hash_items += [
+                            str(
+                                tuple(
+                                    (attribute, attribute_value)
+                                    for attribute, attribute_value in sorted(
+                                        value.items()
+                                    )
+                                )
+                            )
+                        ]
+
+                    cubelist_hash_items += [str(key) + str(value)]
+        return "\n".join(cubelist_hash_items)
+
     @property
     def frequency(self):
         try:
@@ -514,6 +606,23 @@ class Dataset(ABC):
     def get_monthly_data(self, start, end):
         """Return monthly cubes between two dates."""
 
+    @staticmethod
+    def date_order_check(start, end):
+        if not all(
+            hasattr(date, required_type) and getattr(date, required_type) is not None
+            for date in (start, end)
+            for required_type in ("year", "month")
+        ):
+            raise ValueError(
+                "Both '{}' and '{}' need to define a year and month.".format(start, end)
+            )
+        days = [getattr(date, "day", 1) for date in (start, end)]
+        days = [day if day is not None else 1 for day in days]
+
+        assert datetime(start.year, start.month, days[0]) < datetime(
+            end.year, end.month, days[1]
+        ), "End date must be greater than start date."
+
     def limit_months(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
     ):
@@ -529,6 +638,8 @@ class Dataset(ABC):
         dates are rounded down/up to the previous/next year respectively.
 
         """
+        self.date_order_check(start, end)
+
         freq = self.frequency
         if freq == "static":
             logger.debug("Not limiting times, as data is static")
@@ -541,7 +652,7 @@ class Dataset(ABC):
             start = PartialDateTime(start.year)
             if end.month != 1:
                 end = PartialDateTime(end.year + 1)
-        elif freq != "monthly":
+        elif freq not in ("monthly", "monthly climatology"):
             raise ValueError("Invalid frequency:{:}".format(freq))
         self.cubes = self.cubes.extract(
             iris.Constraint(time=lambda t: end >= t.point >= start)
@@ -554,6 +665,7 @@ class Dataset(ABC):
         inclusive_lower=True,
         inclusive_upper=True,
     ):
+        self.date_order_check(start, end)
 
         assert self.frequency == "monthly"
 
@@ -579,6 +691,8 @@ class Dataset(ABC):
         Limits are inclusive.
 
         """
+        self.date_order_check(start, end)
+
         datetimes = [datetime(start.year, start.month, 1)]
         while datetimes[-1] != PartialDateTime(end.year, end.month):
             datetimes.append(datetimes[-1] + relativedelta(months=+1))
@@ -614,6 +728,8 @@ class Dataset(ABC):
         Limits are inclusive.
 
         """
+        self.date_order_check(start, end)
+
         time_unit = cf_units.Unit(self.time_unit_str, calendar=self.calendar)
 
         datetimes = [datetime(start.year, start.month, 1)]
@@ -2038,6 +2154,20 @@ class LIS_OTD_lightning_climatology(Dataset):
         self.cubes[0].coord("time").points = time_coord.points
         self.cubes[0].coord("time").units = time_coord.units
 
+    @property
+    def frequency(self):
+        return "monthly climatology"
+
+    @property
+    def min_time(self):
+        # FIXME: Find beginning of data validity!
+        return "N/A"
+
+    @property
+    def max_time(self):
+        # FIXME: Find end of data validity!
+        return "N/A"
+
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
     ):
@@ -2294,21 +2424,21 @@ def dataset_times(datasets=None):
     """Compile dataset time span information.
 
     Args:
-        datasets: If no value is given, defaults to using the following
-            datasets:
-                AvitabileThurnerAGB(),
-                CHELSA(),
-                Copernicus_SWI(),
-                ESA_CCI_Landcover_PFT(),
-                GFEDv4(),
-                GSMaP_precipitation(),
-                GlobFluo_SIF(),
-                HYDE(),
-                LIS_OTD_lightning_time_series(),
-                Liu_VOD(),
-                MOD15A2H_LAI_fPAR(),
-                Simard_canopyheight(),
-                Thurner_AGB(),
+        datasets (iterable of `Dataset`): If no value is given, defaults to using the
+            following datasets:
+                - AvitabileThurnerAGB(),
+                - CHELSA(),
+                - Copernicus_SWI(),
+                - ESA_CCI_Landcover_PFT(),
+                - GFEDv4(),
+                - GSMaP_precipitation(),
+                - GlobFluo_SIF(),
+                - HYDE(),
+                - LIS_OTD_lightning_time_series(),
+                - Liu_VOD(),
+                - MOD15A2H_LAI_fPAR(),
+                - Simard_canopyheight(),
+                - Thurner_AGB(),
             Alternatively, a list of Dataset instances can be given.
 
     Returns:
@@ -2334,20 +2464,34 @@ def dataset_times(datasets=None):
             Thurner_AGB(),
         ]
 
-    time_dict = dict(
+    time_dict = OrderedDict(
         (
             dataset.name,
             list(map(str, (dataset.min_time, dataset.max_time, dataset.frequency))),
         )
         for dataset in datasets
     )
+    min_times, max_times = [], []
+    for dataset in datasets:
+        dataset_times = tuple(
+            getattr(dataset, time_type) for time_type in ("min_time", "max_time")
+        )
+        # If there are any undefined dates they will be represented by strings and
+        # should be skipped here.
+        if any(isinstance(dataset_time, str) for dataset_time in dataset_times):
+            assert all(
+                isinstance(dataset_time, str) for dataset_time in dataset_times
+            ), (
+                "If there is no valid start date, there should not be a valid "
+                "end date and vice versa (Dataset={}).".format(dataset)
+            )
+            continue
+        assert (
+            dataset_times[0] < dataset_times[1]
+        ), "Maximum date should be after the minimum date (Dataset={}).".format(dataset)
 
-    min_times = [
-        dataset.min_time for dataset in datasets if dataset.min_time != "static"
-    ]
-    max_times = [
-        dataset.max_time for dataset in datasets if dataset.max_time != "static"
-    ]
+        min_times.append(dataset_times[0])
+        max_times.append(dataset_times[1])
 
     # This timespan will encompass all the datasets.
     min_time = np.max(min_times)
@@ -2356,9 +2500,6 @@ def dataset_times(datasets=None):
     time_dict["Overall"] = list(map(str, (min_time, max_time, "N/A")))
 
     dataset_names = list(time_dict.keys())
-    # Make sure this entry is at the bottom of the table.
-    dataset_names.remove("Overall")
-    dataset_names.append("Overall")
     dataset_names = pd.Series(dataset_names, name="Dataset")
     min_times_series = pd.Series(
         [time_dict[name][0] for name in dataset_names], name="Minimum"
@@ -2372,5 +2513,16 @@ def dataset_times(datasets=None):
     times_df = pd.DataFrame(
         [dataset_names, min_times_series, max_times_series, frequency_series]
     ).T
+
+    if min_time >= max_time:
+        limited_df = times_df[:-1]
+        min_mask = limited_df["Minimum"].values.astype("str") == str(min_time)
+        max_mask = limited_df["Maximum"].values.astype("str") == str(max_time)
+        raise ValueError(
+            "Maximum date should be after the minimum date. This suggests the datasets "
+            "are improperly selected. Offending datasets:\n{}".format(
+                limited_df.loc[min_mask | max_mask].to_string(index=False)
+            )
+        )
 
     return min_time, max_time, times_df

@@ -4,10 +4,13 @@
 import re
 
 import pytest
+from joblib import Memory
 
 import wildfires.data.datasets as wildfire_datasets
 from test_datasets import data_availability
 from wildfires.data.cube_aggregation import Selection
+
+memory = Memory(location="/tmp")
 
 
 @pytest.fixture(scope="module")
@@ -34,9 +37,9 @@ def test_representations(sel):
     # Confirm expected output.
     all_all = sel.get(dataset="all", variable_format="all")
     assert all_all == {
-        ("HYDE", "HYDE", None): (("popd", "pop density"),),
-        ("GFEDv4", "GFEDv4", None): (("monthly burned area", "burned area"),),
-        ("Dataset", "Dataset", None): (("raw_name", "raw_name"),),
+        ("HYDE", "HYDE"): (("popd", "pop density"),),
+        ("GFEDv4", "GFEDv4"): (("monthly burned area", "burned area"),),
+        ("Dataset", "Dataset"): (("raw_name", "raw_name"),),
     }
 
     # Confirm correct caching.
@@ -71,7 +74,7 @@ def test_adding(sel):
         ValueError,
         match=re.escape(
             "raw variable name 'popd' is already present in {Dataset(raw='HYDE', "
-            "pretty='HYDE', instance=None): [Variable(raw='popd', "
+            "pretty='HYDE'): [Variable(raw='popd', "
             "pretty='pop density')]}"
         ),
     ):
@@ -81,7 +84,7 @@ def test_adding(sel):
         ValueError,
         match=re.escape(
             "pretty variable name 'pop density' is already present in "
-            "{Dataset(raw='HYDE', pretty='HYDE', instance=None): "
+            "{Dataset(raw='HYDE', pretty='HYDE'): "
             "[Variable(raw='popd', pretty='pop density')]}"
         ),
     ):
@@ -253,8 +256,6 @@ def test_addition(sel):
     test_sel += Selection().add("GFEDv4", ("monthly burned area", "burned area"))
     test_sel += Selection().add("Dataset", "raw_name")
 
-    print(repr(test_sel))
-    print(repr(sel))
     assert test_sel == sel
     assert id(test_sel) == orig_id
 
@@ -262,7 +263,7 @@ def test_addition(sel):
         ValueError,
         match=re.escape(
             "raw variable name 'popd' is already present in {Dataset(raw='HYDE', "
-            "pretty='HYDE', instance=None): [Variable(raw='popd', "
+            "pretty='HYDE'): [Variable(raw='popd', "
             "pretty='pop density')]}"
         ),
     ):
@@ -272,7 +273,7 @@ def test_addition(sel):
         ValueError,
         match=re.escape(
             "raw variable name 'popd' is already present in {Dataset(raw='HYDE', "
-            "pretty='HYDE', instance=None): [Variable(raw='popd', "
+            "pretty='HYDE'): [Variable(raw='popd', "
             "pretty='pop density')]}"
         ),
     ):
@@ -297,21 +298,28 @@ def test_instances():
     sel2 = Selection().add({"raw": "HYDE", "instance": hyde}, "popd")
 
     assert sel1 == sel2
+    # If the above is true, this needs to be true.
     assert sel1.instances == sel2.instances
+    # These are the same instances.
+    assert sel1.instances[0] is sel2.instances[0]
 
     sel3 = Selection().add(
         {"raw": "HYDE", "instance": wildfire_datasets.HYDE()}, "popd"
     )
 
-    assert sel1 != sel3
+    assert sel1 == sel3
+    # If the above is true, this needs to be true.
+    assert sel1.instances == sel3.instances
+
+    # However, these are different instances containing the same information.
+    assert sel1.instances[0] is not sel3.instances[0]
 
     agb = wildfire_datasets.AvitabileThurnerAGB()
 
     multi_sel = sel1.copy()
 
-    assert multi_sel != sel1
-    assert multi_sel.get("all", "raw") == sel1.get("all", "raw")
-    assert multi_sel.get("all", "pretty") == sel1.get("all", "pretty")
+    # These should be equal since the instances contain the same information.
+    assert multi_sel == sel1
     assert multi_sel is not sel1
 
     multi_sel.add({"raw": "AGB", "instance": agb}, "agb")
@@ -323,7 +331,13 @@ def test_instances():
     # Need to get reference to hyde instance anew here, since the stored instance
     # won't match the hyde instance in `sel1`, as `sel1.copy()` was used to create
     # `multi_sel`.
-    assert names.index("HYDE") == instances.index(multi_sel.get_index("HYDE").instance)
+    assert names.index("HYDE") == instances.index(
+        multi_sel._Selection__instances[multi_sel.get_index("HYDE")]
+    )
+
+    for selection in (sel1, sel2, sel3, multi_sel):
+        for instance in selection.instances:
+            assert all(cube.has_lazy_data() for cube in instance.cubes)
 
 
 def test_pack_input():

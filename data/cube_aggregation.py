@@ -12,20 +12,24 @@ TODO: Selection.remove_datasets or Selection.select_datasets).
 import logging
 import logging.config
 import os
+import pickle
 import re
 from collections import OrderedDict, defaultdict, namedtuple
 from copy import deepcopy
-from functools import total_ordering
+from functools import wraps
 from pprint import pformat, pprint
 
 import iris
 import iris.coord_categorisation
+from joblib import Memory
+from tqdm import tqdm
 
 import wildfires.data.datasets as wildfire_datasets
 from wildfires.data.datasets import DATA_DIR, dataset_times
 from wildfires.logging_config import LOGGING
 
 logger = logging.getLogger(__name__)
+memory = Memory(location=DATA_DIR, verbose=100)
 
 TARGET_PICKLES = tuple(
     os.path.join(DATA_DIR, filename)
@@ -36,115 +40,40 @@ TARGET_PICKLES = tuple(
     )
 )
 
+# These classes need to be defined here (global) in order for pickling of Selection
+# instances to work.
+Dataset = namedtuple("Dataset", ("raw", "pretty"))
+Variable = namedtuple("Variable", ("raw", "pretty"))
 
-@total_ordering
-class Entry:
-    """Blueprint for a dataset or variable entry in `Selection`.
 
-    Examples:
-        >>> # Dataset = Entry("Dataset", ("x", "y"))
-        >>> Dataset = type("Dataset", (Entry,) ,{"field_names": ("x", "y")})
-        >>> dataset = Dataset(x=1, y=2)
-        >>> dataset.entry == namedtuple("Dataset", ("x", "y"))(1, 2)
-        True
-        >>> dataset == namedtuple("Dataset", ("x", "y"))(1, 2)
-        True
-        >>> dataset.x
-        1
-        >>> getattr(dataset, "y")
-        2
-        >>> for number in dataset:
-        ...     print(number)
-        1
-        2
-        >>> assert 1 in dataset
-        >>> assert 99 not in dataset
-        >>> dataset2 = Dataset(x=3, y=4)
-        >>> dataset2
-        Dataset(x=3, y=4)
-        >>> dataset
-        Dataset(x=1, y=2)
-        >>> assert id(dataset) != id(dataset2)
-        >>> from copy import deepcopy
-        >>> from copy import copy
-        >>> assert copy(dataset) == dataset
-        >>> assert copy(dataset) is not dataset
-        >>> assert deepcopy(dataset) == dataset
-        >>> assert deepcopy(dataset) is not dataset
-        >>> raw_tuple1 = namedtuple("Dataset", ("x", "y"))(1, 2)
-        >>> raw_tuple2 = namedtuple("Dataset", ("x", "y"))(2, 3)
-        >>> assert raw_tuple1 < raw_tuple2
-        >>> entry1 = Dataset(1, 2)
-        >>> entry2 = Dataset(2, 3)
-        >>> assert entry1 < entry2
-        >>> assert entry1 != entry2
-        >>> assert entry2 > entry1
+def return_none():
+    return
+
+
+def contains(entry, item, exact=True, str_only=False):
+    """String matching for selected fields.
+
+    Args:
+        entry (namedtuple): Tuple wherein existence of `item` is checked.
+        item: Item to look for.
+        exact (bool): If True, only accept exact matches for strings,
+            ie. replace `item` with `^item$` before using `re.search`.
+        str_only (bool): If True, only compare strings and ignore other items in
+            `entry`.
 
     """
-
-    def __init__(self, *args, **kwargs):
-        self.entry = namedtuple(self.__class__.__name__, self.field_names)(
-            *args, **kwargs
-        )
-
-    def __copy__(self, *args, **kwargs):
-        return self.__class__(*self.entry)
-
-    def __deepcopy__(self, *args, **kwargs):
-        return self.__class__(*(deepcopy(value) for value in self.entry))
-
-    def __len__(self):
-        return len(self.entry)
-
-    def __getitem__(self, key):
-        return self.entry[key]
-
-    def __iter__(self):
-        return iter(self.entry)
-
-    def __getattr__(self, attr):
-        return getattr(self.entry, attr)
-
-    def __eq__(self, other):
-        return self.entry == other
-
-    def __lt__(self, other):
-        if not isinstance(other, Entry):
-            return NotImplemented
-        return self.entry < other.entry
-
-    def __hash__(self):
-        return hash(self.entry)
-
-    def __str__(self):
-        return str(self.entry)
-
-    def __repr__(self):
-        return repr(self.entry)
-
-    def __contains__(self, item, exact=True, str_only=False):
-        """String matching for selected fields.
-
-        Args:
-            item: Item to look for.
-            exact (bool): If True, only accept exact matches for strings,
-                ie. replace `item` with `^item$` before using `re.search`.
-            str_only (bool): If True, only compare strings and ignore other items in
-                `self.entry`.
-
-        """
-        for field in self.entry._fields:
-            value = getattr(self.entry, field)
-            # If they are both strings, use regular expressions.
-            if all(isinstance(obj, str) for obj in (item, value)):
-                if exact:
-                    item = "^" + item + "$"
-                if re.search(item, value):
-                    return True
-            elif not str_only:
-                if item == value:
-                    return True
-        return False
+    for field in entry._fields:
+        value = getattr(entry, field)
+        # If they are both strings, use regular expressions.
+        if all(isinstance(obj, str) for obj in (item, value)):
+            if exact:
+                item = "^" + item + "$"
+            if re.search(item, value):
+                return True
+        elif not str_only:
+            if item == value:
+                return True
+    return False
 
 
 class Selection:
@@ -165,9 +94,9 @@ class Selection:
         >>> sel = sel.add("Dataset", "raw_name")
         >>> all_all = sel.get(dataset="all", variable_format="all")
         >>> all_all == {
-        ...     ("HYDE", "HYDE", None): (("popd", "pop density"),),
-        ...     ("GFEDv4", "GFEDv4", None): (("monthly burned area", "burned area"),),
-        ...     ("Dataset", "Dataset", None): (("raw_name", "raw_name"),),
+        ...     ("HYDE", "HYDE"): (("popd", "pop density"),),
+        ...     ("GFEDv4", "GFEDv4"): (("monthly burned area", "burned area"),),
+        ...     ("Dataset", "Dataset"): (("raw_name", "raw_name"),),
         ... }
         True
         >>> # Test a single dataset.
@@ -179,7 +108,7 @@ class Selection:
         ... except ValueError as exception:
         ...     exception.args[0] == (
         ...         "raw variable name 'popd' is already present in {Dataset(raw='HYDE', "
-        ...         "pretty='HYDE', instance=None): [Variable(raw='popd', "
+        ...         "pretty='HYDE'): [Variable(raw='popd', "
         ...         "pretty='pop density')]}"
         ...     )
         True
@@ -205,25 +134,19 @@ class Selection:
         True
         >>> # Dataset instances can also be incorporated.
         >>> from .datasets import HYDE
-        >>> from ..tests.test_datasets import data_availability
+        >>> from ..tests.test_datasets import data_is_available
         >>> instance_sel = Selection()
-        >>> if not data_availability.args[0]:
+        >>> if data_is_available:
         ...     assert Selection().add(("HYDE", "HYDE", HYDE()), "popd").instances
 
     """
 
     def __init__(self, dataset_variables=None):
-        # self.__dataset = Entry("Dataset", ("raw", "pretty", "instance"))
-        # self.__variable = Entry("Variable", ("raw", "pretty"))
-        self.__dataset = type(
-            "Dataset", (Entry,), {"field_names": ("raw", "pretty", "instance")}
-        )
-        self.__variable = type("Variable", (Entry,), {"field_names": ("raw", "pretty")})
-
         # Set up the cache (assign empty dicts to cache-related variables).
         self.clear_cache()
 
         self.dataset_variables = defaultdict(list)
+        self.__instances = defaultdict(return_none)
         if dataset_variables:
             self._add_dict(dataset_variables)
 
@@ -305,14 +228,15 @@ class Selection:
     @property
     def instances(self):
         """Return a tuple of dataset instances."""
-        return tuple(dataset.instance for dataset in self.get("all", "all"))
+        return tuple(self.__instances[dataset] for dataset in self.get("all", "all"))
 
     @property
     def cubes(self):
+        """Return all cubes."""
         self.prune_cubes()
         all_cubes = iris.cube.CubeList()
         for dataset in self.dataset_variables:
-            all_cubes.extend(dataset.instance.cubes)
+            all_cubes.extend(self.__instances[dataset].cubes)
         return all_cubes
 
     @property
@@ -467,30 +391,28 @@ class Selection:
 
         """
         if isinstance(dataset, dict):
-            dataset = self.__dataset(
-                raw=dataset.get("raw"),
-                pretty=dataset.get("pretty", dataset.get("raw")),
-                instance=dataset.get("instance", None),
+            new_instance = dataset.get("instance", None)
+            dataset = Dataset(
+                raw=dataset.get("raw"), pretty=dataset.get("pretty", dataset.get("raw"))
             )
         else:
             # Handles cases (str, str), (str,), or (str, str, Dataset). Cases like
             # (str, Dataset) won't fail, but will produce unexpected results.
-            dataset = self.__dataset(
-                *self.pack_input(
-                    dataset,
-                    # Use type(None) as a placeholder for missing dataset instances.
-                    single_type=(str, wildfire_datasets.Dataset, type(None)),
-                    elements=3,
-                    fill_source=(0, None),
-                )
+            raw, pretty, new_instance = self.pack_input(
+                dataset,
+                # Use type(None) as a placeholder for missing dataset instances.
+                single_type=(str, wildfire_datasets.Dataset, type(None)),
+                elements=3,
+                fill_source=(0, None),
             )
+            dataset = Dataset(raw, pretty)
         if isinstance(variable, dict):
-            variable = self.__variable(
+            variable = Variable(
                 raw=variable.get("raw"),
                 pretty=variable.get("pretty", variable.get("raw")),
             )
         else:
-            variable = self.__variable(
+            variable = Variable(
                 *self.pack_input(variable, single_type=str, elements=2, fill_source=0)
             )
 
@@ -513,12 +435,14 @@ class Selection:
                     )
 
                 # If there was a name match, make sure that the instances match too.
-                increment += dataset.instance == stored_dataset.instance
+                increment += new_instance == self.__instances[stored_dataset]
 
                 prev_match_key = stored_dataset
                 dataset_match_count += increment
 
-        if dataset_match_count not in {0, len(dataset._fields)}:
+        # Add 1 here to account for the fact that the instance is not stored as part
+        # of the namedtuple, but contributes to the dataset_match_count nonetheless.
+        if dataset_match_count not in {0, len(dataset._fields) + 1}:
             raise ValueError(
                 (
                     "Expected either no matches or a complete match, but matched "
@@ -539,6 +463,7 @@ class Selection:
                 )
         logger.debug("Adding variable '{}' for dataset '{}'.".format(variable, dataset))
         self.dataset_variables[dataset].append(variable)
+        self.__instances[dataset] = new_instance
         return self
 
     def __return_cached_repr(self, dataset, variable_format):
@@ -659,15 +584,17 @@ class Selection:
             if not variables:
                 empty_datasets.append(dataset)
                 continue
-            if dataset.instance is None:
+            if self.__instances[dataset] is None:
                 continue
-            raw_instance_names = set(cube.name() for cube in dataset.instance.cubes)
+            raw_instance_names = set(
+                cube.name() for cube in self.__instances[dataset].cubes
+            )
             raw_stored_names = set(variable.raw for variable in variables)
             unknown_variables = raw_stored_names - raw_instance_names
             if unknown_variables:
                 raise ValueError(
                     "The variables '{}' were not found in the instance '{}'".format(
-                        unknown_variables, dataset.instance
+                        unknown_variables, self.__instances[dataset]
                     )
                 )
 
@@ -675,7 +602,7 @@ class Selection:
                 return cube.name() in raw_stored_names
 
             # Keep only the cubes referred to by the stored variable names.
-            dataset.instance.cubes = dataset.instance.cubes.extract(
+            self.__instances[dataset].cubes = self.__instances[dataset].cubes.extract(
                 iris.Constraint(cube_func=selection_func)
             )
 
@@ -784,7 +711,7 @@ class Selection:
                   `variable_name` are of type `str`. This is used to select the
                   variables to process.
             processing_func (`function`): Function which takes arguments
-                (`Selection`, `Selection.__dataset`, `Selection.__variable`)
+                (`Selection`, `Dataset`, `Variable`)
                 and modifies the input selection in-place.
             exact (bool, optional): If False, accept partial matches for variable
                 names using `re.search`.
@@ -806,7 +733,7 @@ class Selection:
                 ).items()
                 for stored_variable in stored_variables
             ):
-                if stored_variable.__contains__(search_variable, exact=exact):
+                if contains(stored_variable, search_variable, exact=exact):
                     # We found a match, process this.
                     processing_func(selection, stored_dataset, stored_variable)
                     # Move on to the next next desired variable.
@@ -888,7 +815,7 @@ class Selection:
                 for which a match with either raw or pretty names is sufficient. This
                 is used to determine which variables to process.
             processing_func (`function`): Function which takes arguments
-                (`Selection`, `Selection.__dataset`, `Selection.__variable`)
+                (`Selection`, `Dataset`, `Variable`)
                 and modifies the input selection in-place.
             exact (bool, optional): If False, accept partial matches for variable
                 names using `re.search`.
@@ -955,7 +882,7 @@ class Selection:
                 for stored_variable in stored_variables
             ):
                 # Check against all variables in the dataset.
-                if stored_variable.__contains__(search_variable, exact=exact):
+                if contains(stored_variable, search_variable, exact=exact):
                     # We found a match, process this.
                     logger.debug(
                         "Selecting '{}: {}'.".format(stored_dataset, stored_variable)
@@ -1073,80 +1000,132 @@ def get_all_datasets(pretty_dataset_names={}, pretty_variable_names={}):
     return selection
 
 
-def prepare_selection(selection):
+def wrap_decorator(decorator):
+    @wraps(decorator)
+    def new_decorator(*args, **kwargs):
+        if len(args) == 1 and not kwargs and callable(args[0]):
+            return decorator(args[0])
+
+        def decorator_wrapper(f):
+            return decorator(f, *args, **kwargs)
+
+        return decorator_wrapper
+
+    return new_decorator
+
+
+@wrap_decorator
+def clever_cache(func):
+    # NOTE: There is a known bug preventing joblib from pickling numpy MaskedArray!
+    # NOTE: https://github.com/joblib/joblib/issues/573
+    # NOTE: We will avoid this bug by replacing Dataset instances (which may hold
+    # NOTE: references to masked arrays) with their (shallow) immutable string
+    # NOTE: representations.
+    """Circumvent bug preventing joblib from pickling numpy MaskedArray instances.
+
+    Do this by giving joblib a different version of the input arguments to cache,
+    while still passing the normal arguments to the decorated function.
+
+    """
+
+    @wraps(func)
+    def takes_original_selection(*args, **kwargs):
+        """Function that is visible to the outside."""
+        if not isinstance(args[0], Selection) or any(
+            isinstance(arg, Selection)
+            for arg in list(args[1:]) + list(kwargs.values()) + list(kwargs.keys())
+        ):
+            raise TypeError(
+                "The first positional argument, and only the first argument "
+                "should be a Selection instance."
+            )
+        original_selection = args[0]
+        string_representation = str(original_selection.get("all", "pretty"))
+        func_code = tuple(
+            getattr(func.__code__, attr) for attr in dir(func.__code__) if "co_" in attr
+        )
+
+        @memory.cache(ignore=["original_selection"])
+        def takes_split_selection(
+            func_code, string_representation, original_selection, *args, **kwargs
+        ):
+            print("In split_selection now:")
+            print(locals())
+            out = func(original_selection, *args, **kwargs)
+            return out
+
+        return takes_split_selection(func_code, string_representation, *args, **kwargs)
+
+    return takes_original_selection
+
+
+@clever_cache
+def prepare_selection(selection, verbose=True):
+    """Prepare cubes matching the given selection for analysis.
+
+    Args:
+        selection (`Selection`): Selection specifying the variables to use.
+        averaging (str or None): If None, do not perform any averaging. If "mean",
+            average original monthly data over all time. If "monthly climatology",
+            produce a monthly climatology.
+        verbose (bool): If True, print output about the datasets, such as the validity
+            periods.
+
+    """
     min_time, max_time, times_df = dataset_times(selection.instances)
-    print(times_df)
+    if verbose:
+        print(times_df)
 
-    # # Limit the amount of data that has to be processed.
-    # logger.info("Limiting data")
-    # for dataset in loaded_datasets:
-    #     dataset.limit_months(min_time, max_time)
-    # logger.info("Finished limiting data")
+    # Limit the amount of data that has to be processed.
+    logger.info("Limiting data")
+    for dataset in selection.instances:
+        dataset.limit_months(min_time, max_time)
+    logger.info("Finished limiting data")
 
-    # # Regrid cubes to the same lat-lon grid.
-    # # TODO: change lat and lon limits and also the number of points!!
-    # # Always work in 0.25 degree steps? From the same starting point?
-    # logger.info("Starting regridding of all datasets")
-    # for dataset in loaded_datasets:
-    #     dataset.regrid()
-    # logger.info("Finished regridding of all datasets")
+    # Regrid cubes to the same lat-lon grid.
+    # TODO: change lat and lon limits and also the number of points!!
+    # Always work in 0.25 degree steps? From the same starting point?
+    logger.info("Starting regridding of all datasets")
+    for dataset in selection.instances:
+        dataset.regrid()
+    logger.info("Finished regridding of all datasets")
 
-    # logger.info("Starting temporal upscaling")
-    # # Join up all the cubes.
-    # cubes = iris.cube.CubeList()
-    # for dataset in loaded_datasets:
-    #     cubes.extend(dataset.get_monthly_data(min_time, max_time))
-    # logger.info("Finished temporal upscaling")
-
-    # # with open(pickle_file, "wb") as f:
-    # #     pickle.dump(cubes, f, -1)
-
-    # return cubes
-
-    logger.info(
-        "Checking for the existence of the target pickles: {}".format(TARGET_PICKLES)
-    )
-    if all(os.path.isfile(filename) for filename in TARGET_PICKLES):
-        logger.info("All target pickles exist, not aggregating cubes.")
-        return
-
-    logger.info("One or more target pickles did not exist, aggregating cubes.")
-    logger.info("Loading cubes")
-    # FIXME: cubes = load_dataset_cubes()
+    logger.info("Starting temporal upscaling")
+    # Join up all the cubes.
+    cubes = iris.cube.CubeList()
+    for dataset in selection.instances:
+        cubes.extend(dataset.get_monthly_data(min_time, max_time))
+    logger.info("Finished temporal upscaling")
 
     # Get list of names for further selection.
     # pprint(selection.raw_variable_names)
 
-    # # Realise data - not necessary when using iris.save, but necessary here as pickle
-    # # files are being used!
-    # [c.data for c in selected_cubes]
-    # with open(TARGET_PICKLES[0], "wb") as f:
-    #     pickle.dump(selected_cubes, f, protocol=-1)
+    # Realise data - not necessary when using iris.save, but necessary here as pickle
+    # files are being used!
+    [c.data for c in cubes]
+    with open(TARGET_PICKLES[0], "wb") as f:
+        pickle.dump(cubes, f, protocol=-1)
+    logger.info(cubes)
 
-    # mean_cubes = iris.cube.CubeList(
-    #     [c.collapsed("time", iris.analysis.MEAN) for c in selected_cubes]
-    # )
-    # logger.info(mean_cubes)
+    mean_cubes = iris.cube.CubeList()
+    for cube in tqdm(cubes):
+        mean_cubes.append(cube.collapsed("time", iris.analysis.MEAN))
+    [c.data for c in mean_cubes]
+    with open(TARGET_PICKLES[1], "wb") as f:
+        pickle.dump(mean_cubes, f, protocol=-1)
+    logger.info(mean_cubes)
 
-    # # Realise data - not necessary when using iris.save, but necessary here as pickle
-    # # files are being used!
-    # [c.data for c in mean_cubes]
-    # with open(TARGET_PICKLES[1], "wb") as f:
-    #     pickle.dump(mean_cubes, f, protocol=-1)
+    # Generate monthly climatology.
+    averaged_cubes = iris.cube.CubeList()
+    for cube in tqdm(cubes):
+        if not cube.coords("month_number"):
+            iris.coord_categorisation.add_month_number(cube, "time")
+        averaged_cubes.append(cube.aggregated_by("month_number", iris.analysis.MEAN))
+    [c.data for c in averaged_cubes]
+    with open(TARGET_PICKLES[2], "wb") as f:
+        pickle.dump(averaged_cubes, f, protocol=-1)
 
-    # # Generate monthly climatology.
-    # averaged_cubes = iris.cube.CubeList([])
-    # for cube in tqdm(selected_cubes):
-    #     if not cube.coords("month_number"):
-    #         iris.coord_categorisation.add_month_number(cube, "time")
-    #     averaged_cubes.append(cube.aggregated_by("month_number", iris.analysis.MEAN))
-
-    # # Store monthly climatology.
-    # # Realise data - not necessary when using iris.save, but necessary here as pickle
-    # # files are being used!
-    # [c.data for c in averaged_cubes]
-    # with open(TARGET_PICKLES[2], "wb") as f:
-    #     pickle.dump(averaged_cubes, f, protocol=-1)
+    return cubes, mean_cubes, averaged_cubes
 
 
 if __name__ == "__main__":
@@ -1237,4 +1216,4 @@ if __name__ == "__main__":
     selection.select_variables(selected_names)
 
     selection.show("pretty")
-    prepare_selection(selection)
+    aggregated_cubes = prepare_selection(selection)
