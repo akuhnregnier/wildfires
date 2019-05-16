@@ -17,6 +17,7 @@ import re
 from collections import OrderedDict, defaultdict, namedtuple
 from copy import deepcopy
 from functools import wraps
+from inspect import iscode
 from pprint import pformat, pprint
 
 import iris
@@ -29,6 +30,7 @@ from wildfires.data.datasets import DATA_DIR, dataset_times
 from wildfires.logging_config import LOGGING
 
 logger = logging.getLogger(__name__)
+# FIXME: Reduce verbosity!
 memory = Memory(location=DATA_DIR, verbose=100)
 
 TARGET_PICKLES = tuple(
@@ -463,6 +465,9 @@ class Selection:
                 )
         logger.debug("Adding variable '{}' for dataset '{}'.".format(variable, dataset))
         self.dataset_variables[dataset].append(variable)
+        logger.debug(
+            "Adding instance '{}' for dataset '{}'.".format(new_instance, dataset)
+        )
         self.__instances[dataset] = new_instance
         return self
 
@@ -581,6 +586,7 @@ class Selection:
         logger.debug("Pruning dataset_variables.")
         empty_datasets = []
         for dataset, variables in self.dataset_variables.items():
+            logger.debug("Pruning dataset: '{}'.".format(dataset))
             if not variables:
                 empty_datasets.append(dataset)
                 continue
@@ -598,18 +604,39 @@ class Selection:
                     )
                 )
 
+            logger.debug(
+                "Number of stored variables: {}.".format(len(raw_stored_names))
+            )
+
+            logger.debug(
+                "Number of dataset instance variables: {}.".format(
+                    len(raw_instance_names)
+                )
+            )
+
             def selection_func(cube):
                 return cube.name() in raw_stored_names
 
+            logger.debug(
+                "Number of cubes before: {}.".format(
+                    len(self.__instances[dataset].cubes)
+                )
+            )
             # Keep only the cubes referred to by the stored variable names.
             self.__instances[dataset].cubes = self.__instances[dataset].cubes.extract(
                 iris.Constraint(cube_func=selection_func)
+            )
+            logger.debug(
+                "Number of cubes after: {}.".format(
+                    len(self.__instances[dataset].cubes)
+                )
             )
 
         for empty_dataset in empty_datasets:
             logger.debug("Removing empty dataset {}.".format(empty_dataset))
             del self.dataset_variables[empty_dataset]
 
+        # FIXME: Isn't this done automatically if necessary?
         if clear_cache:
             self.clear_cache()
         self.__last_state["prune"] = self.immutable
@@ -693,11 +720,13 @@ class Selection:
     def __remove_entry(selection, dataset, variable):
         """Remove a dataset's variable entry in-place."""
         selection.dataset_variables[dataset].remove(variable)
+        # FIXME: Add prune_cubes() here??
 
-    @staticmethod
-    def __add_entry(selection, dataset, variable):
+    def __add_entry(self, selection, dataset, variable):
         """Add a dataset's variable entry in-place."""
-        selection.add(dataset, variable)
+        selection.add(
+            (dataset.raw, dataset.pretty, self.__instances[dataset]), variable
+        )
 
     def dict_process_variables(
         self, selection, search_dict, processing_func, exact=True
@@ -1014,6 +1043,47 @@ def wrap_decorator(decorator):
     return new_decorator
 
 
+class CodeObj:
+    """Return a (somewhat) flattened, hashable version of func.__code__.
+
+    For a function `func`, use like so:
+        code_obj = CodeObj(func.__code__).hashable()
+
+    """
+
+    expansion_limit = 1000
+
+    def __init__(self, code, __expansion_count=0):
+        assert iscode(code), "Must pass in a code object (function.__code__)."
+        self.code = code
+        self.__expansion_count = __expansion_count
+
+    def hashable(self):
+        if self.__expansion_count > self.expansion_limit:
+            raise RuntimeError(
+                "Maximum number of code object expansions exceeded ({} > {}).".format(
+                    self.__expansion_count, self.expansion_limit
+                )
+            )
+
+        # Get co_ attributes that describe the code object.
+        self.code_dict = OrderedDict(
+            (attr, getattr(self.code, attr)) for attr in dir(self.code) if "co_" in attr
+        )
+        # Replace any nested code object (eg. for list comprehensions) with a reduced
+        # version by calling the hashable function recursively.
+        new_co_consts = []
+        for value in self.code_dict["co_consts"]:
+            if iscode(value):
+                self.__expansion_count += 1
+                value = self.__class__(value, self.__expansion_count).hashable()
+            new_co_consts.append(value)
+
+        self.code_dict["co_consts"] = tuple(new_co_consts)
+
+        return tuple(self.code_dict.values())
+
+
 @wrap_decorator
 def clever_cache(func):
     # NOTE: There is a known bug preventing joblib from pickling numpy MaskedArray!
@@ -1040,17 +1110,14 @@ def clever_cache(func):
                 "should be a Selection instance."
             )
         original_selection = args[0]
-        string_representation = str(original_selection.get("all", "pretty"))
-        func_code = tuple(
-            getattr(func.__code__, attr) for attr in dir(func.__code__) if "co_" in attr
-        )
+        string_representation = str(original_selection.get("all", "raw"))
+
+        func_code = CodeObj(func.__code__).hashable()
 
         @memory.cache(ignore=["original_selection"])
         def takes_split_selection(
             func_code, string_representation, original_selection, *args, **kwargs
         ):
-            print("In split_selection now:")
-            print(locals())
             out = func(original_selection, *args, **kwargs)
             return out
 
@@ -1088,14 +1155,14 @@ def prepare_selection(selection, verbose=True):
     logger.info("Starting regridding of all datasets")
     for dataset in selection.instances:
         dataset.regrid()
-    logger.info("Finished regridding of all datasets")
+    logger.info("Finished regridding of all datasets.")
 
-    logger.info("Starting temporal upscaling")
+    logger.info("Starting temporal upscaling.")
     # Join up all the cubes.
     cubes = iris.cube.CubeList()
     for dataset in selection.instances:
         cubes.extend(dataset.get_monthly_data(min_time, max_time))
-    logger.info("Finished temporal upscaling")
+    logger.info("Finished temporal upscaling.")
 
     # Get list of names for further selection.
     # pprint(selection.raw_variable_names)
@@ -1107,6 +1174,7 @@ def prepare_selection(selection, verbose=True):
         pickle.dump(cubes, f, protocol=-1)
     logger.info(cubes)
 
+    logger.info("Calculating total mean.")
     mean_cubes = iris.cube.CubeList()
     for cube in tqdm(cubes):
         mean_cubes.append(cube.collapsed("time", iris.analysis.MEAN))
@@ -1115,7 +1183,7 @@ def prepare_selection(selection, verbose=True):
         pickle.dump(mean_cubes, f, protocol=-1)
     logger.info(mean_cubes)
 
-    # Generate monthly climatology.
+    logger.info("Calculating monthly climatology.")
     averaged_cubes = iris.cube.CubeList()
     for cube in tqdm(cubes):
         if not cube.coords("month_number"):
@@ -1213,7 +1281,13 @@ if __name__ == "__main__":
         # 'biomass_roots',
         # 'biomass_stem'
     ]
-    selection.select_variables(selected_names)
+    # FIXME: Make this operation inplace by default?
+    selection = selection.select_variables(selected_names)
+    selection.prune_cubes()
+
+    assert len(selection.cubes) == len(
+        selected_names
+    ), "There should be as many cube as selected variables."
 
     selection.show("pretty")
     aggregated_cubes = prepare_selection(selection)

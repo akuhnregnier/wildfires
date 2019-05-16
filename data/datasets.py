@@ -202,6 +202,7 @@ def regrid(
     cached regridders.
 
     """
+    logger.debug("Regridding '{}'.".format(cube.name()))
     n_dim = len(cube.shape)
     assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
 
@@ -231,7 +232,7 @@ def regrid(
             break
 
     if matching:
-        logger.info("Identical input output, not regridding.")
+        logger.info("Identical input output, not regridding '{}'.".format(cube.name()))
         return cube
 
     # TODO: Check that coordinate system discrepancies are picked up by
