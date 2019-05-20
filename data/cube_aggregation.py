@@ -579,7 +579,7 @@ class Datasets:
             return self.dict_process_variables(
                 selection, removal_dict, "remove", exact=exact
             )
-        elif which == "remove":
+        if which == "remove":
             # Remove empty datasets.
             selection.datasets[:] = [
                 dataset for dataset in selection.datasets if dataset
