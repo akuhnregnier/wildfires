@@ -952,7 +952,6 @@ if __name__ == "__main__":
     ]
     # FIXME: Make this operation inplace by default?
     selection = selection.select_variables(selected_names)
-    selection.prune_cubes()
 
     assert len(selection.cubes) == len(
         selected_names
