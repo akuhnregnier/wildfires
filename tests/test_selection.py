@@ -3,290 +3,183 @@
 
 import os
 import re
+from copy import deepcopy
+from datetime import datetime
 
+import cf_units
+import iris
+import iris.coord_categorisation
+import numpy as np
 import pytest
+from dateutil.relativedelta import relativedelta
+from iris.time import PartialDateTime
 from joblib import Memory
 
 import wildfires.data.datasets as wildfire_datasets
 from test_datasets import data_availability
-from wildfires.data.cube_aggregation import Selection
+from wildfires.data.cube_aggregation import Datasets
+from wildfires.data.datasets import get_centres
 
 memory = Memory(location=os.environ.get("TMPDIR", "/tmp"))
 
 
+# FIXME: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
+
+
+class DummyDataset(wildfire_datasets.Dataset):
+    def __init__(self):
+
+        data = np.random.random((100, 100, 100))
+        data = np.ma.MaskedArray(data, mask=data > 0.5)
+
+        latitudes = iris.coords.DimCoord(
+            get_centres(np.linspace(-90, 90, data.shape[1] + 1)),
+            standard_name="latitude",
+            units="degrees",
+        )
+        longitudes = iris.coords.DimCoord(
+            get_centres(np.linspace(-180, 180, data.shape[2] + 1)),
+            standard_name="longitude",
+            units="degrees",
+        )
+
+        calendar = "gregorian"
+        time_unit_str = "days since 1970-01-01 00:00:00"
+        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
+
+        datetimes = [datetime(2000, 1, 1)]
+        while len(datetimes) < 100:
+            datetimes.append(datetimes[-1] + relativedelta(months=+1))
+
+        time_coord = iris.coords.DimCoord(
+            cf_units.date2num(datetimes, time_unit_str, calendar),
+            standard_name="time",
+            units=time_unit,
+        )
+        coords = [(time_coord, 0), (latitudes, 1), (longitudes, 2)]
+        cube = iris.cube.Cube(
+            data,
+            dim_coords_and_dims=coords,
+            units=cf_units.Unit("1"),
+            var_name="var_name" + self.name,
+            long_name="long_name" + self.name,
+        )
+        self.cubes = iris.cube.CubeList([cube])
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
+DUMMY_DATASETS = [type(name, (DummyDataset,), {}) for name in ["A", "B", "C", "D"]]
+
+
+@pytest.fixture(scope="function")
+def big_dataset():
+    big_dataset = DummyDataset()
+    dummy_cube = deepcopy(big_dataset.cubes[0])
+    dummy_cube.long_name = "second_name"
+    dummy_cube.var_name = "second_var"
+    big_dataset.cubes.append(dummy_cube)
+    return big_dataset
+
+
 @pytest.fixture(scope="module")
 def sel():
-    sel = Selection()
-    sel.add("HYDE", ("popd", "pop density"))
-    sel.add("GFEDv4", ("monthly burned area", "burned area"))
-    sel.add("Dataset", "raw_name")
+    sel = Datasets()
+    sel.add(DUMMY_DATASETS[0]())
+    sel.add(DUMMY_DATASETS[1]())
     return sel
 
 
 @pytest.fixture(scope="module")
 def long_sel():
-    long_sel = Selection()
-    long_sel.add("HYDE", ("popd", "pop density"))
-    long_sel.add("HYDE", ("grazing land area", "grazing area"))
-    long_sel.add("GFEDv4", ("monthly burned area", "burned area"))
-    long_sel.add("GFEDv4", ("monthly average co2 emissions", "co2 emissions"))
-    long_sel.add("Dataset", "raw_name")
+    long_sel = Datasets()
+    for dataset in DUMMY_DATASETS:
+        long_sel.add(dataset())
     return long_sel
 
 
 def test_representations(sel):
     # Confirm expected output.
-    all_all = sel.get(dataset="all", variable_format="all")
+    all_all = sel.get(dataset_name="all", variable_format="all")
     assert all_all == {
-        ("HYDE", "HYDE"): (("popd", "pop density"),),
-        ("GFEDv4", "GFEDv4"): (("monthly burned area", "burned area"),),
-        ("Dataset", "Dataset"): (("raw_name", "raw_name"),),
+        ("A", "A"): (("long_nameA", "long_nameA"),),
+        ("B", "B"): (("long_nameB", "long_nameB"),),
     }
-
-    # Confirm correct caching.
-    assert all_all == sel._Selection__formatted["all"]
 
     # Confirm expected output.
-    all_pretty = sel.get(dataset="all", variable_format="pretty")
-    assert all_pretty == {
-        "HYDE": ("pop density",),
-        "GFEDv4": ("burned area",),
-        "Dataset": ("raw_name",),
-    }
-
-    # Confirm correct caching.
-    assert all_pretty == sel._Selection__formatted["pretty"]
+    all_pretty = sel.get(dataset_name="all", variable_format="pretty")
+    assert all_pretty == {"A": ("long_nameA",), "B": ("long_nameB",)}
 
     # Confirm expected output.
-    all_raw = sel.get(dataset="all", variable_format="raw")
-    assert all_raw == {
-        "HYDE": ("popd",),
-        "GFEDv4": ("monthly burned area",),
-        "Dataset": ("raw_name",),
-    }
-
-    # Confirm correct caching.
-    assert all_raw == sel._Selection__formatted["raw"]
+    all_raw = sel.get(dataset_name="all", variable_format="raw")
+    assert all_raw == {"A": ("long_nameA",), "B": ("long_nameB",)}
 
 
 def test_adding(sel):
     # Test guard against duplicated names.
-    with pytest.raises(
-        ValueError,
-        match=re.escape(
-            "raw variable name 'popd' is already present in {Dataset(raw='HYDE', "
-            "pretty='HYDE'): [Variable(raw='popd', "
-            "pretty='pop density')]}"
-        ),
-    ):
-        sel.add("HYDE", "popd")
-
-    with pytest.raises(
-        ValueError,
-        match=re.escape(
-            "pretty variable name 'pop density' is already present in "
-            "{Dataset(raw='HYDE', pretty='HYDE'): "
-            "[Variable(raw='popd', pretty='pop density')]}"
-        ),
-    ):
-        sel.add("HYDE", ("popd2", "pop density"))
-
-
-def test_duplication():
-
-    with pytest.raises(ValueError):
-        Selection().add("A", ("a", "b")).add("A", ("a", "b"))
-
-    with pytest.raises(ValueError):
-        Selection().add("A", ("a", "b")).add("A", ("a"))
-
-    with pytest.raises(ValueError):
-        Selection().add("A", ("a", "b")).add("A", ("a", "0"))
-
-    with pytest.raises(ValueError):
-        Selection().add("A", ("a", "b")).add("A", ("0", "b"))
-
-    with pytest.raises(ValueError):
-        Selection().add(("A", "abc"), "b").add(("B", "abc"), "c")
-
-    assert isinstance(Selection().add("A", ("a", "b")).add("A", ("c", "d")), Selection)
-
-    with pytest.raises(ValueError):
-        Selection().add("A", "a").add("B", "a").select_variables("a")
-        Selection().add("A", "a").add("B", "a").select_variables("0")
-
-    assert isinstance(
-        Selection().add("A", "a").add("B", "a").dict_select_variables({"A": ("a",)}),
-        Selection,
-    )
-
-    assert isinstance(
-        Selection().add("A", "a").add("B", "a").dict_select_variables({"B": ("a",)}),
-        Selection,
-    )
-
-    with pytest.raises(KeyError):
-        Selection().add("A", "a").add("B", "a").dict_select_variables({"C": ("a",)})
-
-    with pytest.raises(KeyError):
-        Selection().add("A", "a").add("B", "a").dict_select_variables({"A": ("b",)})
+    with pytest.raises(ValueError, match=re.escape("Match for datasets 'A' and 'A'.")):
+        sel.add(DUMMY_DATASETS[0]())
 
 
 def test_name_retrieval(sel):
     """Test that all names are retrieved correctly."""
-    assert set(sel.raw_variable_names) == set(
-        ("popd", "monthly burned area", "raw_name")
-    )
-    assert set(sel.pretty_variable_names) == set(
-        ("pop density", "burned area", "raw_name")
-    )
+    assert set(sel.raw_variable_names) == {"long_nameA", "long_nameB"}
+    assert set(sel.pretty_variable_names) == {"long_nameA", "long_nameB"}
 
 
 def test_equality(sel, long_sel):
-    sel2 = Selection()
-    sel2.add("GFEDv4", ("monthly burned area", "burned area"))
-    sel2.add("HYDE", ("popd", "pop density"))
-    sel2.add("Dataset", "raw_name")
+    sel2 = Datasets().add(DUMMY_DATASETS[0]()).add(DUMMY_DATASETS[1]())
 
     assert sel2 == sel
 
-    # If we leave out the pretty names, the two Selections should no longer be equal.
-    sel3 = Selection()
-    sel3.add("GFEDv4", "monthly burned area")
-    sel3.add("HYDE", "popd")
-    sel3.add("Dataset", "raw_name")
-
-    assert sel3 != sel
+    # TODO: Test equality while making use of pretty names.
 
     # See if different variable assignment orders affect equality.
 
-    long_sel2 = Selection()
-    long_sel2.add("HYDE", ("grazing land area", "grazing area"))
-    long_sel2.add("HYDE", ("popd", "pop density"))
-    long_sel2.add("GFEDv4", ("monthly average co2 emissions", "co2 emissions"))
-    long_sel2.add("GFEDv4", ("monthly burned area", "burned area"))
-    long_sel2.add("Dataset", "raw_name")
+    sel3 = Datasets().add(DUMMY_DATASETS[1]()).add(DUMMY_DATASETS[0]())
 
-    assert long_sel == long_sel2
-
-
-def test_hash(sel):
-    sel2 = Selection()
-    sel2.add("GFEDv4", ("monthly burned area", "burned area"))
-    sel2.add("HYDE", ("popd", "pop density"))
-    sel2.add("Dataset", "raw_name")
-
-    assert len(set((sel2, sel))) == 1
-
-    # Leaving out the pretty variable names should yield a different result.
-
-    sel3 = Selection()
-    sel3.add("GFEDv4", "monthly burned area")
-    sel3.add("HYDE", "popd")
-    sel3.add("Dataset", "raw_name")
-
-    assert len(set((sel3, sel))) != 1
-
-
-def test_selection(sel, long_sel):
-    # Selection using a dataset: name dict.
-    assert sel.select_variables(("burned area", "popd", "raw_name")) == sel
-
-    # # Testing regex support as well.
-    assert sel.select_variables(("burned", "pop", "raw_"), exact=False) == sel
-    assert sel.select_variables(("b.*area", "pop", "r.*name"), exact=False) == sel
-
-    with pytest.raises(KeyError, match=re.escape("Variable 'bu*area' not found.")):
-        sel.select_variables(("bu*area",), exact=False)
-
-    with pytest.raises(KeyError, match=re.escape("Variable 'b+area' not found.")):
-        sel.select_variables(("b+area",), exact=False)
-
-    assert sel.select_variables(("urned", "pop", "raw_"), exact=False) == sel
-    with pytest.raises(KeyError, match=re.escape("Variable 'urned' not found.")):
-        sel.select_variables(("urned", "pop", "raw_"), exact=True)
-
-    assert set(
-        sel.select_variables(("burned area", "raw_name")).pretty_variable_names
-    ) == set(("burned area", "raw_name"))
-    assert sel.dict_select_variables({"HYDE": ("popd",)}) == Selection().add(
-        "HYDE", ("popd", "pop density")
-    )
-    assert sel.dict_select_variables({"HYDE": ("pop density",)}) == Selection().add(
-        "HYDE", ("popd", "pop density")
-    )
-
-    assert long_sel.dict_select_variables(
-        {"HYDE": ("pop density", "grazing area"), "Dataset": ("raw_name",)}
-    ) == Selection().add("HYDE", ("popd", "pop density")).add(
-        "HYDE", ("grazing land area", "grazing area")
-    ).add(
-        "Dataset", "raw_name"
-    )
+    assert sel == sel3
 
 
 def test_removal(sel, long_sel):
-    assert sel.remove_variables(
-        ("burned area", "raw_name"), inplace=False
-    ) == sel.select_variables("popd")
+    assert sel.remove_variables("long_nameA", inplace=False) == sel.select_variables(
+        "long_nameB", inplace=False
+    )
 
     assert set(
-        sel.remove_variables("raw_name", inplace=False).raw_dataset_names
-    ) == set(("HYDE", "GFEDv4"))
+        long_sel.remove_variables(
+            ("long_nameA", "long_nameC"), inplace=False
+        ).raw_dataset_names
+    ) == set(("B", "D"))
 
-    assert sel.remove_datasets(
-        ("Dataset", "HYDE"), inplace=False
-    ) == sel.select_datasets("GFEDv4")
+    assert long_sel.remove_datasets(
+        ("D", "B"), inplace=False
+    ) == long_sel.select_datasets(("A", "C"), inplace=False)
 
 
 def test_creation(sel):
-    comp_sel = Selection(
-        {
-            "HYDE": [("popd", "pop density")],
-            "GFEDv4": [("monthly burned area", "burned area")],
-            "Dataset": ["raw_name"],
-        }
-    )
+    comp_sel = Datasets((DUMMY_DATASETS[0](), DUMMY_DATASETS[1]()))
     assert comp_sel == sel
 
 
 def test_addition(sel):
-    test_sel = Selection()
+    test_sel = Datasets()
     orig_id = id(test_sel)
-    test_sel += {"HYDE": [("popd", "pop density")]}
-    test_sel += Selection().add("GFEDv4", ("monthly burned area", "burned area"))
-    test_sel += Selection().add("Dataset", "raw_name")
+    test_sel += DUMMY_DATASETS[0]()
+    test_sel += Datasets().add(DUMMY_DATASETS[1]())
 
     assert test_sel == sel
     assert id(test_sel) == orig_id
 
-    with pytest.raises(
-        ValueError,
-        match=re.escape(
-            "raw variable name 'popd' is already present in {Dataset(raw='HYDE', "
-            "pretty='HYDE'): [Variable(raw='popd', "
-            "pretty='pop density')]}"
-        ),
-    ):
-        test_sel.add("HYDE", ("popd", "pop density"))
-
-    with pytest.raises(
-        ValueError,
-        match=re.escape(
-            "raw variable name 'popd' is already present in {Dataset(raw='HYDE', "
-            "pretty='HYDE'): [Variable(raw='popd', "
-            "pretty='pop density')]}"
-        ),
-    ):
+    with pytest.raises(ValueError, match=re.escape("Match for datasets 'A' and 'A'.")):
         _ = test_sel + sel
 
-    test_sel2 = Selection()
+    test_sel2 = Datasets()
     orig_id2 = id(test_sel2)
-    test_sel2 = test_sel2 + {"HYDE": [("popd", "pop density")]}
-    test_sel2 = test_sel2 + Selection().add(
-        "GFEDv4", ("monthly burned area", "burned area")
-    )
-    test_sel2 = test_sel2 + Selection().add("Dataset", "raw_name")
+    test_sel2 = test_sel2 + (DUMMY_DATASETS[0](), DUMMY_DATASETS[1]())
 
     assert test_sel2 == sel
     assert id(test_sel2) != orig_id2
@@ -295,88 +188,29 @@ def test_addition(sel):
 @data_availability
 def test_instances():
     hyde = wildfire_datasets.HYDE()
-    sel1 = Selection().add({"raw": "HYDE", "instance": hyde}, "popd")
-    sel2 = Selection().add({"raw": "HYDE", "instance": hyde}, "popd")
-
+    sel1 = Datasets().add(hyde)
+    sel2 = Datasets().add(hyde)
     assert sel1 == sel2
-    # If the above is true, this needs to be true.
-    assert sel1.instances == sel2.instances
-    # These are the same instances.
-    assert sel1.instances[0] is sel2.instances[0]
 
-    sel3 = Selection().add(
-        {"raw": "HYDE", "instance": wildfire_datasets.HYDE()}, "popd"
-    )
-
+    sel3 = Datasets().add(wildfire_datasets.HYDE())
     assert sel1 == sel3
-    # If the above is true, this needs to be true.
-    assert sel1.instances == sel3.instances
-
-    # However, these are different instances containing the same information.
-    assert sel1.instances[0] is not sel3.instances[0]
-
-    agb = wildfire_datasets.AvitabileThurnerAGB()
-
-    multi_sel = sel1.copy()
-
-    # These should be equal since the instances contain the same information.
-    assert multi_sel == sel1
-    assert multi_sel is not sel1
-
-    multi_sel.add({"raw": "AGB", "instance": agb}, "agb")
-
-    names = multi_sel.raw_dataset_names
-    instances = multi_sel.instances
-
-    assert names.index("AGB") == instances.index(agb)
-    # Need to get reference to hyde instance anew here, since the stored instance
-    # won't match the hyde instance in `sel1`, as `sel1.copy()` was used to create
-    # `multi_sel`.
-    assert names.index("HYDE") == instances.index(
-        multi_sel._Selection__instances[multi_sel.get_index("HYDE")]
-    )
-
-    for selection in (sel1, sel2, sel3, multi_sel):
-        for instance in selection.instances:
-            assert all(cube.has_lazy_data() for cube in instance.cubes)
 
 
-def test_pack_input():
-    pack_input = Selection.pack_input
-
-    with pytest.raises(
-        TypeError,
-        match=re.escape(
-            "Expected items to be of type(s) '{}', but got types "
-            "'[{}]'.".format(str, type(None))
-        ),
-    ):
-        pack_input((None,))
-
-    with pytest.raises(
-        ValueError, match=re.escape("Expected at most 1 item(s), got 2.")
-    ):
-        pack_input(("test1", "test2"), elements=1)
-
-
-def cache_is_empty(selection):
-    return all(
-        not selection._Selection__return_cached_repr("all", variable_format)
-        for variable_format in ("all", "raw", "pretty")
-    )
-
-
-def test_pruning():
-    assert Selection().add("A", "a").remove_variables("a") == Selection()
+def test_pruning(big_dataset):
     assert (
-        Selection().add("A", "a").add("A", "b").remove_variables(("a", "b"))
-        == Selection()
+        Datasets().add(DUMMY_DATASETS[0]()).remove_variables("long_nameA") == Datasets()
     )
-    assert Selection().add("A", "a").add("A", "b").remove_variables(
-        "b"
-    ) == Selection().add("A", "a")
-    assert Selection().add("A", "a").remove_datasets("A") == Selection()
+    assert (
+        Datasets()
+        .add(DUMMY_DATASETS[0]())
+        .add(DUMMY_DATASETS[1]())
+        .remove_variables(("long_nameA", "long_nameB"))
+        == Datasets()
+    )
 
-    assert cache_is_empty(
-        Selection().add("A", "a").add("A", "b").remove_variables(("a", "b"))
-    )
+    assert Datasets().add(DUMMY_DATASETS[0]()).add(
+        DUMMY_DATASETS[1]()
+    ).remove_variables("long_nameA") == Datasets().add(DUMMY_DATASETS[1]())
+
+    # big_dataset contains 2 cubes. Removing one of them should leave only 1.
+    assert len(Datasets(big_dataset).remove_variables("second_name")[0]) == 1

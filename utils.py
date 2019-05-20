@@ -107,3 +107,103 @@ def land_mask(n_lon=1440):
 
     geom_np = geom_np.astype(np.bool_)
     return geom_np
+
+
+def pack_input(var, single_type=str, elements=2, fill_source=0):
+    """Return a filled tuple with `elements` items.
+
+    Args:
+        var (iterable of `single_type` or `single_type`): Input variable which
+            will be transformed.
+        single_type (class or tuple of class): Atomic type(s) that will be treated
+            as single items.
+        elements (int): Number of elements in the final tuple.
+        fill_source (int, None, or iterable of int or None): Determines how to pad
+            input such that it contains `elements` items. No existing items in
+            `var will be altered. If `fill_source` is an int or None, it is
+            treated as an iterable containing `fill_source` (`elements` -
+            len(`var`)) times, where len(`var`) refers to the number of
+            `single_type` items supplied in `var` (which may be only one, in which
+            case `var` is internally transformed to be a 1-element iterable
+            containing `var`). The `fill_source` iterable must contain at least
+            (`elements` - len(`var`)) items, since this is the number of slots
+            that need to be filled in order for the output to contain `elements`
+            items. If `fill_source[-i]` is an int, `output[-i]` will be inserted into
+            `output` at index `elements - i`. If `fill_source[-i]` is None, None
+            will be inserted. Surplus `fill_source` items will be trimmed starting
+            from the left (thus the -i index notation above).
+    Raises:
+        ValueError: If `var` is an iterable of `single_type` and contains more than
+            `elements` items.
+        TypeError: If `var` is an iterable and its items are not all of type
+            `single_type`.
+        TypeError: If `fill_source` contains types other than int and NoneType.
+        IndexError: If `len(fill_source)` < (`elements` - len(`var`)).
+        IndexError: If `fill_source[-i]` is an int and
+            `fill_source[-i]` >= `elements` - i.
+
+    Returns:
+        tuple: tuple with `elements` items.
+
+    Examples:
+        >>> pack_input("testing")
+        ('testing', 'testing')
+        >>> pack_input(("foo",))
+        ('foo', 'foo')
+        >>> pack_input(("foo", "bar"), elements=3, fill_source=1)
+        ('foo', 'bar', 'bar')
+        >>> pack_input("foo", elements=2, fill_source=None)
+        ('foo', None)
+        >>> pack_input("foo", elements=3, fill_source=(0, None))
+        ('foo', 'foo', None)
+        >>> # Surplus `fill_source` items will be trimmed starting from the left.
+        >>> pack_input("foo", elements=3, fill_source=(99, 0, None))
+        ('foo', 'foo', None)
+        >>> pack_input(("foo", "bar"), elements=5, fill_source=(1, 2, None))
+        ('foo', 'bar', 'bar', 'bar', None)
+
+    """
+    if not isinstance(var, single_type):
+        if not all(isinstance(single_var, single_type) for single_var in var):
+            raise TypeError(
+                "Expected items to be of type(s) '{}', but got types '{}'.".format(
+                    single_type, [type(single_var) for single_var in var]
+                )
+            )
+        if len(var) > elements:
+            raise ValueError(
+                "Expected at most {} item(s), got {}.".format(elements, len(var))
+            )
+        if len(var) == elements:
+            return tuple(var)
+        # Guarantee that `var` is a list, and make a copy so the input is not
+        # changed unintentionally.
+        var = list(var)
+    else:
+        var = [var]
+
+    fill_source_types = (int, type(None))
+    if not isinstance(fill_source, fill_source_types):
+        if not all(
+            isinstance(single_source, fill_source_types)
+            for single_source in fill_source
+        ):
+            raise TypeError(
+                "Expected fill_source to be of types '{}', but got types '{}'.".format(
+                    fill_source_types,
+                    [type(single_source) for single_source in fill_source],
+                )
+            )
+        # Again, make a copy.
+        fill_source = fill_source[:]
+    else:
+        fill_source = [fill_source] * (elements - len(var))
+
+    n_missing = elements - len(var)
+    for i in range(-n_missing, 0):
+        if fill_source[i] is None:
+            fill_value = None
+        else:
+            fill_value = var[fill_source[i]]
+        var.append(fill_value)
+    return tuple(var)

@@ -331,11 +331,17 @@ def monthly_constraint(
 
 
 class Dataset(ABC):
+    # TODO: When adding / accessing cubes, make sure that the variables names (raw and
+    # pretty) contained therein are unique to avoid errors later on.
 
     # TODO: Make sure these get overridden by the subclasses, or that every
     # dataset uses these.
     calendar = "gregorian"
     time_unit_str = "days since 1970-01-01 00:00:00"
+    pretty_variable_names = dict()
+
+    def __str__(self):
+        return self.name
 
     def __eq__(self, other):
         """Equality testing that ignores data values and only looks at metadata.
@@ -346,25 +352,25 @@ class Dataset(ABC):
 
         """
         if isinstance(other, Dataset):
-            return self.__hash_str == other.__hash_str
+            return self.__shallow == other.__shallow
         return NotImplemented
 
-    def __hash__(self):
-        """Hash function that ignores data values and only looks at metadata.
+    def __len__(self):
+        return len(self.cubes)
 
-        The hash value is derived solely from the `self.cubes` attribute, and the
-        coordinates and metadata of each cube in this CubeList. This means that
-        changes in the stored data are ignored!
-
-        """
-        # Computing the self.__hash_str (not its hash) takes the bulk of the time.
-        # This is especially true the very first time a Dataset instance accesses this
-        # function, as some data will have to be read from the stored file for the
-        # first time.
-        return hash(self.__hash_str)
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return type(self)(self.cubes[index])
+        if isinstance(index, str):
+            # TODO: Use contains() function to search for pretty names as well, (and to
+            # TODO: implement regex matching).
+            new_index = self.variable_names(which="raw").index(index)
+        else:
+            new_index = index
+        return self.cubes[new_index]
 
     @property
-    def __hash_str(self):
+    def __shallow(self):
         """Create a hashable shallow description of the CubeList.
 
         Note:
@@ -464,6 +470,34 @@ class Dataset(ABC):
     @property
     def name(self):
         return type(self).__name__
+
+    def names(self, which="all", squeeze=True):
+        if which == "all":
+            return (self.name, getattr(self, "pretty", self.name))
+        if which == "raw":
+            if squeeze:
+                return self.name
+            return (self.name,)
+        if which == "pretty":
+            if squeeze:
+                return getattr(self, "pretty", self.name)
+            return (getattr(self, "pretty", self.name),)
+        raise ValueError("Unknown format: '{}'.".format(which))
+
+    def variable_names(self, which="all"):
+        if which == "all":
+            return tuple(
+                (cube.name(), self.pretty_variable_names.get(cube.name(), cube.name()))
+                for cube in self.cubes
+            )
+        if which == "raw":
+            return tuple(cube.name() for cube in self.cubes)
+        if which == "pretty":
+            return tuple(
+                self.pretty_variable_names.get(cube.name(), cube.name())
+                for cube in self.cubes
+            )
+        raise ValueError("Unknown format: '{}'.".format(which))
 
     @property
     def cache_filename(self):

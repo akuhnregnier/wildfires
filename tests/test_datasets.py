@@ -30,14 +30,12 @@ def test_equality():
     hyde2 = wildfire_datasets.HYDE()
 
     assert hyde1 == hyde2
-    assert hash(hyde1) == hash(hyde2)
     assert hyde1 is not hyde2
 
     latitudes = hyde1.cubes[0].coord("latitude")
     hyde1.cubes[0].coord("latitude").points = latitudes.points + 1
 
     assert hyde1 != hyde2
-    assert hash(hyde1) != hash(hyde2)
 
     for dataset in (hyde1, hyde2):
         assert all(cube.has_lazy_data() for cube in dataset.cubes)
