@@ -27,6 +27,7 @@ from subprocess import CalledProcessError, check_output
 
 import iris
 import iris.coord_categorisation
+import numpy as np
 from joblib import Memory
 
 import wildfires.data.datasets as wildfire_datasets
@@ -37,6 +38,26 @@ logger = logging.getLogger(__name__)
 memory = Memory(location=DATA_DIR, verbose=0)
 
 # TODO: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
+
+
+def homogenise_cube_mask(cube):
+    """Ensure cube.data is a masked array with a full mask (in-place).
+
+    Note:
+        This function realises the cube's lazy data (if any).
+
+    """
+    array = cube.data
+    if isinstance(array, np.ma.core.MaskedArray):
+        if isinstance(array.mask, np.ndarray):
+            return cube
+        else:
+            if array.mask:
+                raise ValueError(
+                    "The only mask entry is True, meaning all entries are masked!"
+                )
+    cube.data = np.ma.MaskedArray(array, mask=np.zeros_like(array, dtype=np.bool_))
+    return cube
 
 
 def get_qstat_ncpus():
@@ -1012,6 +1033,16 @@ def process_dataset(monthly_dataset, min_time, max_time):
                 "month_number", iris.analysis.MEAN
             )
 
+    for dataset in (monthly_dataset, mean_dataset, climatology):
+        for cube in dataset:
+            # This function has the wanted side-effect of realising the data.
+            # Without this, calculations of things like the total temporal mean are
+            # delayed until the cube is needed, which we do not want here as we are
+            # caching the results.
+            homogenise_cube_mask(cube)
+
+    # The data returned here needs to be realised (not lazy), which is ensured by
+    # calling homogenise_cube_mask() on every cube above.
     return monthly_dataset, mean_dataset, climatology
 
 
