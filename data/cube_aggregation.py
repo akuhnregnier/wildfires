@@ -11,27 +11,57 @@ TODO: Selection.remove_datasets or Selection.select_datasets).
 """
 import logging
 import logging.config
+import os
 import re
-from collections import OrderedDict, defaultdict
+import warnings
+from collections import OrderedDict
 from copy import deepcopy
-from functools import wraps
+from functools import partial, wraps
 from inspect import iscode
+from multiprocessing.dummy import Pool as ThreadedPool
 from pprint import pformat, pprint
 
 import iris
 import iris.coord_categorisation
 from joblib import Memory
-from tqdm import tqdm
 
 import wildfires.data.datasets as wildfire_datasets
 from wildfires.data.datasets import DATA_DIR, dataset_times
 from wildfires.logging_config import LOGGING
 
 logger = logging.getLogger(__name__)
-# FIXME: Reduce verbosity!
 memory = Memory(location=DATA_DIR, verbose=0)
 
-# FIXME: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
+# TODO: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
+
+
+def get_ncpus(default=1):
+    ncpus = os.environ.get("NCPUS")
+    if ncpus:
+        ncpus = int(ncpus)
+    # TODO: This potentially breaks with multiple jobs running
+    # TODO: (depending on their order).
+    # else:
+    #     try:
+    #         qstat_out = check_output(("qstat", "-f")).decode()
+    #         if qstat_out:
+    #             match = re.search("ncpus.*?(?:=|:).*?(\d{1,3})", qstat_out)
+    #             if match:
+    #                 ncpus = int(match.group(1))
+    #             else:
+    #                 logger.warning("Parsing of output failed.")
+    #     except CalledProcessError:
+    #         logger.exception("Call to qstat failed.")
+    # if not ncpus:
+    else:
+        logger.warning(
+            "Could not read NCPUS environment variable. Using default: {}.".format(
+                default
+            )
+        )
+        ncpus = default
+    logger.info("Returning ncpus: {}.".format(ncpus))
+    return ncpus
 
 
 def contains(entry, items, exact=True, str_only=False, single_item_type=str):
@@ -46,6 +76,8 @@ def contains(entry, items, exact=True, str_only=False, single_item_type=str):
             `entry`.
 
     """
+    if isinstance(entry, single_item_type):
+        entry = (entry,)
     if isinstance(items, single_item_type):
         items = (items,)
     for item in items:
@@ -371,34 +403,39 @@ class Datasets:
 
         """
         assert which in {"remove", "add"}
-        removal_dict = defaultdict(list)
+
+        # Build a mutable representation of the current contents.
+        contents = list(map(list, self.get("all", "all").items()))
+        for i in range(len(contents)):
+            contents[i][1] = list(contents[i][1])
+        contents = dict(contents)
+        removal_dict = contents.copy()
+
         # Look for a match for each desired variable.
         for search_dataset, search_variable in (
             (search_dataset, search_variable)
-            for search_dataset, target_variables in search_dict.items()
-            for search_variable in target_variables
+            for search_dataset, search_variables in search_dict.items()
+            for search_variable in search_variables
         ):
             matches = 0
             for stored_dataset, stored_variable in (
-                (stored_datasets, stored_variable)
-                for stored_datasets, stored_variables in self.get(
-                    search_dataset, variable_format="all"
-                ).items()
-                for stored_variable in stored_variables
+                (search_dataset, stored_variable)
+                for stored_variable in contents[search_dataset]
             ):
                 if which == "remove" and contains(
                     stored_variable, search_variable, exact=exact
                 ):
                     self.__remove_variable(selection, stored_dataset, stored_variable)
-                    # Move on to the next desired variable.
+                    # Move on to the next variable.
                     break
                 if which == "add":
                     if contains(stored_variable, search_variable, exact=exact):
                         matches += 1
-                    else:
-                        removal_dict[stored_dataset].append(stored_variable)
+                        # We want to keep this variable, so we remove it from the
+                        # dictionary which specifies which variables to remove.
+                        removal_dict[stored_dataset].remove(stored_variable)
             else:
-                if which == "remove" or which == "add" and matches < 1:
+                if which == "remove" or which == "add" and not matches:
                     raise KeyError(
                         "Variable '{}' not found for dataset '{}'.".format(
                             search_variable, search_dataset
@@ -408,7 +445,7 @@ class Datasets:
             return self.dict_process_variables(
                 selection, removal_dict, "remove", exact=exact
             )
-        elif which == "remove":
+        if which == "remove":
             # Remove empty datasets.
             selection.datasets[:] = [
                 dataset for dataset in selection.datasets if dataset
@@ -504,7 +541,6 @@ class Datasets:
 
         """
         assert which in {"remove", "add"}
-        removal_dict = defaultdict(list)
         if isinstance(names, str):
             names = (names,)
         unpacked_datasets_variables = tuple(
@@ -545,16 +581,21 @@ class Datasets:
                 )
             )
 
+        # Build a mutable representation of the current contents.
+        contents = list(map(list, self.get("all", "all").items()))
+        for i in range(len(contents)):
+            contents[i][1] = list(contents[i][1])
+        contents = dict(contents)
+        removal_dict = contents.copy()
+
         # Look for a match for each desired variable.
         logger.debug("Selecting the following: '{}'.".format(names))
         for search_variable in names:
             matches = 0
             for stored_dataset, stored_variable in (
-                (stored_dataset_names, stored_variable_names)
-                for stored_dataset_names, stored_variables in (
-                    self.get("all", "all").items()
-                )
-                for stored_variable_names in stored_variables
+                (stored_dataset, stored_variable)
+                for stored_dataset, stored_variables in contents.items()
+                for stored_variable in stored_variables
             ):
                 # Check against all variables in the dataset.
                 if which == "remove" and contains(
@@ -569,10 +610,11 @@ class Datasets:
                 if which == "add":
                     if contains(stored_variable, search_variable, exact=exact):
                         matches += 1
-                    else:
-                        removal_dict[stored_dataset].append(stored_variable)
+                        # We want to keep this variable, so we remove it from the
+                        # dictionary which specifies which variables to remove.
+                        removal_dict[stored_dataset].remove(stored_variable)
             else:
-                if which == "remove" or which == "add" and matches < 1:
+                if which == "remove" or which == "add" and not matches:
                     raise KeyError("Variable '{}' not found.".format(search_variable))
 
         if which == "add":
@@ -656,7 +698,9 @@ class Datasets:
         pprint(self.get(dataset_name="all", variable_format=variable_format))
 
 
-def get_all_datasets(pretty_dataset_names=None, pretty_variable_names=None):
+def get_all_datasets(
+    pretty_dataset_names=None, pretty_variable_names=None, ignore_names=None
+):
     """Get all valid datasets defined in the `wildfires.data.datasets` module.
 
     Args:
@@ -673,9 +717,11 @@ def get_all_datasets(pretty_dataset_names=None, pretty_variable_names=None):
         pretty_dataset_names = {}
     if pretty_variable_names is None:
         pretty_variable_names = {}
+    if ignore_names is None:
+        ignore_names = []
     selection = Datasets()
     dataset_names = dir(wildfire_datasets)
-    for dataset_name in dataset_names:
+    for dataset_name in [name for name in dataset_names if name not in ignore_names]:
         logger.debug("Testing if {} is a valid Dataset.".format(dataset_name))
         obj = getattr(wildfire_datasets, dataset_name)
         if (
@@ -796,8 +842,47 @@ def print_datasets_dates(selection):
     print(times_df)
 
 
+def process_dataset(dataset, min_time, max_time):
+    # Limit the amount of data that has to be processed.
+    dataset.limit_months(min_time, max_time)
+
+    # Regrid cubes to the same lat-lon grid.
+    # TODO: change lat and lon limits and also the number of points!!
+    # Always work in 0.25 degree steps? From the same starting point?
+    dataset.regrid()
+
+    # TODO: Inplace argument for get_mothly_data methods?
+    monthly_dataset = deepcopy(dataset)
+    monthly_dataset.cubes[:] = monthly_dataset.get_monthly_data(min_time, max_time)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=r".*Collapsing a non-contiguous coordinate.*"
+        )
+        mean_dataset = deepcopy(dataset)
+        for i, cube in enumerate(dataset):
+            # TODO: Implement __setitem__ for Dataset to make this cleaner.
+            if cube.coords("time"):
+                mean_dataset.cubes[i] = cube.collapsed("time", iris.analysis.MEAN)
+            else:
+                # XXX: Need to copy cube here?
+                mean_dataset.cubes[i] = cube
+
+        climatology = deepcopy(dataset)
+        for i, cube in enumerate(monthly_dataset):
+            if not cube.coords("month_number"):
+                iris.coord_categorisation.add_month_number(cube, "time")
+            climatology.cubes[i] = cube.aggregated_by(
+                "month_number", iris.analysis.MEAN
+            )
+
+    return monthly_dataset, mean_dataset, climatology
+
+
+# TODO: Recalculate cache based on changes in `dataset_function` argument (especially
+# TODO: if the same function is given, but was altered between runs).
 @clever_cache
-def prepare_selection(selection):
+def prepare_selection(selection, dataset_function=process_dataset):
     """Prepare cubes matching the given selection for analysis.
 
     Calculate 3 different averages at the same time to avoid repeat loading.
@@ -811,67 +896,27 @@ def prepare_selection(selection):
     """
     min_time, max_time, times_df = dataset_times(selection.datasets)
 
-    # Limit the amount of data that has to be processed.
-    logger.info("Limiting data")
-    for dataset in selection:
-        dataset.limit_months(min_time, max_time)
-    logger.info("Finished limiting data")
-
-    # Regrid cubes to the same lat-lon grid.
-    # TODO: change lat and lon limits and also the number of points!!
-    # Always work in 0.25 degree steps? From the same starting point?
-    logger.info("Starting regridding of all datasets")
-    for dataset in selection:
-        dataset.regrid()
-    logger.info("Finished regridding of all datasets.")
-
-    logger.info("Starting temporal upscaling.")
-    raw_datasets = Datasets()
-    for dataset in tqdm(selection):
-        # TODO: Inplace argument for get_mothly_data methods?
-        monthly_dataset = deepcopy(dataset)
-        monthly_dataset.cubes[:] = monthly_dataset.get_monthly_data(min_time, max_time)
-        raw_datasets += monthly_dataset
-
-    # logger.info("Finished temporal upscaling.")
-    # iris.save(cubes, TARGET_FILES[0])
-
-    logger.info("Calculating total mean.")
+    monthly_datasets = Datasets()
     mean_datasets = Datasets()
-    for dataset in tqdm(selection):
-        mean_dataset = deepcopy(dataset)
-        for i, cube in enumerate(mean_dataset):
-            # TODO: Implement __setitem__ for Dataset to make this cleaner.
-            mean_dataset.cubes[i] = cube.collapsed("time", iris.analysis.MEAN)
-        mean_datasets += mean_dataset
-
-    # iris.save(cubes, TARGET_FILES[1])
-    # logger.info(mean_cubes)
-
-    logger.info("Calculating monthly climatology.")
     climatology_datasets = Datasets()
-    for dataset in tqdm(selection):
-        climatology = deepcopy(dataset)
-        for cube in dataset:
-            if not cube.coords("month_number"):
-                iris.coord_categorisation.add_month_number(cube, "time")
-            climatology.cubes[i] = cube.aggregated_by(
-                "month_number", iris.analysis.MEAN
-            )
+    # Use get_ncpus() even for a ThreadPool since large portions of the code release
+    # the GIL.
+    results = ThreadedPool(get_ncpus()).map(
+        partial(dataset_function, min_time=min_time, max_time=max_time), selection
+    )
+    for monthly_dataset, mean_dataset, climatology in results:
+        monthly_datasets += monthly_dataset
+        mean_datasets += mean_dataset
         climatology_datasets += climatology
 
-    # iris.save(cubes, TARGET_FILES[2])
-
-    return raw_datasets, mean_datasets, climatology_datasets
+    return monthly_datasets, mean_datasets, climatology_datasets
 
 
 if __name__ == "__main__":
     logging.config.dictConfig(LOGGING)
 
-    selection = get_all_datasets()
-
-    selection.remove_datasets(
-        (
+    selection = get_all_datasets(
+        ignore_names=(
             "AvitabileAGB",
             "ESA_CCI_Landcover",
             "GFEDv4s",
@@ -907,7 +952,7 @@ if __name__ == "__main__":
         "pftBare",
         "pftCrop",
         "pftHerb",
-        "pftNoLand",
+        # "pftNoLand",
         # 'pftShrubBD',
         # 'pftShrubBE',
         # 'pftShrubNE',
@@ -950,7 +995,8 @@ if __name__ == "__main__":
         # 'biomass_roots',
         # 'biomass_stem'
     ]
-    # FIXME: Make this operation inplace by default?
+    # TODO: Make this operation inplace by default?
+    print("Selecting variables.")
     selection = selection.select_variables(selected_names)
 
     assert len(selection.cubes) == len(
@@ -959,4 +1005,5 @@ if __name__ == "__main__":
 
     selection.show("pretty")
     print_datasets_dates(selection)
-    aggregated_cubes = prepare_selection(selection)
+    print("Prepare selection.")
+    monthly_datasets, mean_datasets, climatology_datasets = prepare_selection(selection)
