@@ -9,10 +9,13 @@ TODO: Enable regex based processing of dataset names too (e.g. for
 TODO: Selection.remove_datasets or Selection.select_datasets).
 
 """
+import json
 import logging
 import logging.config
 import os
+import platform
 import re
+import socket
 import warnings
 from collections import OrderedDict
 from copy import deepcopy
@@ -20,6 +23,7 @@ from functools import partial, wraps
 from inspect import iscode
 from multiprocessing.dummy import Pool as ThreadedPool
 from pprint import pformat, pprint
+from subprocess import CalledProcessError, check_output
 
 import iris
 import iris.coord_categorisation
@@ -35,33 +39,64 @@ memory = Memory(location=DATA_DIR, verbose=0)
 # TODO: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
 
 
+def get_qstat_ncpus():
+    """Get ncpus from qstat job details.
+
+    Only relevant if we are currently running on a node with a hostname matching one
+    of the running jobs.
+
+    """
+    try:
+        out = json.loads(check_output(("qstat", "-f", "-F", "json")).decode())
+    except FileNotFoundError:
+        logger.warning("Not running on hpc.")
+        return None
+    except CalledProcessError:
+        logger.exception("Call to qstat failed.")
+        return None
+    if out:
+        current_hostname = platform.node()
+        if not current_hostname:
+            current_hostname = socket.gethostname()
+        if not current_hostname:
+            logger.error("Hostname could not be determined.")
+            return None
+
+        # Loop through each job.
+        jobs = out["Jobs"]
+        for job_name, job in jobs.items():
+            if not job["job_state"] == "R":
+                logger.info(
+                    "Ignoring job '{}' as it is not running.".format(job["Job_Name"])
+                )
+                continue
+            # If we are on the same machine.
+            if re.search(current_hostname, job["exec_host"]):
+                # Other keys include 'mem' (eg. '32gb'), 'mpiprocs'
+                # and 'walltime' (eg. '08:00:00').
+                resources = job["Resource_List"]
+                ncpus = resources["ncpus"]
+                logger.info(
+                    "Getting ncpus: {} from job '{}'.".format(ncpus, job["Job_Name"])
+                )
+                return int(ncpus)
+    return None
+
+
 def get_ncpus(default=1):
+    # The NCPUS environment variable is not always set up correctly, so check for
+    # batch jobs matching the current hostname first.
+    ncpus = get_qstat_ncpus()
+    if ncpus:
+        return ncpus
     ncpus = os.environ.get("NCPUS")
     if ncpus:
-        ncpus = int(ncpus)
-    # TODO: This potentially breaks with multiple jobs running
-    # TODO: (depending on their order).
-    # else:
-    #     try:
-    #         qstat_out = check_output(("qstat", "-f")).decode()
-    #         if qstat_out:
-    #             match = re.search("ncpus.*?(?:=|:).*?(\d{1,3})", qstat_out)
-    #             if match:
-    #                 ncpus = int(match.group(1))
-    #             else:
-    #                 logger.warning("Parsing of output failed.")
-    #     except CalledProcessError:
-    #         logger.exception("Call to qstat failed.")
-    # if not ncpus:
-    else:
-        logger.warning(
-            "Could not read NCPUS environment variable. Using default: {}.".format(
-                default
-            )
-        )
-        ncpus = default
-    logger.info("Returning ncpus: {}.".format(ncpus))
-    return ncpus
+        logger.info("Read ncpus: {} from NCPUS environment variable.".format(ncpus))
+        return int(ncpus)
+    logger.warning(
+        "Could not read NCPUS environment variable. Using default: {}.".format(default)
+    )
+    return default
 
 
 def contains(entry, items, exact=True, str_only=False, single_item_type=str):
@@ -236,7 +271,7 @@ class Datasets:
         for stored_dataset in self.datasets:
             if set(stored_dataset.names()).intersection(set(dataset.names())):
                 raise ValueError(
-                    "Match for datasets '{}' and '{}'.".format(stored_dataset, dataset)
+                    "Matching datasets '{}' and '{}'.".format(stored_dataset, dataset)
                 )
 
         self.datasets.append(dataset)
@@ -277,6 +312,8 @@ class Datasets:
             formatted[dataset.names(variable_format)] = dataset.variable_names(
                 variable_format
             )
+
+        logger.debug("Returning formatted dict with {} entries.".format(len(formatted)))
 
         return formatted
 
@@ -366,8 +403,15 @@ class Datasets:
         return self.process_datasets(selection, names, operation="remove")
 
     @staticmethod
-    def __remove_variable(selection, dataset, cube_name):
-        """Remove a dataset's cube in-place."""
+    def __remove_variable(selection, dataset, cube_name, variable_names=None):
+        """Remove a dataset's cube in-place.
+
+        Selection is carried out exclusively using strings.
+
+        The `variable_names` list is also modified in-place, so it needs to be
+        mutable!
+
+        """
         if not isinstance(dataset, str):
             dataset = dataset[0]
         if not isinstance(cube_name, str):
@@ -375,12 +419,18 @@ class Datasets:
         assert isinstance(dataset, str)
         assert isinstance(cube_name, str)
 
-        def selection_func(cube):
-            return cube.name() != cube_name
+        logger.debug("Removing variable: '{}'.".format(cube_name))
 
-        selection[dataset].cubes = selection[dataset].cubes.extract(
-            iris.Constraint(cube_func=selection_func)
-        )
+        if variable_names is None:
+            variable_names = list(selection[dataset].variable_names("raw"))
+
+        index = variable_names.index(cube_name)
+        logger.debug("Removing cube from CubeList at index: {}.".format(index))
+        del selection[dataset].cubes[index]
+        logger.debug("Removing entry from names at index: {}.".format(index))
+        del variable_names[index]
+
+        logger.debug("Finished removing variable: '{}'.".format(cube_name))
 
     def dict_process_variables(
         self, selection, search_dict, which="remove", exact=True
@@ -411,29 +461,51 @@ class Datasets:
         contents = dict(contents)
         removal_dict = contents.copy()
 
+        up_to_date_raw = contents.copy()
+        for search_dataset in up_to_date_raw:
+            up_to_date_raw[search_dataset] = [
+                name[0] for name in up_to_date_raw[search_dataset]
+            ]
+
         # Look for a match for each desired variable.
         for search_dataset, search_variable in (
             (search_dataset, search_variable)
             for search_dataset, search_variables in search_dict.items()
             for search_variable in search_variables
         ):
+            logger.debug("{} '{}: {}'.".format(which, search_dataset, search_variable))
             matches = 0
-            for stored_dataset, stored_variable in (
+            for search_dataset, stored_variable in (
                 (search_dataset, stored_variable)
                 for stored_variable in contents[search_dataset]
             ):
+                logger.debug(
+                    "Checking '{}: {}'.".format(search_dataset, stored_variable)
+                )
                 if which == "remove" and contains(
                     stored_variable, search_variable, exact=exact
                 ):
-                    self.__remove_variable(selection, stored_dataset, stored_variable)
+                    logger.debug(
+                        "Removing '{}: {}'.".format(search_dataset, stored_variable)
+                    )
+                    self.__remove_variable(
+                        selection,
+                        search_dataset,
+                        stored_variable,
+                        variable_names=up_to_date_raw[search_dataset],
+                    )
                     # Move on to the next variable.
+                    logger.debug("Searching for next variable.")
                     break
                 if which == "add":
                     if contains(stored_variable, search_variable, exact=exact):
+                        logger.debug(
+                            "Adding '{}: {}'.".format(search_dataset, stored_variable)
+                        )
                         matches += 1
                         # We want to keep this variable, so we remove it from the
                         # dictionary which specifies which variables to remove.
-                        removal_dict[stored_dataset].remove(stored_variable)
+                        removal_dict[search_dataset].remove(stored_variable)
             else:
                 if which == "remove" or which == "add" and not matches:
                     raise KeyError(
@@ -541,11 +613,19 @@ class Datasets:
 
         """
         assert which in {"remove", "add"}
+        logger.debug("Checking for duplicates.")
         if isinstance(names, str):
             names = (names,)
+
+        # Build a mutable representation of the current contents.
+        contents = list(map(list, self.get("all", "all").items()))
+        for i in range(len(contents)):
+            contents[i][1] = list(contents[i][1])
+        contents = dict(contents)
+
         unpacked_datasets_variables = tuple(
             (dataset[0], variable_name)
-            for dataset, variables in self.get("all", "all").items()
+            for dataset, variables in contents.items()
             for variable_names in variables
             # Use set() here, since the pretty variable name could be the same as the
             # raw variable name if no pretty variable has been provided. This would
@@ -581,15 +661,10 @@ class Datasets:
                 )
             )
 
-        # Build a mutable representation of the current contents.
-        contents = list(map(list, self.get("all", "all").items()))
-        for i in range(len(contents)):
-            contents[i][1] = list(contents[i][1])
-        contents = dict(contents)
         removal_dict = contents.copy()
 
         # Look for a match for each desired variable.
-        logger.debug("Selecting the following: '{}'.".format(names))
+        logger.debug("Selecting variables: '{}'.".format(names))
         for search_variable in names:
             matches = 0
             for stored_dataset, stored_variable in (
@@ -851,7 +926,7 @@ def process_dataset(dataset, min_time, max_time):
     # Always work in 0.25 degree steps? From the same starting point?
     dataset.regrid()
 
-    # TODO: Inplace argument for get_mothly_data methods?
+    # TODO: Inplace argument for get_monthly_data methods?
     monthly_dataset = deepcopy(dataset)
     monthly_dataset.cubes[:] = monthly_dataset.get_monthly_data(min_time, max_time)
 

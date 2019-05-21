@@ -306,6 +306,10 @@ def regrid(
 
     scheme = iris.analysis.AreaWeighted() if area_weighted else iris.analysis.Linear()
 
+    logger.debug("Fetching real data.")
+    cube.data
+    logger.debug("Cube has lazy data: {}.".format(cube.has_lazy_data()))
+    logger.debug("Calling regrid with scheme '{}'.".format(scheme))
     interpolated_cube = cube.regrid(new_grid, scheme)
 
     return interpolated_cube
@@ -341,7 +345,12 @@ class Dataset(ABC):
     pretty_variable_names = dict()
 
     def __str__(self):
-        return self.name
+        return "{} ({}, {}, {})".format(
+            self.name, self.min_time, self.max_time, self.frequency
+        )
+
+    def __repr__(self):
+        return str(self) + " at {}".format(id(self))
 
     def __eq__(self, other):
         """Equality testing that ignores data values and only looks at metadata.

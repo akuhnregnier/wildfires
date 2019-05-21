@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import os
-import re
 from copy import deepcopy
 from datetime import datetime
 
@@ -120,7 +119,7 @@ def test_representations(sel):
 
 def test_adding(sel):
     # Test guard against duplicated names.
-    with pytest.raises(ValueError, match=re.escape("Match for datasets 'A' and 'A'.")):
+    with pytest.raises(ValueError, match="Match.*datasets.*'A.*and.*'A.*."):
         sel.add(DUMMY_DATASETS[0]())
 
 
@@ -174,7 +173,7 @@ def test_addition(sel):
     assert test_sel == sel
     assert id(test_sel) == orig_id
 
-    with pytest.raises(ValueError, match=re.escape("Match for datasets 'A' and 'A'.")):
+    with pytest.raises(ValueError, match="Match.*datasets.*'A.*and.*'A.*."):
         _ = test_sel + sel
 
     test_sel2 = Datasets()
