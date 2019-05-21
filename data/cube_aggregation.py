@@ -953,33 +953,58 @@ def print_datasets_dates(selection):
     print(times_df)
 
 
-def process_dataset(dataset, min_time, max_time):
+def process_dataset(monthly_dataset, min_time, max_time):
+    """Modifies `dataset` in-place, also generating temporal averages.
+
+    TODO:
+        Currently `dataset` is modified by regridding, temporal selection and
+        `get_monthly_data`. Should this be circumvented by copying it?
+
+    Returns:
+        tuple of `Dataset`
+
+    """
+    # Create empty datasets to hold the results of the different temporal averaging
+    # procedures.
+
+    climatology = type(monthly_dataset)()
+    climatology.cubes = [None] * len(monthly_dataset)
+
+    mean_dataset = deepcopy(climatology)
+
     # Limit the amount of data that has to be processed.
-    dataset.limit_months(min_time, max_time)
+    monthly_dataset.limit_months(min_time, max_time)
 
     # Regrid cubes to the same lat-lon grid.
     # TODO: change lat and lon limits and also the number of points!!
     # Always work in 0.25 degree steps? From the same starting point?
-    dataset.regrid()
+    monthly_dataset.regrid()
 
-    # TODO: Inplace argument for get_monthly_data methods?
-    monthly_dataset = deepcopy(dataset)
-    monthly_dataset.cubes[:] = monthly_dataset.get_monthly_data(min_time, max_time)
-
+    # Generate overall temporal mean. Do this before monthly data is created for all
+    # datasets, since this will only increase the computational burden and skew the
+    # mean towards newly synthesised months (created using `get_monthly_data`,
+    # for static, yearly, or climatological datasets).
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore", message=r".*Collapsing a non-contiguous coordinate.*"
         )
-        mean_dataset = deepcopy(dataset)
-        for i, cube in enumerate(dataset):
+        for i, cube in enumerate(monthly_dataset):
             # TODO: Implement __setitem__ for Dataset to make this cleaner.
             if cube.coords("time"):
                 mean_dataset.cubes[i] = cube.collapsed("time", iris.analysis.MEAN)
             else:
-                # XXX: Need to copy cube here?
+                # XXX: Should we copy the cube here?
                 mean_dataset.cubes[i] = cube
 
-        climatology = deepcopy(dataset)
+    # Get monthly data over the chosen interval for all dataset.
+    # TODO: Inplace argument for get_monthly_data methods?
+    monthly_dataset.cubes = monthly_dataset.get_monthly_data(min_time, max_time)
+
+    # Calculate monthly climatology.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=r".*Collapsing a non-contiguous coordinate.*"
+        )
         for i, cube in enumerate(monthly_dataset):
             if not cube.coords("month_number"):
                 iris.coord_categorisation.add_month_number(cube, "time")
@@ -1000,18 +1025,20 @@ def prepare_selection(selection, dataset_function=process_dataset):
 
     Args:
         selection (`Datasets`): Selection specifying the variables to use.
-        averaging (str or None): If None, do not perform any averaging. If "mean",
-            average original monthly data over all time. If "monthly climatology",
-            produce a monthly climatology.
+        dataset_function (function): Function that takes a `Dataset` instance as its
+            argument and processes it, returning three new `Dataset` instances.
 
     """
+    # TODO: If all datasets don't have start / end dates / frequencies (ie. they are
+    # TODO: all static or monthly climatologies, etc...) then return None for min and
+    # TODO: max times and propagate this accordingly.
     min_time, max_time, times_df = dataset_times(selection.datasets)
 
     monthly_datasets = Datasets()
     mean_datasets = Datasets()
     climatology_datasets = Datasets()
-    # Use get_ncpus() even for a ThreadPool since large portions of the code release
-    # the GIL.
+    # Use get_ncpus() even even for a ThreadPool since large portions of the code
+    # release the GIL.
     results = ThreadedPool(get_ncpus()).map(
         partial(dataset_function, min_time=min_time, max_time=max_time), selection
     )
@@ -1029,88 +1056,41 @@ if __name__ == "__main__":
     selection = get_all_datasets(
         ignore_names=(
             "AvitabileAGB",
+            "CRU",
+            "ESA_CCI_Fire",
             "ESA_CCI_Landcover",
+            "ESA_CCI_Soilmoisture",
+            "ESA_CCI_Soilmoisture_Daily",
             "GFEDv4s",
             "GPW_v4_pop_dens",
+            "LIS_OTD_lightning_time_series",
+            "Simard_canopyheight",
             "Thurner_AGB",
         )
     )
     selected_names = [
         "AGBtree",
-        # 'mean temperature',
-        # 'monthly precipitation',
         "maximum temperature",
         "minimum temperature",
-        # 'Quality Flag with T=1',
-        # 'Soil Water Index with T=60',
-        # 'Soil Water Index with T=5',
-        # 'Quality Flag with T=60',
-        # 'Soil Water Index with T=20',
-        # 'Soil Water Index with T=40',
-        # 'Quality Flag with T=20',
-        # 'Surface State Flag',
         "Soil Water Index with T=1",
-        # 'Quality Flag with T=100',
-        # 'Soil Water Index with T=15',
-        # 'Quality Flag with T=10',
-        # 'Soil Water Index with T=10',
-        # 'Quality Flag with T=40',
-        # 'Quality Flag with T=15',
-        # 'Quality Flag with T=5',
-        "Soil Water Index with T=100",
         "ShrubAll",
         "TreeAll",
         "pftBare",
         "pftCrop",
         "pftHerb",
-        # "pftNoLand",
-        # 'pftShrubBD',
-        # 'pftShrubBE',
-        # 'pftShrubNE',
-        # 'pftTreeBD',
-        # 'pftTreeBE',
-        # 'pftTreeND',
-        # 'pftTreeNE',
         "monthly burned area",
         "dry_days",
         "dry_day_period",
         "precip",
         "SIF",
-        # 'cropland',
-        # 'ir_norice',
-        # 'rf_norice',
         "popd",
-        # 'conv_rangeland',
-        # 'rangeland',
-        # 'tot_rainfed',
-        # 'pasture',
-        # 'rurc',
-        # 'rf_rice',
-        # 'tot_rice',
-        # 'uopp',
-        # 'popc',
-        # 'ir_rice',
-        # 'urbc',
-        # 'grazing',
-        # 'tot_irri',
-        "Combined Flash Rate Time Series",
+        "Combined Flash Rate Monthly Climatology",
         "VODorig",
-        # 'Standard Deviation of LAI',
         "Fraction of Absorbed Photosynthetically Active Radiation",
         "Leaf Area Index",
-        # 'Standard Deviation of fPAR',
-        # 'Simard_Pinto_3DGlobalVeg_L3C',
-        # 'biomass_totalag',
-        # 'biomass_branches',
-        # 'biomass_foliage',
-        # 'biomass_roots',
-        # 'biomass_stem'
     ]
-    # TODO: Make this operation inplace by default?
-    print("Selecting variables.")
-    selection = selection.select_variables(selected_names, strict=True)
 
+    selection = selection.select_variables(selected_names, strict=True)
     selection.show("pretty")
-    print_datasets_dates(selection)
-    print("Prepare selection.")
+
     monthly_datasets, mean_datasets, climatology_datasets = prepare_selection(selection)
