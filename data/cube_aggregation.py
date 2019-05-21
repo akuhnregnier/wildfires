@@ -524,7 +524,7 @@ class Datasets:
             ]
         return selection
 
-    def dict_select_variables(self, search_dict, inplace=True, exact=True):
+    def dict_select_variables(self, search_dict, inplace=True, exact=True, strict=True):
         """Return a new `Selection` containing only variables matching `search_dict`.
 
         Args:
@@ -539,20 +539,37 @@ class Datasets:
                 selection as the original selection, but only containing the selected
                 entries. If False, make a copy of the selection before removing
                 entries.
+            strict (bool, optional): If True (default) expect to select as many
+                variables as given in `search_dict`.
 
         Raises:
             KeyError: If a key or value in `search_dict` is not found in the
                 database.
+            ValueError: If strict and if the number of output variables does not match
+                the number of input variables.
 
         Returns:
             `Selection`: A copy of a subset of the original selection.
 
         """
+        n_target_variables = sum(len(variables) for variables in search_dict.values())
         if inplace:
             selection = self
         else:
             selection = type(self)()
-        return self.dict_process_variables(selection, search_dict, "add", exact=exact)
+
+        output = self.dict_process_variables(selection, search_dict, "add", exact=exact)
+
+        if strict:
+            # Count output cubes.
+            n_output_variables = sum(len(dataset) for dataset in output)
+            if n_target_variables != n_output_variables:
+                raise ValueError(
+                    "Expected to output {} variables, but got {}.".format(
+                        n_target_variables, n_output_variables
+                    )
+                )
+        return output
 
     def dict_remove_variables(self, search_dict, inplace=True, exact=True):
         """Remove variables matching `search_dict`.
@@ -703,7 +720,7 @@ class Datasets:
             ]
         return selection
 
-    def select_variables(self, names, inplace=True, exact=True):
+    def select_variables(self, names, inplace=True, exact=True, strict=True):
         """Return a new `Datasets` containing only variables matching `criteria`.
 
         Args:
@@ -717,22 +734,41 @@ class Datasets:
                 selection as the original selection, but only containing the selected
                 entries. If False, make a copy of the selection before removing
                 entries.
+            strict (bool, optional): If True (default) expect to select as many
+                variables as given in `search_dict`.
 
         Raises:
             ValueError: If raw and pretty names are not unique across all stored
                 variable names (raw and pretty) for all datasets. In this case, select
                 variables using a dictionary instead of an iterable.
             KeyError: If a variable is not found in the database.
+            ValueError: If strict and if the number of output variables does not match
+                the number of input variables.
 
         Returns:
             `Datasets`: A copy of a subset of the original selection.
 
         """
+        if isinstance(names, str):
+            names = (names,)
+        n_target_variables = len(names)
         if inplace:
             selection = self
         else:
             selection = deepcopy(self)
-        return self.process_variables(selection, names, "add", exact=exact)
+
+        output = self.process_variables(selection, names, "add", exact=exact)
+
+        if strict:
+            # Count output cubes.
+            n_output_variables = sum(len(dataset) for dataset in output)
+            if n_target_variables != n_output_variables:
+                raise ValueError(
+                    "Expected to output {} variables, but got {}.".format(
+                        n_target_variables, n_output_variables
+                    )
+                )
+        return output
 
     def remove_variables(self, names, inplace=True, exact=True):
         """Return a new `Datasets` without the variables matching `criteria`.
@@ -1072,11 +1108,7 @@ if __name__ == "__main__":
     ]
     # TODO: Make this operation inplace by default?
     print("Selecting variables.")
-    selection = selection.select_variables(selected_names)
-
-    assert len(selection.cubes) == len(
-        selected_names
-    ), "There should be as many cube as selected variables."
+    selection = selection.select_variables(selected_names, strict=True)
 
     selection.show("pretty")
     print_datasets_dates(selection)
