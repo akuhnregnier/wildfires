@@ -232,7 +232,7 @@ def regrid(
             break
 
     if matching:
-        logger.info("Identical input output, not regridding '{}'.".format(cube.name()))
+        logger.info("No regridding needed for '{}'.".format(cube.name()))
         return cube
 
     # TODO: Check that coordinate system discrepancies are picked up by
@@ -306,8 +306,6 @@ def regrid(
 
     scheme = iris.analysis.AreaWeighted() if area_weighted else iris.analysis.Linear()
 
-    logger.debug("Fetching real data.")
-    cube.data
     logger.debug("Cube has lazy data: {}.".format(cube.has_lazy_data()))
     logger.debug("Calling regrid with scheme '{}'.".format(scheme))
     interpolated_cube = cube.regrid(new_grid, scheme)
@@ -342,6 +340,7 @@ class Dataset(ABC):
     # dataset uses these.
     calendar = "gregorian"
     time_unit_str = "days since 1970-01-01 00:00:00"
+    time_unit = cf_units.Unit(time_unit_str, calendar="gregorian")
     pretty_variable_names = dict()
 
     def __str__(self):
@@ -685,7 +684,7 @@ class Dataset(ABC):
         self.date_order_check(start, end)
 
         freq = self.frequency
-        if freq == "static":
+        if freq in ("static", "monthly climatology"):
             logger.debug("Not limiting times, as data is static")
             return
 
@@ -696,7 +695,7 @@ class Dataset(ABC):
             start = PartialDateTime(start.year)
             if end.month != 1:
                 end = PartialDateTime(end.year + 1)
-        elif freq not in ("monthly", "monthly climatology"):
+        elif freq not in ("monthly",):
             raise ValueError("Invalid frequency:{:}".format(freq))
         self.cubes = self.cubes.extract(
             iris.Constraint(time=lambda t: end >= t.point >= start)
@@ -2198,6 +2197,11 @@ class LIS_OTD_lightning_climatology(Dataset):
         self.cubes[0].coord("time").points = time_coord.points
         self.cubes[0].coord("time").units = time_coord.units
 
+        # Make sure that the time coordinate is the first coordinate.
+        self.cubes = self.get_monthly_data(
+            start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+        )
+
     @property
     def frequency(self):
         return "monthly climatology"
@@ -2226,44 +2230,39 @@ class LIS_OTD_lightning_climatology(Dataset):
         # TODO: Make this work with lazy data?
 
         cube = self.cubes[0]
+        assert (
+            len(cube.coord("time").points) == 12
+        ), "Only meant to be run starting from the initial state, which as 12 months."
 
-        start_month = start.month
-        end_month = end.month
-        start_year = start.year
-        end_year = end.year
+        # Time index will vary from the first run (simply re-shuffling the coordinate
+        # order) to the second run (which will then actually expand the months to the
+        # desired range).
+        time_index = cube.coords().index(cube.coord("time"))
 
-        year = start_year
-        month = start_month
+        datetimes = [datetime(start.year, start.month, 1)]
+        while datetimes[-1] != PartialDateTime(end.year, end.month):
+            datetimes.append(datetimes[-1] + relativedelta(months=+1))
 
         output_arrs = []
-        datetimes = []
 
-        while (year != end_year) or (month != end_month):
-            output_arrs.append(cube[..., (month - 1)].data[np.newaxis])
-            datetimes.append(datetime(year, month, 1))
-
-            month += 1
-            if month == 13:
-                month = 1
-                year += 1
-
-        # This is needed to include end month
-        output_arrs.append(cube[..., (month - 1)].data[np.newaxis])
-        datetimes.append(datetime(year, month, 1))
+        for dt in datetimes:
+            selection = [slice(None)] * 3
+            selection[time_index] = (dt.month - 1) % 12
+            output_arrs.append(cube[tuple(selection)].data[np.newaxis])
 
         output_data = np.vstack(output_arrs)
 
-        time_unit_str = "days since {:}".format(
-            str(datetime(start_year, start_month, 1))
-        )
-        time_unit = cf_units.Unit(time_unit_str, calendar="gregorian")
         time_coord = iris.coords.DimCoord(
-            cf_units.date2num(datetimes, time_unit_str, calendar="gregorian"),
+            cf_units.date2num(datetimes, self.time_unit_str, calendar=self.calendar),
             standard_name="time",
-            units=time_unit,
+            units=self.time_unit,
         )
 
-        new_coords = [(time_coord, 0), (cube.coords()[0], 1), (cube.coords()[1], 2)]
+        new_coords = [
+            (time_coord, 0),
+            (cube.coord("latitude"), 1),
+            (cube.coord("longitude"), 2),
+        ]
 
         output_cube = iris.cube.Cube(
             output_data,
