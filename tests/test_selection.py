@@ -84,7 +84,7 @@ def big_dataset():
     return big_dataset
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def sel():
     sel = Datasets()
     sel.add(DUMMY_DATASETS[0]())
@@ -92,7 +92,7 @@ def sel():
     return sel
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def long_sel():
     long_sel = Datasets()
     for dataset in DUMMY_DATASETS:
@@ -144,16 +144,22 @@ def test_equality(sel, long_sel):
 
 
 def test_removal(sel, long_sel):
-    assert sel.remove_variables("long_nameA", inplace=False) == sel.select_variables(
-        "long_nameB", inplace=False
-    )
+    sel.show()
+    long_sel.show()
+    assert sel.remove_variables(
+        "long_nameA", inplace=False, copy=True
+    ) == sel.select_variables("long_nameB", inplace=False, copy=True)
 
+    sel.show()
+    long_sel.show()
     assert set(
         long_sel.remove_variables(
             ("long_nameA", "long_nameC"), inplace=False
         ).raw_dataset_names
     ) == set(("B", "D"))
 
+    sel.show()
+    long_sel.show()
     assert long_sel.remove_datasets(
         ("D", "B"), inplace=False
     ) == long_sel.select_datasets(("A", "C"), inplace=False)
@@ -194,6 +200,13 @@ def test_instances():
     sel3 = Datasets().add(wildfire_datasets.HYDE())
     assert sel1 == sel3
 
+    orig_cube = sel3.cubes[0]
+    comp_cube = sel3.select_variables(
+        orig_cube.name(), inplace=False, strict=True
+    ).cubes[0]
+
+    assert id(orig_cube) == id(comp_cube)
+
 
 def test_pruning(big_dataset):
     assert (
@@ -213,3 +226,50 @@ def test_pruning(big_dataset):
 
     # big_dataset contains 2 cubes. Removing one of them should leave only 1.
     assert len(Datasets(big_dataset).remove_variables("second_name")[0]) == 1
+
+
+def test_dict_select(big_dataset):
+    assert (
+        Datasets(big_dataset).dict_remove_variables(
+            {"DummyDataset": ("long_nameDummyDataset",)}, inplace=False
+        )
+    ).raw_variable_names == ("second_name",)
+
+    dataset_copy = Datasets(big_dataset).copy(deep=True)
+
+    assert id(
+        dataset_copy.dict_remove_variables({"DummyDataset": ("long_nameDummyDataset",)})
+    ) == id(dataset_copy.dict_remove_variables({"DummyDataset": ("second_name",)}))
+
+    dataset_copy2 = Datasets(big_dataset).copy(deep=True)
+
+    assert id(
+        dataset_copy2.dict_remove_variables(
+            {"DummyDataset": ("long_nameDummyDataset",)}
+        )
+    ) != id(
+        dataset_copy2.dict_remove_variables(
+            {"DummyDataset": ("second_name",)}, inplace=False
+        )
+    )
+
+    dataset_copy3 = Datasets(big_dataset).copy(deep=True)
+
+    removed1 = dataset_copy3.dict_remove_variables(
+        {"DummyDataset": ("long_nameDummyDataset",)}, inplace=False
+    )
+    removed2 = dataset_copy3.dict_remove_variables(
+        {"DummyDataset": ("long_nameDummyDataset",)}, inplace=False
+    )
+
+    assert id(removed1.cubes) != id(removed2.cubes)
+    assert id(removed1.cubes[0]) == id(removed2.cubes[0])
+    assert id(removed1.cubes[0].data) == id(removed2.cubes[0].data)
+
+    removed3 = dataset_copy3.dict_remove_variables(
+        {"DummyDataset": ("long_nameDummyDataset",)}, inplace=False, copy=True
+    )
+
+    assert id(removed1.cubes) != id(removed3.cubes)
+    assert id(removed1.cubes[0]) != id(removed3.cubes[0])
+    assert id(removed1.cubes[0].data) != id(removed3.cubes[0].data)

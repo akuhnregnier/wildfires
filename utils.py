@@ -3,6 +3,7 @@
 """Collection of code to be used throughout the project.
 
 """
+import logging
 import os
 
 import fiona
@@ -11,6 +12,8 @@ from affine import Affine
 from rasterio import features
 
 from wildfires.data.datasets import DATA_DIR
+
+logger = logging.getLogger(__name__)
 
 
 class RampVar:
@@ -207,3 +210,58 @@ def pack_input(var, single_type=str, elements=2, fill_source=0):
             fill_value = var[fill_source[i]]
         var.append(fill_value)
     return tuple(var)
+
+
+def match_shape(array, target_shape):
+    """Broadcast an array across the first axis.
+
+    A new axis will be inserted at the beginning if needed.
+
+    Args:
+        array (numpy.ndarray): Numpy array with either 2 or 3 dimensions.
+        target_shape (tuple of int): Target shape.
+
+    Returns:
+        numpy.ndarray: Boolean array with shape `target_shape`.
+
+    Examples:
+        >>> import numpy as np
+        >>> mask = np.zeros((4, 4), dtype=np.bool_)
+        >>> match_shape(mask, (10, 4, 4)).shape
+        (10, 4, 4)
+        >>> mask = np.zeros((1, 4, 4), dtype=np.bool_)
+        >>> match_shape(mask, (10, 4, 4)).shape
+        (10, 4, 4)
+        >>> mask = np.zeros((10, 4, 4), dtype=np.bool_)
+        >>> match_shape(mask, (10, 4, 4)).shape
+        (10, 4, 4)
+        >>> mask = np.array([1, 0, 1], dtype=np.bool_)
+        >>> np.all(
+        ...     match_shape(mask, (2, 3))
+        ...     == np.array([[1, 0, 1], [1, 0, 1]], dtype=np.bool_)
+        ...     )
+        True
+
+
+    """
+    if array.shape != target_shape:
+        # Remove singular first dimension.
+        if len(array.shape) == len(target_shape):
+            if array.shape[0] == 1:
+                array = array[0]
+        if array.shape == target_shape[1:]:
+            logger.debug(
+                "Adding time dimension ({}) to broadcast land_mask.".format(
+                    target_shape[0]
+                )
+            )
+            new_mask = np.zeros(target_shape, dtype=np.bool_)
+            new_mask += array.reshape(1, *array.shape)
+            array = new_mask
+        else:
+            raise ValueError(
+                "land_mask dimensions '{}' do not match cube dimensions '{}'".format(
+                    array.shape, target_shape
+                )
+            )
+    return array

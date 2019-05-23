@@ -3,9 +3,7 @@
 """Functions that aid the data analysis."""
 import logging
 import logging.config
-from copy import deepcopy
 
-import iris
 import numpy as np
 import pandas as pd
 from scipy import ndimage as nd
@@ -83,102 +81,80 @@ def vif(exog_data):
     return pd.DataFrame({"Name": exog_data.columns, "VIF": vifs})
 
 
-def filling(cubes, land_mask, lat_mask):
-    """Process cubes by filling gaps using NN interpolation and also filtering.
+def fill_cube(cube, mask):
+    """Process cube in-place by filling gaps using NN interpolation and also filtering.
+
+    The idea is to respect the masking of one variable (usually burned area) alone.
+    For all others, replace masked data using nearest-neighbour interpolation.
+    Thereafter, apply the aggregated mask `mask`, so that eg. only data over land and
+    within the latitude limits is considered. Latitude limits might be due to
+    limitations of GSMaP precipitation data, as well as limitations of the lightning
+    LIS/OTD dataset, for example.
 
     Args:
-        cubes: iris.cube.CubeList.
-        land_mask
-        lat_mask
+        cube (iris.cube.Cube): Cube to be filled.
+        mask (numpy.ndarray): Boolean mask typically composed of the land mask,
+            latitude mask and burned area mask like:
+                `mask=land_mask | lat_mask | burned_area_mask`.
+            This controls which data points remain after the processing, while the
+            mask internal to the cube's data controls where interpolation will take
+            place.
 
     """
-    # Check that all the cubes have masks
-    assert np.all([hasattr(cube.data, "mask") for cube in cubes])
-    # Respect the masking of 'monthly burned area' and ignore all others - for all others, replace
-    # masked data using nearest-neighbour interpolation.
-    # Thereafter, apply the land_mask and lat_mask, so that only data over land and within the latitude limits is considered.
-    # Latitude limits due to anomalous behaviour of precipitation data, as well as limitations of the lightning LIS/OTD dataset.
+    assert isinstance(cube.data, np.ma.core.MaskedArray) and isinstance(
+        cube.data.mask, np.ndarray
+    ), "Cube needs to have a full (non-sparse) data mask."
 
-    burned_area_cube = cubes.extract_strict(iris.Constraint(name="monthly burned area"))
-    burned_area_mask = burned_area_cube.data.mask
-    combined_mask = burned_area_mask | land_mask | lat_mask
+    # Here, data gaps are filled, so that the maximum possible area of data
+    # (limited by where burned area data is available) is used for the analysis.
+    # Choose to fill the gaps using nearest-neighbour interpolation. To do this,
+    # define a mask which will tell the algorithm where to replace data.
 
-    cubes_mod = deepcopy(cubes)
-    assert isinstance(cubes_mod, iris.cube.CubeList)
-    datasets_botched = 0
-    for cube in cubes_mod:
-        # In this part, data gaps are filled, so that the maximum possible area of data (limited by where burned area data is available)
-        # is used for the analysis.
-        # Choose to fill the gaps using nearest-neighbour interpolation.
-        # To do this, define a mask which will tell the algorithm where to replace data.
+    logger.info("Filling: '{}'.".format(cube.name()))
 
-        # Ignore burned area in this step, as this should never be modified!
-        if cube.name() != "monthly burned area":
-            print(cube.name())
-            # Replace data where it is masked.
-            fill_mask = cube.data.mask
-
-            # Additional data replacing for datasets below.
-            if cube.name() == "SIF":
-                # Replace where it is above 20.
-                fill_mask |= cube.data.data > 20
-                # Replace where it is below 0.
-                fill_mask |= cube.data.data < 0
-                datasets_botched += 1
-            elif cube.name() == "Combined Flash Rate Time Series":
-                # Replace where it is below 0.
-                fill_mask |= cube.data.data < 0
-                datasets_botched += 1
-
-            orig_data = cube.data.data.copy()
-            if np.any(fill_mask):
-                print(
-                    "Filling {:} elements ({:} after final masking).".format(
-                        np.sum(fill_mask), np.sum(fill_mask[~combined_mask])
-                    )
+    # Interpolate data where (and if) it is masked.
+    fill_mask = cube.data.mask
+    if np.sum(fill_mask[~mask]):
+        orig_data = cube.data.data.copy()
+        logger.info(
+            "Filling {:} elements ({:} after final masking).".format(
+                np.sum(fill_mask), np.sum(fill_mask[~mask])
+            )
+        )
+        filled_data = cube.data.data[
+            tuple(
+                nd.distance_transform_edt(
+                    fill_mask, return_distances=False, return_indices=True
                 )
-                filled_data = cube.data.data[
-                    tuple(
-                        nd.distance_transform_edt(
-                            fill_mask, return_distances=False, return_indices=True
-                        )
-                    )
-                ]
-                assert np.all(
-                    np.isclose(cube.data.data[~fill_mask], orig_data[~fill_mask])
-                )
+            )
+        ]
+        assert np.all(np.isclose(cube.data.data[~fill_mask], orig_data[~fill_mask]))
 
-                selected_unfilled_data = orig_data[~combined_mask]
-                selected_filled_data = filled_data[~combined_mask]
+        selected_unfilled_data = orig_data[~mask]
+        selected_filled_data = filled_data[~mask]
 
-                print(
-                    "Min {:0.1e}/{:0.1e}, max {:0.1e}/{:0.1e} before/after filling (for relevant regions)".format(
-                        np.min(selected_unfilled_data),
-                        np.min(selected_filled_data),
-                        np.max(selected_unfilled_data),
-                        np.max(selected_filled_data),
-                    )
-                )
-            else:
-                # Prevent overwriting with previous loop's filled data.
-                filled_data = orig_data
+        logger.info(
+            "Min {:0.1e}/{:0.1e}, max {:0.1e}/{:0.1e} before/after "
+            "filling (for relevant regions)".format(
+                np.min(selected_unfilled_data),
+                np.min(selected_filled_data),
+                np.max(selected_unfilled_data),
+                np.max(selected_filled_data),
+            )
+        )
+    else:
+        # Prevent overwriting with previous loop's filled data if there is nothing
+        # to fill.
+        filled_data = cube.data.data
 
-            # Always apply global combined mask.
-            cube.data = np.ma.MaskedArray(filled_data, mask=combined_mask)
-            print("")
-        else:
-            # Also apply global combined mask to burned area.
-            cube.data.mask = combined_mask
-
-    # Assert that both SIF and Flash Rates were handled.
-    assert datasets_botched == 2
+    # Always apply global combined mask.
+    cube.data = np.ma.MaskedArray(filled_data, mask=mask)
 
     # Check that there aren't any inf's or nan's in the data.
-    for cube in cubes_mod:
-        assert not np.any(np.isinf(cube.data.data[~cube.data.mask]))
-        assert not np.any(np.isnan(cube.data.data[~cube.data.mask]))
+    assert not np.any(np.isinf(cube.data.data[~cube.data.mask]))
+    assert not np.any(np.isnan(cube.data.data[~cube.data.mask]))
 
-    return cubes_mod
+    return cube
 
 
 if __name__ == "__main__":

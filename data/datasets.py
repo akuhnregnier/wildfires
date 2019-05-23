@@ -12,7 +12,7 @@ import re
 import warnings
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from copy import deepcopy
+from copy import copy, deepcopy
 from datetime import datetime
 
 import cf_units
@@ -368,7 +368,9 @@ class Dataset(ABC):
 
     def __getitem__(self, index):
         if isinstance(index, slice):
-            return type(self)(self.cubes[index])
+            new_dataset = self.copy(deep=False)
+            new_dataset.cubes = self.cubes[index]
+            return new_dataset
         if isinstance(index, str):
             # TODO: Use contains() function to search for pretty names as well, (and to
             # TODO: implement regex matching).
@@ -442,6 +444,24 @@ class Dataset(ABC):
                     cubelist_hash_items += [str(key) + str(value)]
         return "\n".join(cubelist_hash_items)
 
+    def copy(self, deep=False):
+        """Make a copy.
+
+        Args:
+            deep (bool): If False (default), create a shallow copy which will copy the
+                cube list but not the underlying cubes. If True, create a deep copy of
+                everything including the underlying cubes and their data.
+
+        Returns:
+            `Dataset`: The copy.
+
+        """
+        if deep:
+            return deepcopy(self)
+        dataset = copy(self)
+        dataset.cubes = copy(self.cubes)
+        return dataset
+
     @property
     def frequency(self):
         try:
@@ -509,7 +529,7 @@ class Dataset(ABC):
 
     @property
     def cache_filename(self):
-        return os.path.join(DATA_DIR, "cache", type(self).__name__ + ".nc")
+        return os.path.join(DATA_DIR, "cache", self.name + ".nc")
 
     @staticmethod
     def save_data(cache_data, target_filename):

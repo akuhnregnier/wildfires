@@ -9,6 +9,8 @@ TODO: Enable regex based processing of dataset names too (e.g. for
 TODO: Selection.remove_datasets or Selection.select_datasets).
 
 """
+import functools
+import inspect
 import json
 import logging
 import logging.config
@@ -31,11 +33,13 @@ import numpy as np
 from joblib import Memory
 
 import wildfires.data.datasets as wildfire_datasets
+from wildfires.analysis.processing import fill_cube
 from wildfires.data.datasets import DATA_DIR, dataset_times
 from wildfires.logging_config import LOGGING
+from wildfires.utils import match_shape
 
 logger = logging.getLogger(__name__)
-memory = Memory(location=DATA_DIR, verbose=0)
+memory = Memory(location=DATA_DIR, verbose=1)
 
 # TODO: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
 
@@ -68,7 +72,11 @@ def get_qstat_ncpus():
 
     """
     try:
-        out = json.loads(check_output(("qstat", "-f", "-F", "json")).decode())
+        raw_output = check_output(("qstat", "-f", "-F", "json")).decode()
+        # Filter out invalid json (unescaped double quotes).
+        filtered_lines = [line for line in raw_output.split("\n") if '"""' not in line]
+        filtered_output = "\n".join(filtered_lines)
+        out = json.loads(filtered_output)
     except FileNotFoundError:
         logger.warning("Not running on hpc.")
         return None
@@ -120,34 +128,38 @@ def get_ncpus(default=1):
     return default
 
 
-def contains(entry, items, exact=True, str_only=False, single_item_type=str):
+def contains(
+    stored_items, search_items, exact=True, str_only=False, single_item_type=str
+):
     """String matching for selected fields.
 
     Args:
-        entry (namedtuple): Tuple wherein existence of `item` is checked.
-        item: Item to look for.
+        stored_items (iterable or namedtuple): Tuple wherein existence of `items` is
+            checked.
+        search_items: Item(s) to look for.
         exact (bool): If True, only accept exact matches for strings,
             ie. replace `item` with `^item$` before using `re.search`.
         str_only (bool): If True, only compare strings and ignore other items in
             `entry`.
+        single_item_type (type)
 
     """
-    if isinstance(entry, single_item_type):
-        entry = (entry,)
-    if isinstance(items, single_item_type):
-        items = (items,)
-    for item in items:
-        for i, value in enumerate(entry):
-            if hasattr(entry, "_fields"):
-                value = getattr(entry, entry._fields[i])
+    if isinstance(stored_items, single_item_type):
+        stored_items = (stored_items,)
+    if isinstance(search_items, single_item_type):
+        search_items = (search_items,)
+    for search_item in search_items:
+        for i, stored_item in enumerate(stored_items):
+            if hasattr(stored_items, "_fields"):
+                stored_item = getattr(stored_items, stored_items._fields[i])
             # If they are both strings, use regular expressions.
-            if all(isinstance(obj, str) for obj in (item, value)):
+            if all(isinstance(obj, str) for obj in (search_item, stored_item)):
                 if exact:
-                    item = "^" + item + "$"
-                if re.search(item, value):
+                    search_item = "^" + search_item + "$"
+                if re.search(search_item, stored_item):
                     return True
             elif not str_only:
-                if item == value:
+                if search_item == stored_item:
                     return True
     return False
 
@@ -232,8 +244,28 @@ class Datasets:
             new_index = index
         return self.datasets[new_index]
 
-    def copy(self):
-        return deepcopy(self)
+    def copy(self, deep=False):
+        """Return a copy of the dataset collection.
+
+        Args:
+            deep (bool): If True, return a deep copy, which also copies the underlying
+                data structures, such as all of the datasets' cubes and their data. If
+                False, a shallow copy is made which contains references to the same
+                datasets.
+        Returns:
+            `Datasets`
+
+        """
+        if deep:
+            return deepcopy(self)
+        # Execute the shallow copy just to the level before the individual cubes, ie.
+        # make a copy of the `Dataset` instances, as well as their associated cube
+        # lists.
+        datasets_copy = type(self)()
+        datasets_copy.datasets = []
+        for original_dataset in self:
+            datasets_copy.datasets.append(original_dataset.copy(deep=False))
+        return datasets_copy
 
     @property
     def raw_variable_names(self):
@@ -266,16 +298,24 @@ class Datasets:
             cube for dataset in self.datasets for cube in dataset.cubes
         )
 
-    def get_index(self, dataset_name):
+    def get_index(self, dataset_name, full_index=False):
         """Get dataset index from a dataset name.
 
-        The given name may match either the raw or the pretty name.
+        Args:
+            dataset_name (str): This name may match either the raw or the pretty name.
+            full_index (bool, optional): If False (default), return the integer index
+                of the dataset. Otherwise, return the tuple of dataset names which is
+                used to specify datasets in the dict processing methods
+                dict_remove_variables() and dict_select_variables().
 
         """
         if not isinstance(dataset_name, str):
             dataset_name = dataset_name[0]
         for dataset in self.datasets:
-            if dataset_name in dataset.names():
+            stored_names = dataset.names()
+            if contains(stored_names, dataset_name):
+                if full_index:
+                    return stored_names
                 return self.datasets.index(dataset)
         raise ValueError("Dataset name '{}' not found.".format(dataset_name))
 
@@ -375,7 +415,7 @@ class Datasets:
             selection.datasets[:] = new_datasets
         return selection
 
-    def select_datasets(self, names, inplace=True):
+    def select_datasets(self, names, inplace=True, copy=False):
         """Return a new `Datasets` containing only datasets matching `names`.
 
         Args:
@@ -384,7 +424,13 @@ class Datasets:
             inplace (bool, optional): If True (default) modify the selection in-place
                 without creating a copy. The returned selection will be the same
                 selection as the original selection, but without the removed entries.
-                If False, make a copy of the selection before removing entries.
+                If False, make a copy of the selection (see argument `copy`) before
+                removing entries.
+            copy (bool, optional): Only applies if `inplace` is False. If False
+                (default), the new `Datasets` object will contain references to the
+                same `Dataset` instances and associated cubes as the original. If
+                True, a deep copy will be made which will also copy the underlying
+                data.
 
         Raises:
             KeyError: If a dataset is not found.
@@ -396,10 +442,15 @@ class Datasets:
         if inplace:
             selection = self
         else:
-            selection = type(self)()
-        return self.process_datasets(selection, names, operation="select")
+            selection = self.copy()
 
-    def remove_datasets(self, names, inplace=True):
+        output = self.process_datasets(selection, names, operation="select")
+
+        if copy:
+            return output.copy(deep=True)
+        return output
+
+    def remove_datasets(self, names, inplace=True, copy=False):
         """Remove datasets not matching `names`.
 
         Args:
@@ -408,7 +459,13 @@ class Datasets:
             inplace (bool, optional): If True (default) modify the selection in-place
                 without creating a copy. The returned selection will be the same
                 selection as the original selection, but without the removed entries.
-                If False, make a copy of the selection before removing entries.
+                If False, make a copy of the selection (see argument `copy`) before
+                removing entries.
+            copy (bool, optional): Only applies if `inplace` is False. If False
+                (default), the new `Datasets` object will contain references to the
+                same `Dataset` instances and associated cubes as the original. If
+                True, a deep copy will be made which will also copy the underlying
+                data.
 
         Raises:
             KeyError: If a dataset is not found.
@@ -420,8 +477,13 @@ class Datasets:
         if inplace:
             selection = self
         else:
-            selection = deepcopy(self)
-        return self.process_datasets(selection, names, operation="remove")
+            selection = self.copy()
+
+        output = self.process_datasets(selection, names, operation="remove")
+
+        if copy:
+            return output.copy(deep=True)
+        return output
 
     @staticmethod
     def __remove_variable(selection, dataset, cube_name, variable_names=None):
@@ -475,6 +537,12 @@ class Datasets:
         """
         assert which in {"remove", "add"}
 
+        # Reformat the input dictionary for uniform indexing using dataset name tuples.
+        formatted_values = []
+        for key, value in search_dict.items():
+            formatted_values.append((self.get_index(key, full_index=True), value))
+        search_dict = dict(formatted_values)
+
         # Build a mutable representation of the current contents.
         contents = list(map(list, self.get("all", "all").items()))
         for i in range(len(contents)):
@@ -496,9 +564,8 @@ class Datasets:
         ):
             logger.debug("{} '{}: {}'.".format(which, search_dataset, search_variable))
             matches = 0
-            for search_dataset, stored_variable in (
-                (search_dataset, stored_variable)
-                for stored_variable in contents[search_dataset]
+            for stored_variable in (
+                stored_variable for stored_variable in contents[search_dataset]
             ):
                 logger.debug(
                     "Checking '{}: {}'.".format(search_dataset, stored_variable)
@@ -545,7 +612,9 @@ class Datasets:
             ]
         return selection
 
-    def dict_select_variables(self, search_dict, inplace=True, exact=True, strict=True):
+    def dict_select_variables(
+        self, search_dict, exact=True, inplace=True, copy=False, strict=True
+    ):
         """Return a new `Selection` containing only variables matching `search_dict`.
 
         Args:
@@ -557,9 +626,14 @@ class Datasets:
                 names using `re.search`.
             inplace (bool, optional): If True (default) modify the selection in-place
                 without creating a copy. The returned selection will be the same
-                selection as the original selection, but only containing the selected
-                entries. If False, make a copy of the selection before removing
-                entries.
+                selection as the original selection, but without the removed entries.
+                If False, make a copy of the selection (see argument `copy`) before
+                removing entries.
+            copy (bool, optional): Only applies if `inplace` is False. If False
+                (default), the new `Datasets` object will contain references to the
+                same `Dataset` instances and associated cubes as the original. If
+                True, a deep copy will be made which will also copy the underlying
+                data.
             strict (bool, optional): If True (default) expect to select as many
                 variables as given in `search_dict`.
 
@@ -577,9 +651,11 @@ class Datasets:
         if inplace:
             selection = self
         else:
-            selection = type(self)()
+            selection = self.copy()
 
-        output = self.dict_process_variables(selection, search_dict, "add", exact=exact)
+        output = self.dict_process_variables(
+            selection, search_dict, which="add", exact=exact
+        )
 
         if strict:
             # Count output cubes.
@@ -590,9 +666,11 @@ class Datasets:
                         n_target_variables, n_output_variables
                     )
                 )
+        if copy:
+            return output.copy(deep=True)
         return output
 
-    def dict_remove_variables(self, search_dict, inplace=True, exact=True):
+    def dict_remove_variables(self, search_dict, exact=True, inplace=True, copy=False):
         """Remove variables matching `search_dict`.
 
         Cube pruning is performed after removal of entries to remove redundant cubes
@@ -603,12 +681,18 @@ class Datasets:
                   {dataset_name: (variable_name, ...), ...}, where `dataset_name` and
                   `variable_name` are of type `str`. This is used to select the
                   variables to process.
+            exact (bool, optional): If False, accept partial matches for variable
+                names using `re.search`.
             inplace (bool, optional): If True (default) modify the selection in-place
                 without creating a copy. The returned selection will be the same
                 selection as the original selection, but without the removed entries.
-                If False, make a copy of the selection before removing entries.
-            exact (bool, optional): If False, accept partial matches for variable
-                names using `re.search`.
+                If False, make a copy of the selection (see argument `copy`) before
+                removing entries.
+            copy (bool, optional): Only applies if `inplace` is False. If False
+                (default), the new `Datasets` object will contain references to the
+                same `Dataset` instances and associated cubes as the original. If
+                True, a deep copy will be made which will also copy the underlying
+                data.
 
         Raises:
             KeyError: If a key or value in `search_dict` is not found in the
@@ -621,11 +705,15 @@ class Datasets:
         if inplace:
             selection = self
         else:
-            selection = deepcopy(self)
-        selection = self.dict_process_variables(
+            selection = self.copy()
+
+        output = self.dict_process_variables(
             selection, search_dict, "remove", exact=exact
         )
-        return selection
+
+        if copy:
+            return output.copy(deep=True)
+        return output
 
     def process_variables(self, selection, names, which="remove", exact=True):
         """Modify the selection's matching variable entries using the given function.
@@ -741,7 +829,9 @@ class Datasets:
             ]
         return selection
 
-    def select_variables(self, names, inplace=True, exact=True, strict=True):
+    def select_variables(
+        self, names, exact=True, inplace=True, copy=False, strict=True
+    ):
         """Return a new `Datasets` containing only variables matching `criteria`.
 
         Args:
@@ -752,9 +842,14 @@ class Datasets:
                 names using `re.search`.
             inplace (bool, optional): If True (default) modify the selection in-place
                 without creating a copy. The returned selection will be the same
-                selection as the original selection, but only containing the selected
-                entries. If False, make a copy of the selection before removing
-                entries.
+                selection as the original selection, but without the removed entries.
+                If False, make a copy of the selection (see argument `copy`) before
+                removing entries.
+            copy (bool, optional): Only applies if `inplace` is False. If False
+                (default), the new `Datasets` object will contain references to the
+                same `Dataset` instances and associated cubes as the original. If
+                True, a deep copy will be made which will also copy the underlying
+                data.
             strict (bool, optional): If True (default) expect to select as many
                 variables as given in `search_dict`.
 
@@ -776,7 +871,7 @@ class Datasets:
         if inplace:
             selection = self
         else:
-            selection = deepcopy(self)
+            selection = self.copy()
 
         output = self.process_variables(selection, names, "add", exact=exact)
 
@@ -789,9 +884,11 @@ class Datasets:
                         n_target_variables, n_output_variables
                     )
                 )
+        if copy:
+            return output.copy(deep=True)
         return output
 
-    def remove_variables(self, names, inplace=True, exact=True):
+    def remove_variables(self, names, exact=True, inplace=True, copy=False):
         """Return a new `Datasets` without the variables matching `criteria`.
 
         Cube pruning is performed after removal of entries to remove redundant cubes
@@ -801,12 +898,18 @@ class Datasets:
             names (str or iterable): A name or series of names (variable_name, ...),
                 for which a match with either raw or pretty names is sufficient. This
                 is used to determine which variables to process.
-            inplace (bool, optional): If True (default) modify the selection in-place
-                without creating a copy. The returned selection will be the same
-                object as the original selection, but without the removed entries. If
-                False, make a copy of the selection before removing entries.
             exact (bool, optional): If False, accept partial matches for variable
                 names using `re.search`.
+            inplace (bool, optional): If True (default) modify the selection in-place
+                without creating a copy. The returned selection will be the same
+                selection as the original selection, but without the removed entries.
+                If False, make a copy of the selection (see argument `copy`) before
+                removing entries.
+            copy (bool, optional): Only applies if `inplace` is False. If False
+                (default), the new `Datasets` object will contain references to the
+                same `Dataset` instances and associated cubes as the original. If
+                True, a deep copy will be made which will also copy the underlying
+                data.
 
         Raises:
             ValueError: If raw and pretty names are not unique across all stored
@@ -821,9 +924,59 @@ class Datasets:
         if inplace:
             selection = self
         else:
-            selection = deepcopy(self)
-        selection = self.process_variables(selection, names, "remove", exact=exact)
-        return selection
+            selection = self.copy()
+
+        output = self.process_variables(selection, names, "remove", exact=exact)
+
+        if copy:
+            return output.copy(deep=True)
+        return output
+
+    def fill(self, land_mask=None, lat_mask=None, reference_variable="burned.*area"):
+        """Fill data gaps in-place.
+
+        Args:
+            land_mask (numpy.ndarray or None): This mask (boolean array) will be
+                ORed with `lat_mask` as well as the mask derived from
+                `reference_variable`. This resulting mask will be applied to all
+                variables in the dataset collection. If this mask completely masks out
+                all missing data points, then no filling will be done.
+            lat_mask (numpy.ndarray or None): See description for `land_mask`.
+            reference_variable (str or None): See description for `land_mask`. If str,
+                use this to search for a variable whose mask will be used. If None, do
+                not use a mask from a reference variable.
+
+        """
+        # Getting the shape does not realise lazy data.
+        cube_shape = self.cubes[0].shape
+
+        if reference_variable is None:
+            final_masks = []
+        else:
+            reference_cube = self.select_variables(
+                reference_variable, exact=False, strict=True, inplace=False, copy=False
+            ).cubes[0]
+            final_masks = [reference_cube.data.mask]
+
+        assert len(land_mask.shape) in (2, 3)
+        assert len(cube_shape) in (2, 3)
+
+        # Make sure masks have a matching shape.
+        for mask in (land_mask, lat_mask):
+            if mask is not None:
+                mask = match_shape(land_mask, cube_shape)
+            else:
+                mask = np.zeros(cube_shape, dtype=np.bool_)
+            final_masks.append(mask)
+
+        combined_mask = functools.reduce(lambda x, y: x | y, final_masks)
+
+        prev_shape = cube_shape
+        for cube in self.cubes:
+            assert cube.shape == prev_shape, "All cubes should have the same shape."
+            prev_shape = cube.shape
+            fill_cube(cube, combined_mask)
+        return self
 
     def show(self, variable_format="all"):
         """Print out a representation of the selection."""
@@ -907,9 +1060,17 @@ class CodeObj:
                 )
             )
 
-        # Get co_ attributes that describe the code object.
+        # Get co_ attributes that describe the code object. Ignore the line number and
+        # file name of the function definition here, since we don't want unrelated
+        # changes to cause a recalculation of a cached result. Changes in comments are
+        # ignored, but changes in the docstring will still causes comparisons to fail
+        # (this could be ignored as well, however)!
         self.code_dict = OrderedDict(
-            (attr, getattr(self.code, attr)) for attr in dir(self.code) if "co_" in attr
+            (attr, getattr(self.code, attr))
+            for attr in dir(self.code)
+            if "co_" in attr
+            and "co_firstlineno" not in attr
+            and "co_filename" not in attr
         )
         # Replace any nested code object (eg. for list comprehensions) with a reduced
         # version by calling the hashable function recursively.
@@ -942,29 +1103,68 @@ def clever_cache(func):
     """
 
     @wraps(func)
-    def takes_original_selection(*args, **kwargs):
+    def takes_original_selection(*orig_args, **orig_kwargs):
         """Function that is visible to the outside."""
-        if not isinstance(args[0], Datasets) or any(
+        if not isinstance(orig_args[0], Datasets) or any(
             isinstance(arg, Datasets)
-            for arg in list(args[1:]) + list(kwargs.values()) + list(kwargs.keys())
+            for arg in list(orig_args[1:]) + list(orig_kwargs.values())
         ):
             raise TypeError(
                 "The first positional argument, and only the first argument "
                 "should be a `Datasets` instance."
             )
-        original_selection = args[0]
+        original_selection = orig_args[0]
         string_representation = str(original_selection.get("all", "raw"))
 
-        func_code = CodeObj(func.__code__).hashable()
+        # Ignore instances with a __call__ method here which also wouldn't necessarily
+        # have a __name__ attribute that could be used for sorting!
+        functions = [func]
+        for param_name, param_value in inspect.signature(func).parameters.items():
+            default_value = param_value.default
+            # If the default value is a function, and it is not given in `orig_kwargs`
+            # already. This is guaranteed to work as long as `func` employs a
+            # keyword-only argument for functions like this.
+            if (
+                param_name not in orig_kwargs
+                and default_value is not inspect.Parameter.empty
+                and hasattr(default_value, "__code__")
+            ):
+                functions.append(default_value)
+                orig_kwargs[param_name] = default_value
+
+        functions.extend(
+            f
+            for f in list(orig_args[1:]) + list(orig_kwargs.values())
+            if hasattr(f, "__code__")
+        )
+
+        functions = list(set(functions))
+        functions.sort(key=lambda f: f.__name__)
+        func_code = tuple(CodeObj(f.__code__).hashable() for f in functions)
 
         @memory.cache(ignore=["original_selection"])
         def takes_split_selection(
             func_code, string_representation, original_selection, *args, **kwargs
         ):
+            # NOTE: The reason why this works is that the combination of
+            # [original_selection] + args here is fed the original `orig_args`
+            # iterable. In effect, the `original_selection` argument absorbs one of
+            # the elements of `orig_args` in the function call to
+            # `takes_split_selection`, so it is not passed in twice. The `*args`
+            # parameter above absorbs the rest. This explicit listing of
+            # `original_selection` is necessary, as we need to explicitly ignore
+            # `original_selection`, which is the whole point of this decorator.
             out = func(original_selection, *args, **kwargs)
             return out
 
-        return takes_split_selection(func_code, string_representation, *args, **kwargs)
+        print()
+        print(orig_args)
+        print(orig_kwargs)
+        print()
+
+        return takes_split_selection(
+            func_code, string_representation, *orig_args, **orig_kwargs
+        )
 
     return takes_original_selection
 
@@ -988,7 +1188,7 @@ def process_dataset(monthly_dataset, min_time, max_time):
     # Create empty datasets to hold the results of the different temporal averaging
     # procedures.
 
-    climatology = type(monthly_dataset)()
+    climatology = monthly_dataset.copy(deep=False)
     climatology.cubes = [None] * len(monthly_dataset)
 
     mean_dataset = deepcopy(climatology)
@@ -1046,10 +1246,11 @@ def process_dataset(monthly_dataset, min_time, max_time):
     return monthly_dataset, mean_dataset, climatology
 
 
-# TODO: Recalculate cache based on changes in `dataset_function` argument (especially
-# TODO: if the same function is given, but was altered between runs).
+# TODO: Use keyword-only argument here to make the simple function detection in the
+# decorator work. This workaround could be removed with some more advanced usage of
+# the function Signature object.
 @clever_cache
-def prepare_selection(selection, dataset_function=process_dataset):
+def prepare_selection(selection, *, dataset_function=process_dataset):
     """Prepare cubes matching the given selection for analysis.
 
     Calculate 3 different averages at the same time to avoid repeat loading.
