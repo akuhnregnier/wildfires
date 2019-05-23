@@ -392,6 +392,9 @@ class Dataset(ABC):
             tuple
 
         """
+        # This method also carries out sorting if necessary.
+        # TODO: Move sorting of self.cubes into __init__ or enforce it some other way.
+        self.variable_names()
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore", message=((r".*guessing contiguous bounds."))
@@ -513,18 +516,30 @@ class Dataset(ABC):
         raise ValueError("Unknown format: '{}'.".format(which))
 
     def variable_names(self, which="all"):
+        unsorted_raw_names = tuple(cube.name() for cube in self.cubes)
+        raw_names = tuple(sorted(unsorted_raw_names))
+        if unsorted_raw_names != raw_names:
+            logger.debug("Sorting cubes for dataset: '{}'".format(self))
+            # Sort cube list to match sorted raw names.
+            self.cubes = iris.cube.CubeList(sorted(self.cubes, key=lambda x: x.name()))
+            # Paranoid - could be removed later if it is shown to work reliably.
+            new_raw_names = tuple(cube.name() for cube in self.cubes)
+            assert new_raw_names == raw_names
+
         if which == "all":
-            return tuple(
-                (cube.name(), self.pretty_variable_names.get(cube.name(), cube.name()))
-                for cube in self.cubes
-            )
+            all_names = []
+            for raw_name in raw_names:
+                all_names.append(
+                    (raw_name, self.pretty_variable_names.get(raw_name, raw_name))
+                )
+            return tuple(all_names)
         if which == "raw":
-            return tuple(cube.name() for cube in self.cubes)
+            return raw_names
         if which == "pretty":
-            return tuple(
-                self.pretty_variable_names.get(cube.name(), cube.name())
-                for cube in self.cubes
-            )
+            pretty_names = []
+            for raw_name in raw_names:
+                pretty_names.append(self.pretty_variable_names.get(raw_name, raw_name))
+            return tuple(pretty_names)
         raise ValueError("Unknown format: '{}'.".format(which))
 
     @property

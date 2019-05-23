@@ -1142,9 +1142,19 @@ def clever_cache(func):
         functions.sort(key=lambda f: f.__name__)
         func_code = tuple(CodeObj(f.__code__).hashable() for f in functions)
 
-        @memory.cache(ignore=["original_selection"])
+        assert len(func_code) == 2, (
+            "Only 2 functions are currently supported. One is the decorated function, "
+            "the other is the processing function `dataset_function`."
+        )
+
+        @memory.cache(ignore=["original_selection", "dataset_function"])
         def takes_split_selection(
-            func_code, string_representation, original_selection, *args, **kwargs
+            func_code,
+            string_representation,
+            original_selection,
+            *args,
+            dataset_function=None,
+            **kwargs
         ):
             # NOTE: The reason why this works is that the combination of
             # [original_selection] + args here is fed the original `orig_args`
@@ -1154,7 +1164,10 @@ def clever_cache(func):
             # parameter above absorbs the rest. This explicit listing of
             # `original_selection` is necessary, as we need to explicitly ignore
             # `original_selection`, which is the whole point of this decorator.
-            out = func(original_selection, *args, **kwargs)
+            assert dataset_function is not None
+            out = func(
+                original_selection, *args, dataset_function=dataset_function, **kwargs
+            )
             return out
 
         print()
