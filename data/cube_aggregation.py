@@ -335,6 +335,7 @@ class Datasets:
                     "Matching datasets '{}' and '{}'.".format(stored_dataset, dataset)
                 )
 
+        # TODO: Ensure that `self.datasets` is sorted alphabetically for consistency.
         self.datasets.append(dataset)
         return self
 

@@ -447,6 +447,17 @@ class Dataset(ABC):
                     cubelist_hash_items += [str(key) + str(value)]
         return "\n".join(cubelist_hash_items)
 
+    @property
+    def cubes(self):
+        self.__cubes = iris.cube.CubeList(
+            sorted(self.__cubes, key=lambda cube: cube.name())
+        )
+        return self.__cubes
+
+    @cubes.setter
+    def cubes(self, new_cubes):
+        self.__cubes = new_cubes
+
     def copy(self, deep=False):
         """Make a copy.
 
@@ -516,15 +527,8 @@ class Dataset(ABC):
         raise ValueError("Unknown format: '{}'.".format(which))
 
     def variable_names(self, which="all"):
-        unsorted_raw_names = tuple(cube.name() for cube in self.cubes)
-        raw_names = tuple(sorted(unsorted_raw_names))
-        if unsorted_raw_names != raw_names:
-            logger.debug("Sorting cubes for dataset: '{}'".format(self))
-            # Sort cube list to match sorted raw names.
-            self.cubes = iris.cube.CubeList(sorted(self.cubes, key=lambda x: x.name()))
-            # Paranoid - could be removed later if it is shown to work reliably.
-            new_raw_names = tuple(cube.name() for cube in self.cubes)
-            assert new_raw_names == raw_names
+        # Cubes will be sorted by name using the cubes getter method.
+        raw_names = tuple(cube.name() for cube in self.cubes)
 
         if which == "all":
             all_names = []
