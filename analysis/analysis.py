@@ -11,8 +11,10 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 
-from wildfires.data.datasets import data_map_plot, load_dataset_cubes
+from wildfires.data.datasets import data_map_plot
 from wildfires.logging_config import LOGGING
+
+# FIXME: Account for lack of load_dataset_cubes!!!
 
 logger = logging.getLogger(__name__)
 
