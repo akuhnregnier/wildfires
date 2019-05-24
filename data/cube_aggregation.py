@@ -244,6 +244,21 @@ class Datasets:
             new_index = index
         return self.datasets[new_index]
 
+    @property
+    def datasets(self):
+        # Could perhaps be optimised by replacing `__datasets` with an immutable
+        # container, and then sorting it only when it is assigned a new value in the
+        # setter method. This could also be applied to the CubeLists in the `Dataset`
+        # instances as well.
+        self.__datasets = list(
+            sorted(self.__datasets, key=lambda dataset: dataset.name)
+        )
+        return self.__datasets
+
+    @datasets.setter
+    def datasets(self, new_datasets):
+        self.__datasets = new_datasets
+
     def copy(self, deep=False):
         """Return a copy of the dataset collection.
 
@@ -335,7 +350,6 @@ class Datasets:
                     "Matching datasets '{}' and '{}'.".format(stored_dataset, dataset)
                 )
 
-        # TODO: Ensure that `self.datasets` is sorted alphabetically for consistency.
         self.datasets.append(dataset)
         return self
 

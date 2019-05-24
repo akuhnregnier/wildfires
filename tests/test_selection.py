@@ -100,6 +100,18 @@ def long_sel():
     return long_sel
 
 
+def test_ordering():
+    datasets = Datasets(
+        (
+            DUMMY_DATASETS[3](),
+            DUMMY_DATASETS[0](),
+            DUMMY_DATASETS[1](),
+            DUMMY_DATASETS[2](),
+        )
+    )
+    assert datasets.raw_dataset_names == ("A", "B", "C", "D")
+
+
 def test_representations(sel):
     # Confirm expected output.
     all_all = sel.get(dataset_name="all", variable_format="all")
