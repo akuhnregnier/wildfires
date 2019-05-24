@@ -8,11 +8,11 @@ import logging
 import logging.config
 import operator
 import os
-import pickle
 import re
 import warnings
 from abc import ABC, abstractmethod
-from copy import deepcopy
+from collections import OrderedDict
+from copy import copy, deepcopy
 from datetime import datetime
 
 import cf_units
@@ -32,12 +32,9 @@ from iris.time import PartialDateTime
 from pyhdf.SD import SD, SDC
 from tqdm import tqdm
 
-from wildfires.logging_config import LOGGING
-
 logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.expanduser("~"), "FIREDATA")
-pickle_file = os.path.join(DATA_DIR, "cubes.pickle")
 
 repo_dir = os.path.join(os.path.dirname(__file__), os.pardir)
 repo = Repo(repo_dir)
@@ -205,6 +202,7 @@ def regrid(
     cached regridders.
 
     """
+    logger.debug("Regridding '{}'.".format(cube.name()))
     n_dim = len(cube.shape)
     assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
 
@@ -234,7 +232,7 @@ def regrid(
             break
 
     if matching:
-        logger.info("Identical input output, not regridding.")
+        logger.info("No regridding needed for '{}'.".format(cube.name()))
         return cube
 
     # TODO: Check that coordinate system discrepancies are picked up by
@@ -308,6 +306,8 @@ def regrid(
 
     scheme = iris.analysis.AreaWeighted() if area_weighted else iris.analysis.Linear()
 
+    logger.debug("Cube has lazy data: {}.".format(cube.has_lazy_data()))
+    logger.debug("Calling regrid with scheme '{}'.".format(scheme))
     interpolated_cube = cube.regrid(new_grid, scheme)
 
     return interpolated_cube
@@ -333,11 +333,148 @@ def monthly_constraint(
 
 
 class Dataset(ABC):
+    # TODO: When adding / accessing cubes, make sure that the variables names (raw and
+    # pretty) contained therein are unique to avoid errors later on.
 
     # TODO: Make sure these get overridden by the subclasses, or that every
     # dataset uses these.
     calendar = "gregorian"
     time_unit_str = "days since 1970-01-01 00:00:00"
+    time_unit = cf_units.Unit(time_unit_str, calendar="gregorian")
+    pretty_variable_names = dict()
+
+    def __str__(self):
+        return "{} ({}, {}, {})".format(
+            self.name, self.min_time, self.max_time, self.frequency
+        )
+
+    def __repr__(self):
+        return str(self) + " at {}".format(id(self))
+
+    def __eq__(self, other):
+        """Equality testing that ignores data values and only looks at metadata.
+
+        The equality is derived solely from the `self.cubes` attribute, and the
+        coordinates and metadata of each cube in this CubeList. This means that
+        changes in the stored data are ignored!
+
+        """
+        if isinstance(other, Dataset):
+            return self.__shallow == other.__shallow
+        return NotImplemented
+
+    def __len__(self):
+        return len(self.cubes)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            new_dataset = self.copy(deep=False)
+            new_dataset.cubes = self.cubes[index]
+            return new_dataset
+        if isinstance(index, str):
+            # TODO: Use contains() function to search for pretty names as well, (and to
+            # TODO: implement regex matching).
+            new_index = self.variable_names(which="raw").index(index)
+        else:
+            new_index = index
+        return self.cubes[new_index]
+
+    @property
+    def __shallow(self):
+        """Create a hashable shallow description of the CubeList.
+
+        Note:
+            Only metadata and coordinates are considered.
+            Takes much longer to compute than __shallow_description.
+
+
+        Returns:
+            tuple
+
+        """
+        # This method also carries out sorting if necessary.
+        # TODO: Move sorting of self.cubes into __init__ or enforce it some other way.
+        self.variable_names()
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message=((r".*guessing contiguous bounds."))
+            )
+            # Join up the elements in this list later to construct the string.
+            cubelist_hash_items = []
+            for cube in self.cubes:
+                # Compute each coordinate's string representation (the coord's __hash__
+                # attribute only returns the output of id()).
+                for coord in cube.coords():
+                    cubelist_hash_items += list(
+                        map(
+                            str,
+                            (
+                                tuple(sorted(coord.attributes.items())),
+                                coord.circular if hasattr(coord, "circular") else None,
+                                tuple(coord.contiguous_bounds())
+                                if coord.is_monotonic()
+                                and coord.contiguous_bounds() is not None
+                                else None,
+                                coord.coord_system,
+                                coord.dtype,
+                                coord.has_bounds(),
+                                coord.is_contiguous(),
+                                coord.is_monotonic(),
+                                coord.long_name,
+                                coord.name(),
+                                tuple(coord.points),
+                                coord.shape,
+                                coord.standard_name,
+                                coord.var_name,
+                            ),
+                        )
+                    )
+                cubelist_hash_items += [str(tuple(sorted(cube.attributes.items())))]
+                for key, value in sorted(cube.metadata._asdict().items()):
+                    if key == "attributes":
+                        # Get string representation of the attributes dictionary.
+                        cubelist_hash_items += [
+                            str(
+                                tuple(
+                                    (attribute, attribute_value)
+                                    for attribute, attribute_value in sorted(
+                                        value.items()
+                                    )
+                                )
+                            )
+                        ]
+
+                    cubelist_hash_items += [str(key) + str(value)]
+        return "\n".join(cubelist_hash_items)
+
+    @property
+    def cubes(self):
+        self.__cubes = iris.cube.CubeList(
+            sorted(self.__cubes, key=lambda cube: cube.name())
+        )
+        return self.__cubes
+
+    @cubes.setter
+    def cubes(self, new_cubes):
+        self.__cubes = new_cubes
+
+    def copy(self, deep=False):
+        """Make a copy.
+
+        Args:
+            deep (bool): If False (default), create a shallow copy which will copy the
+                cube list but not the underlying cubes. If True, create a deep copy of
+                everything including the underlying cubes and their data.
+
+        Returns:
+            `Dataset`: The copy.
+
+        """
+        if deep:
+            return deepcopy(self)
+        dataset = copy(self)
+        dataset.cubes = copy(self.cubes)
+        return dataset
 
     @property
     def frequency(self):
@@ -372,19 +509,46 @@ class Dataset(ABC):
         except iris.exceptions.CoordinateNotFoundError:
             return "static"
 
-    def get_data(self):
-        """Returns either lazy data (dask array) or a numpy array.
-
-        """
-        return self.cube.core_data()
-
     @property
     def name(self):
         return type(self).__name__
 
+    def names(self, which="all", squeeze=True):
+        if which == "all":
+            return (self.name, getattr(self, "pretty", self.name))
+        if which == "raw":
+            if squeeze:
+                return self.name
+            return (self.name,)
+        if which == "pretty":
+            if squeeze:
+                return getattr(self, "pretty", self.name)
+            return (getattr(self, "pretty", self.name),)
+        raise ValueError("Unknown format: '{}'.".format(which))
+
+    def variable_names(self, which="all"):
+        # Cubes will be sorted by name using the cubes getter method.
+        raw_names = tuple(cube.name() for cube in self.cubes)
+
+        if which == "all":
+            all_names = []
+            for raw_name in raw_names:
+                all_names.append(
+                    (raw_name, self.pretty_variable_names.get(raw_name, raw_name))
+                )
+            return tuple(all_names)
+        if which == "raw":
+            return raw_names
+        if which == "pretty":
+            pretty_names = []
+            for raw_name in raw_names:
+                pretty_names.append(self.pretty_variable_names.get(raw_name, raw_name))
+            return tuple(pretty_names)
+        raise ValueError("Unknown format: '{}'.".format(which))
+
     @property
     def cache_filename(self):
-        return os.path.join(DATA_DIR, "cache", type(self).__name__ + ".nc")
+        return os.path.join(DATA_DIR, "cache", self.name + ".nc")
 
     @staticmethod
     def save_data(cache_data, target_filename):
@@ -524,6 +688,23 @@ class Dataset(ABC):
     def get_monthly_data(self, start, end):
         """Return monthly cubes between two dates."""
 
+    @staticmethod
+    def date_order_check(start, end):
+        if not all(
+            hasattr(date, required_type) and getattr(date, required_type) is not None
+            for date in (start, end)
+            for required_type in ("year", "month")
+        ):
+            raise ValueError(
+                "Both '{}' and '{}' need to define a year and month.".format(start, end)
+            )
+        days = [getattr(date, "day", 1) for date in (start, end)]
+        days = [day if day is not None else 1 for day in days]
+
+        assert datetime(start.year, start.month, days[0]) < datetime(
+            end.year, end.month, days[1]
+        ), "End date must be greater than start date."
+
     def limit_months(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
     ):
@@ -539,8 +720,10 @@ class Dataset(ABC):
         dates are rounded down/up to the previous/next year respectively.
 
         """
+        self.date_order_check(start, end)
+
         freq = self.frequency
-        if freq == "static":
+        if freq in ("static", "monthly climatology"):
             logger.debug("Not limiting times, as data is static")
             return
 
@@ -551,7 +734,7 @@ class Dataset(ABC):
             start = PartialDateTime(start.year)
             if end.month != 1:
                 end = PartialDateTime(end.year + 1)
-        elif freq != "monthly":
+        elif freq not in ("monthly",):
             raise ValueError("Invalid frequency:{:}".format(freq))
         self.cubes = self.cubes.extract(
             iris.Constraint(time=lambda t: end >= t.point >= start)
@@ -564,6 +747,7 @@ class Dataset(ABC):
         inclusive_lower=True,
         inclusive_upper=True,
     ):
+        self.date_order_check(start, end)
 
         assert self.frequency == "monthly"
 
@@ -589,6 +773,8 @@ class Dataset(ABC):
         Limits are inclusive.
 
         """
+        self.date_order_check(start, end)
+
         datetimes = [datetime(start.year, start.month, 1)]
         while datetimes[-1] != PartialDateTime(end.year, end.month):
             datetimes.append(datetimes[-1] + relativedelta(months=+1))
@@ -624,6 +810,8 @@ class Dataset(ABC):
         Limits are inclusive.
 
         """
+        self.date_order_check(start, end)
+
         time_unit = cf_units.Unit(self.time_unit_str, calendar=self.calendar)
 
         datetimes = [datetime(start.year, start.month, 1)]
@@ -688,6 +876,10 @@ class CarvalhaisGPP(Dataset):
         self.cubes = iris.cube.CubeList(
             [iris.load_cube(os.path.join(self.dir, "Carvalhais.gpp_50.360.720.1.nc"))]
         )
+        # There is only one time coordinate, and its value is of no relevance.
+        # Therefore, remove this coordinate.
+        self.cubes[0] = self.cubes[0][0]
+        self.cubes[0].remove_coord("time")
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
@@ -909,7 +1101,7 @@ class Copernicus_SWI(Dataset):
     """For primary analysis, it is advisable to use hpc
     (cx1_scipts/run_swi_script.sh) in order to process the daily nc files
     into monthly nc files as a series of jobs, which would take an
-    incredibly long time and large amounts of RAM ontherwise (on the order
+    incredibly long time and large amounts of RAM otherwise (on the order
     of days).
 
     Once that script has been run, the resulting nc files can be used to
@@ -1347,7 +1539,7 @@ class ESA_CCI_Soilmoisture(Dataset):
 
 class ESA_CCI_Soilmoisture_Daily(Dataset):
     def __init__(self):
-        raise Exception("Use ESA_CCI_Soilmoisture Dataset for monthly data!")
+        raise NotImplementedError("Use ESA_CCI_Soilmoisture Dataset for monthly data!")
         self.dir = os.path.join(DATA_DIR, "soil-moisture", "daily_files", "COMBINED")
         files = sorted(glob.glob(os.path.join(self.dir, "**", "*.nc")))
         raw_cubes = load_cubes(files, 100)
@@ -1382,7 +1574,7 @@ class ESA_CCI_Soilmoisture_Daily(Dataset):
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
     ):
-        raise NotImplementedError("See note above.")
+        raise NotImplementedError("Use ESA_CCI_Soilmoisture Dataset for monthly data!")
         # TODO: Isolate actual soil moisture.
         return self.monthly_means.extract(
             iris.Constraint(time=lambda t: end >= t.point >= start)
@@ -2015,6 +2207,53 @@ class LIS_OTD_lightning_climatology(Dataset):
                 )
             ]
         )
+        # Fix time units so they do not refer months, as this can't be processed by
+        # iris / cf_units.
+        # Realign times so they are at the centre of each month.
+
+        # Check that existing time coordinate is as expected.
+        assert self.cubes[0].coord("time").units.origin == "months since 2014-1-1 0:0:0"
+        assert all(self.cubes[0].coord("time").points == np.arange(1, 13))
+
+        datetimes = [
+            (
+                (
+                    (datetime(2014, month, 1) + relativedelta(months=+1))
+                    - datetime(2014, month, 1)
+                )
+                / 2
+            )
+            + datetime(2014, month, 1)
+            for month in np.arange(1, 13)
+        ]
+        time_unit_str = "days since {:}".format(str(datetime(2014, 1, 1)))
+        time_unit = cf_units.Unit(time_unit_str, calendar="gregorian")
+        time_coord = iris.coords.DimCoord(
+            cf_units.date2num(datetimes, time_unit_str, calendar="gregorian"),
+            standard_name="time",
+            units=time_unit,
+        )
+        self.cubes[0].coord("time").points = time_coord.points
+        self.cubes[0].coord("time").units = time_coord.units
+
+        # Make sure that the time coordinate is the first coordinate.
+        self.cubes = self.get_monthly_data(
+            start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+        )
+
+    @property
+    def frequency(self):
+        return "monthly climatology"
+
+    @property
+    def min_time(self):
+        # FIXME: Find beginning of data validity!
+        return "N/A"
+
+    @property
+    def max_time(self):
+        # FIXME: Find end of data validity!
+        return "N/A"
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
@@ -2030,44 +2269,39 @@ class LIS_OTD_lightning_climatology(Dataset):
         # TODO: Make this work with lazy data?
 
         cube = self.cubes[0]
+        assert (
+            len(cube.coord("time").points) == 12
+        ), "Only meant to be run starting from the initial state, which as 12 months."
 
-        start_month = start.month
-        end_month = end.month
-        start_year = start.year
-        end_year = end.year
+        # Time index will vary from the first run (simply re-shuffling the coordinate
+        # order) to the second run (which will then actually expand the months to the
+        # desired range).
+        time_index = cube.coords().index(cube.coord("time"))
 
-        year = start_year
-        month = start_month
+        datetimes = [datetime(start.year, start.month, 1)]
+        while datetimes[-1] != PartialDateTime(end.year, end.month):
+            datetimes.append(datetimes[-1] + relativedelta(months=+1))
 
         output_arrs = []
-        datetimes = []
 
-        while (year != end_year) or (month != end_month):
-            output_arrs.append(cube[..., (month - 1)].data[np.newaxis])
-            datetimes.append(datetime(year, month, 1))
-
-            month += 1
-            if month == 13:
-                month = 1
-                year += 1
-
-        # This is needed to include end month
-        output_arrs.append(cube[..., (month - 1)].data[np.newaxis])
-        datetimes.append(datetime(year, month, 1))
+        for dt in datetimes:
+            selection = [slice(None)] * 3
+            selection[time_index] = (dt.month - 1) % 12
+            output_arrs.append(cube[tuple(selection)].data[np.newaxis])
 
         output_data = np.vstack(output_arrs)
 
-        time_unit_str = "days since {:}".format(
-            str(datetime(start_year, start_month, 1))
-        )
-        time_unit = cf_units.Unit(time_unit_str, calendar="gregorian")
         time_coord = iris.coords.DimCoord(
-            cf_units.date2num(datetimes, time_unit_str, calendar="gregorian"),
+            cf_units.date2num(datetimes, self.time_unit_str, calendar=self.calendar),
             standard_name="time",
-            units=time_unit,
+            units=self.time_unit,
         )
 
-        new_coords = [(time_coord, 0), (cube.coords()[0], 1), (cube.coords()[1], 2)]
+        new_coords = [
+            (time_coord, 0),
+            (cube.coord("latitude"), 1),
+            (cube.coord("longitude"), 2),
+        ]
 
         output_cube = iris.cube.Cube(
             output_data,
@@ -2272,21 +2506,21 @@ def dataset_times(datasets=None):
     """Compile dataset time span information.
 
     Args:
-        datasets: If no value is given, defaults to using the following
-            datasets:
-                AvitabileThurnerAGB(),
-                CHELSA(),
-                Copernicus_SWI(),
-                ESA_CCI_Landcover_PFT(),
-                GFEDv4(),
-                GSMaP_precipitation(),
-                GlobFluo_SIF(),
-                HYDE(),
-                LIS_OTD_lightning_time_series(),
-                Liu_VOD(),
-                MOD15A2H_LAI_fPAR(),
-                Simard_canopyheight(),
-                Thurner_AGB(),
+        datasets (iterable of `Dataset`): If no value is given, defaults to using the
+            following datasets:
+                - AvitabileThurnerAGB(),
+                - CHELSA(),
+                - Copernicus_SWI(),
+                - ESA_CCI_Landcover_PFT(),
+                - GFEDv4(),
+                - GSMaP_precipitation(),
+                - GlobFluo_SIF(),
+                - HYDE(),
+                - LIS_OTD_lightning_time_series(),
+                - Liu_VOD(),
+                - MOD15A2H_LAI_fPAR(),
+                - Simard_canopyheight(),
+                - Thurner_AGB(),
             Alternatively, a list of Dataset instances can be given.
 
     Returns:
@@ -2312,20 +2546,34 @@ def dataset_times(datasets=None):
             Thurner_AGB(),
         ]
 
-    time_dict = dict(
+    time_dict = OrderedDict(
         (
             dataset.name,
             list(map(str, (dataset.min_time, dataset.max_time, dataset.frequency))),
         )
         for dataset in datasets
     )
+    min_times, max_times = [], []
+    for dataset in datasets:
+        dataset_times = tuple(
+            getattr(dataset, time_type) for time_type in ("min_time", "max_time")
+        )
+        # If there are any undefined dates they will be represented by strings and
+        # should be skipped here.
+        if any(isinstance(dataset_time, str) for dataset_time in dataset_times):
+            assert all(
+                isinstance(dataset_time, str) for dataset_time in dataset_times
+            ), (
+                "If there is no valid start date, there should not be a valid "
+                "end date and vice versa (Dataset={}).".format(dataset)
+            )
+            continue
+        assert (
+            dataset_times[0] < dataset_times[1]
+        ), "Maximum date should be after the minimum date (Dataset={}).".format(dataset)
 
-    min_times = [
-        dataset.min_time for dataset in datasets if dataset.min_time != "static"
-    ]
-    max_times = [
-        dataset.max_time for dataset in datasets if dataset.max_time != "static"
-    ]
+        min_times.append(dataset_times[0])
+        max_times.append(dataset_times[1])
 
     # This timespan will encompass all the datasets.
     min_time = np.max(min_times)
@@ -2334,9 +2582,6 @@ def dataset_times(datasets=None):
     time_dict["Overall"] = list(map(str, (min_time, max_time, "N/A")))
 
     dataset_names = list(time_dict.keys())
-    # Make sure this entry is at the bottom of the table.
-    dataset_names.remove("Overall")
-    dataset_names.append("Overall")
     dataset_names = pd.Series(dataset_names, name="Dataset")
     min_times_series = pd.Series(
         [time_dict[name][0] for name in dataset_names], name="Minimum"
@@ -2351,63 +2596,15 @@ def dataset_times(datasets=None):
         [dataset_names, min_times_series, max_times_series, frequency_series]
     ).T
 
+    if min_time >= max_time:
+        limited_df = times_df[:-1]
+        min_mask = limited_df["Minimum"].values.astype("str") == str(min_time)
+        max_mask = limited_df["Maximum"].values.astype("str") == str(max_time)
+        raise ValueError(
+            "Maximum date should be after the minimum date. This suggests the datasets "
+            "are improperly selected. Offending datasets:\n{}".format(
+                limited_df.loc[min_mask | max_mask].to_string(index=False)
+            )
+        )
+
     return min_time, max_time, times_df
-
-
-def load_dataset_cubes():
-
-    if os.path.isfile(pickle_file):
-        with open(pickle_file, "rb") as f:
-            cubes = pickle.load(f)
-        return cubes
-
-    datasets = [
-        AvitabileThurnerAGB(),
-        CHELSA(),
-        Copernicus_SWI(),
-        ESA_CCI_Landcover_PFT(),
-        GFEDv4(),
-        GSMaP_precipitation(),
-        GSMaP_dry_day_period(),
-        GlobFluo_SIF(),
-        HYDE(),
-        LIS_OTD_lightning_time_series(),
-        Liu_VOD(),
-        MOD15A2H_LAI_fPAR(),
-        Simard_canopyheight(),
-        Thurner_AGB(),
-    ]
-
-    min_time, max_time, times_df = dataset_times(datasets)
-    print(times_df)
-
-    # Limit the amount of data that has to be processed.
-    logger.info("Limiting data")
-    for dataset in datasets:
-        dataset.limit_months(min_time, max_time)
-    logger.info("Finished limiting data")
-
-    # Regrid cubes to the same lat-lon grid.
-    # TODO: change lat and lon limits and also the number of points!!
-    # Always work in 0.25 degree steps? From the same starting point?
-    logger.info("Starting regridding of all datasets")
-    for dataset in datasets:
-        dataset.regrid()
-    logger.info("Finished regridding of all datasets")
-
-    logger.info("Starting temporal upscaling")
-    # Join up all the cubes.
-    cubes = iris.cube.CubeList()
-    for dataset in datasets:
-        cubes.extend(dataset.get_monthly_data(min_time, max_time))
-    logger.info("Finished temporal upscaling")
-
-    with open(pickle_file, "wb") as f:
-        pickle.dump(cubes, f, -1)
-
-    return cubes
-
-
-if __name__ == "__main__":
-    logging.config.dictConfig(LOGGING)
-    cubes = load_dataset_cubes()
