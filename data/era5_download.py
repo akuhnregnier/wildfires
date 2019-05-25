@@ -233,7 +233,7 @@ def retrieve_hourly(
                 else:
                     assert (
                         len(hour) <= 2
-                    ), "'hours' written like {} are not supported.".format(hour)
+                    ), "'hours' written like '{}' are not supported.".format(hour)
                 hour = int(hour)
             elif isinstance(hour, (float, np.float)):
                 hour = round(hour)
@@ -247,7 +247,7 @@ def retrieve_hourly(
             single_hour_formatter,
             (str, float, np.float, int, np.integer),
         )
-    logger.debug("Request hours:{}.".format(hours))
+    logger.debug("Request hours: '{}'.".format(hours))
 
     # 'levels' is only relevant for the pressure level dataset.
     if dataset == pressure_level_dataset_id:
@@ -289,7 +289,7 @@ def retrieve_hourly(
 
     requests = []
     for request_date in monthly_dates.values():
-        logger.debug("Request dates:{}.".format(request_date))
+        logger.debug("Request dates: '{}'.".format(request_date))
         request_dict = {
             "product_type": "reanalysis",
             "format": "netcdf",
@@ -313,9 +313,9 @@ def retrieve_hourly(
         request = (dataset, request_dict, target_file)
         requests.append(request)
         if download:
-            logger.info("Starting download to:'{}'.".format(target_file))
+            logger.info("Starting download to: '{}'.".format(target_file))
             client.retrieve(*request)
-            logger.info("Finished download to:'{}'.".format(target_file))
+            logger.info("Finished download to: '{}'.".format(target_file))
 
     return requests
 
@@ -572,7 +572,7 @@ class DownloadThread(Thread):
             if not os.path.isfile(filename):
                 raise RuntimeError(
                     "Filename '{}' not found despite request "
-                    "{} having being issued.".format(filename, self.request)
+                    "'{}' having being issued.".format(filename, self.request)
                 )
             self.record_request()
             self.queue.put(self.request)
@@ -675,12 +675,12 @@ class Worker(Process, ABC):
                 )
                 output = self.process(request)
                 self.logger.debug(
-                    "Finished processing '{}' with status {}.".format(
+                    "Finished processing '{}' with status '{}'.".format(
                         file_to_process, output
                     )
                 )
                 self.pipe.send(output)
-                self.logger.debug("Sent status {}.".format(output))
+                self.logger.debug("Sent status '{}'.".format(output))
                 self.logger.debug("Setting event flag.")
                 self.event.set()
         except Exception:
@@ -697,8 +697,8 @@ class AveragingWorker(Worker):
         """Construct the output filename from the input filename."""
         return input_filename.split(".nc")[0] + "_monthly_mean.nc"
 
-    @staticmethod
-    def check_output(request, output=None):
+    @classmethod
+    def check_output(cls, request, output=None):
         """Check that the output matches the request.
 
         Args:
@@ -715,11 +715,7 @@ class AveragingWorker(Worker):
         """
         downloaded_file = request[2]
         if output is None:
-            output = (
-                0,
-                downloaded_file,
-                AveragingWorker.output_filename(downloaded_file),
-            )
+            output = (0, downloaded_file, cls.output_filename(downloaded_file))
         logger.debug("Comparing request {} and output {}.".format(request, output))
         if output[0] != 0:
             logger.warning(
@@ -728,7 +724,7 @@ class AveragingWorker(Worker):
             )
             return False
         output_file = output[2]
-        expected_file = AveragingWorker.output_filename(downloaded_file)
+        expected_file = cls.output_filename(downloaded_file)
         if output_file != expected_file:
             logger.warning(
                 "Filenames do not match. Expected '{}', got '{}'.".format(
@@ -749,7 +745,7 @@ class AveragingWorker(Worker):
         days = list(map(int, request_dict["day"]))
         hours = [int(time.replace(":00", "")) for time in request_dict["time"]]
 
-        # Since downloaded data can only reach the end of the calendar month.
+        # Since downloaded data can only reach the end of the last calendar month.
         max_days = min((max(days), calendar.monthrange(max(years), max(months))[1]))
         datetime_range = (
             datetime(min(years), min(months), min(days), min(hours)),
@@ -761,8 +757,8 @@ class AveragingWorker(Worker):
         # expected name against the corresponding cube? This is impeded
         # by not knowing how the cubes are ordered with respect to the
         # ordering of variables in the original request.
-        # NOTE: The current approach achieves the same thing since matches
-        # are consumed, but it is more cumbersome.
+        # NOTE: The current approach achieves the same thing, as sets
+        # are deleted (consumed) as they are matched, but it is more cumbersome.
         expected_name_sets = []
         for variable in request_variables:
             expected_name_sets.append({variable, variable_mapping[variable]})
@@ -775,33 +771,34 @@ class AveragingWorker(Worker):
             logger.exception("Error while loading '{}'.".format(output_file))
             return False
 
-        # Each cube will have one variable.
+        # Check the temporal bounds for each cube and that all expected variables are
+        # present exactly once overall, with each cube containing one variable.
         for cube, bounds in zip(output_cubes, bounds_list):
             which_failed = []
             error_details = []
             if bounds != datetime_range:
                 which_failed.append("bounds check")
                 error_details.append(
-                    "Expected bounds {}, got bounds {}.".format(bounds, datetime_range)
+                    "Expected bounds '{}', got bounds '{}'.".format(
+                        bounds, datetime_range
+                    )
                 )
             raw_cube_names = (cube.standard_name, cube.long_name, cube.var_name)
             cube_names = list(map(str, raw_cube_names))
 
-            passed_var_check = False
             for name_index, expected_name_set in enumerate(expected_name_sets):
                 if expected_name_set.intersection(cube_names):
                     logger.debug(
-                        "Matched {} with {}".format(expected_name_set, cube_names)
+                        "Matched '{}' with '{}'".format(expected_name_set, cube_names)
                     )
-                    passed_var_check = True
                     # Next time, there will be one fewer variable to compare
                     # against.
                     del expected_name_sets[name_index]
                     break
-            if not passed_var_check:
+            else:
                 which_failed.append("variable name check")
                 error_details.append(
-                    "None of {} matched one of the expected names {}.".format(
+                    "None of '{}' matched one of the expected names '{}.".format(
                         ", ".join(cube_names),
                         ", ".join(
                             [
@@ -817,7 +814,7 @@ class AveragingWorker(Worker):
                 which_failed = " and ".join(which_failed)
                 error_details = " ".join(error_details)
                 logger.warning(
-                    "Failed {} for cube {}. {}".format(
+                    "Failed '{}' for cube '{}'. '{}'".format(
                         which_failed, repr(cube), error_details
                     )
                 )
@@ -856,7 +853,243 @@ class AveragingWorker(Worker):
                     [cube.collapsed("time", iris.analysis.MEAN) for cube in cubes]
                 )
             save_name = self.output_filename(filename)
+            if not os.path.isdir(os.path.dirname(save_name)):
+                os.makedirs(os.path.dirname(save_name))
             iris.save(cubes, save_name, zlib=False)
+            # If everything went well.
+            if self.check_output(request, (0, filename, save_name)):
+                return (0, filename, save_name)
+            return (2, filename, None)
+        except Exception:
+            self.logger.exception("Error while processing '{}'.".format(filename))
+            return (1, filename, None)
+
+
+class CAPEPrecipWorker(Worker):
+    """Compute monthly averages of hourly products of CAPE and Precipitation."""
+
+    var_name = "CAPExP"
+    long_name = "Product of CAPE and Precipitation"
+
+    @staticmethod
+    def output_filename(input_filepath):
+        """Construct the output filename from the input filename."""
+        input_dir, input_filename = os.path.split(input_filepath)
+        return os.path.join(
+            input_dir,
+            "CAPE_P",
+            input_filename.split(".nc")[0] + "_monthly_mean_cape_p.nc",
+        )
+
+    @classmethod
+    def check_output(cls, request, output=None):
+        """Check that the output matches the request.
+
+        Args:
+            request (iterable of str, dict, str): A request tuple as returned
+                by `retrieve_hourly`.
+            output (None or iterable of int, str, str): Output of
+                `AveragingWorker.process`. If None, this 3-element tuple will be
+                recreated from the input request as expected in case of successful
+                processing.
+
+        Returns:
+            bool: True if the output matches the request, False otherwise.
+
+        """
+        downloaded_file = request[2]
+        if output is None:
+            output = (0, downloaded_file, cls.output_filename(downloaded_file))
+        logger.debug("Comparing request '{}' and output '{}'.".format(request, output))
+        if output[0] != 0:
+            logger.warning(
+                "Output is not as expected because processing of the "
+                "request '{}' failed with error code '{}'".format(request, output[0])
+            )
+            return False
+        output_file = output[2]
+        expected_file = cls.output_filename(downloaded_file)
+        if output_file != expected_file:
+            logger.warning(
+                "Filenames do not match. Expected '{}', got '{}'.".format(
+                    expected_file, output_file
+                )
+            )
+            return False
+
+        if not os.path.isfile(output_file):
+            logger.warning(
+                "Expected output file '{}' does not exist.".format(output_file)
+            )
+            return False
+
+        request_dict = request[1]
+        years = list(map(int, request_dict["year"]))
+        months = list(map(int, request_dict["month"]))
+        days = list(map(int, request_dict["day"]))
+        hours = [int(time.replace(":00", "")) for time in request_dict["time"]]
+
+        # Since downloaded data can only reach the end of the last calendar month.
+        max_days = min((max(days), calendar.monthrange(max(years), max(months))[1]))
+        datetime_range = (
+            datetime(min(years), min(months), min(days), min(hours)),
+            datetime(max(years), max(months), max_days, max(hours)),
+        )
+
+        expected_name_sets = [{cls.var_name, cls.long_name}]
+
+        try:
+            output_cubes = iris.load(output_file)
+            bounds_list = []
+            for cube in output_cubes:
+                bounds_list.append(cube.coord("time").cell(0).bound)
+        except Exception:
+            logger.exception("Error while loading '{}'.".format(output_file))
+            return False
+
+        # Check the temporal bounds for each cube and that all expected variables are
+        # present exactly once overall, with each cube containing one variable.
+        for cube, bounds in zip(output_cubes, bounds_list):
+            which_failed = []
+            error_details = []
+            if bounds != datetime_range:
+                which_failed.append("bounds check")
+                error_details.append(
+                    "Expected bounds '{}', got bounds '{}'.".format(
+                        bounds, datetime_range
+                    )
+                )
+            raw_cube_names = (cube.standard_name, cube.long_name, cube.var_name)
+            cube_names = list(map(str, raw_cube_names))
+
+            for name_index, expected_name_set in enumerate(expected_name_sets):
+                if expected_name_set.intersection(cube_names):
+                    logger.debug(
+                        "Matched '{}' with '{}'".format(expected_name_set, cube_names)
+                    )
+                    # Next time, there will be one fewer variable to compare
+                    # against.
+                    del expected_name_sets[name_index]
+                    break
+            else:
+                which_failed.append("variable name check")
+                error_details.append(
+                    "None of '{}' matched one of the expected names '{}'.".format(
+                        ", ".join(cube_names),
+                        ", ".join(
+                            [
+                                name
+                                for name_set in expected_name_sets
+                                for name in name_set
+                            ]
+                        ),
+                    )
+                )
+
+            if which_failed:
+                which_failed = " and ".join(which_failed)
+                error_details = " ".join(error_details)
+                logger.warning(
+                    "Failed '{}' for cube '{}'. '{}'".format(
+                        which_failed, repr(cube), error_details
+                    )
+                )
+                return False
+        return True
+
+    def process(self, request):
+        """Performs monthly averaging on the data in the given request.
+
+        Args:
+            request (tuple): Request tuple as returned by `retrieve_monthly`.
+
+        Returns:
+            int: 0 for successful computation of the average. 1 is returned
+                if an error is encountered. 2 is returned if no exception
+                was encountered, but the resulting data does not match the
+                expectations as defined by `self.check_output`. Note that
+                exceptions are merely logged and not raised.
+            str: The original filename `filename`.
+            str or None: The output filename (if successful) or None.
+
+        """
+        filename = request[2]
+        self.logger.debug("Processing: '{}'.".format(filename))
+        try:
+            cubes = iris.load(filename)
+            assert len(cubes) == 2, "Expecting 2 cubes: CAPE and Precipitation."
+
+            for cube in cubes:
+                months = {
+                    cube.coord("time").cell(i).point.month
+                    for i in range(len(cube.coord("time").points))
+                }
+                years = {
+                    cube.coord("time").cell(i).point.year
+                    for i in range(len(cube.coord("time").points))
+                }
+                assert len(months) == len(years) == 1, (
+                    f"'{cube.name()}' cube should only contain data for one month in "
+                    f"one year, but got years '{years}' and months '{months}'."
+                )
+
+            # Check that CAPE and Precipitation are both present.
+            precip_names = {"Total precipitation", "tp"}
+            cape_names = {"Convective available potential energy", "cape"}
+            possible_names = [precip_names, cape_names]
+
+            for cube in cubes:
+                raw_cube_names = (cube.standard_name, cube.long_name, cube.var_name)
+                cube_names = list(map(str, raw_cube_names))
+
+                for name_index, name_set in enumerate(possible_names):
+                    if name_set.intersection(cube_names):
+                        logger.debug(
+                            "Matched '{}' with '{}'".format(possible_names, cube_names)
+                        )
+                        # Next time, there will be one fewer variable to compare
+                        # against.
+                        del possible_names[name_index]
+                        break
+                else:
+                    logger.error(
+                        "None of '{}' matched one of the expected names '{}'.".format(
+                            ", ".join(cube_names),
+                            ", ".join(
+                                [
+                                    name
+                                    for name_set in possible_names
+                                    for name in name_set
+                                ]
+                            ),
+                        )
+                    )
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=(
+                        "Collapsing a non-contiguous coordinate. Metadata may not "
+                        "be fully descriptive for 'time'."
+                    ),
+                )
+
+                # Compute the monthly average of the product of CAPE and
+                # Precipitation.
+
+                product_cube = (cubes[0] * cubes[1]).collapsed(
+                    "time", iris.analysis.MEAN
+                )
+
+            product_cube.var_name = self.var_name
+            product_cube.long_name = self.long_name
+
+            cubes = iris.cube.CubeList([product_cube])
+            save_name = self.output_filename(filename)
+            if not os.path.isdir(os.path.dirname(save_name)):
+                os.makedirs(os.path.dirname(save_name))
+            iris.save(cubes, save_name, zlib=False)
+
             # If everything went well.
             if self.check_output(request, (0, filename, save_name)):
                 return (0, filename, save_name)
@@ -1171,7 +1404,7 @@ def retrieval_processing(
                     continue
             # If it is a filename and not an exception, add this to the
             # queue for the processing worker.
-            logger.debug("Sending filename to worker: {}.".format(retrieve_output[2]))
+            logger.debug("Sending filename to worker: '{}'.".format(retrieve_output[2]))
             pipe_start.send(retrieve_output)
             remaining_files.append(retrieve_output[2])
             total_files.append(retrieve_output[2])
@@ -1193,23 +1426,22 @@ def retrieval_processing(
             # The first entry of the output represents a status code.
             elif output[0] == 0:
                 logger.info("Processed file '{}' successfully.".format(output[1]))
+                processed_files.append(output[2])
             elif output[0] == 1:
-                logger.error("Error while processing {}".format(output[1]))
+                logger.error("Error while processing '{}'".format(output[1]))
             elif output[0] == 2:
                 logger.error(
-                    "Processing output for {} did not match expected output.".format(
+                    "Processing output for '{}' did not match expected output.".format(
                         output[1]
                     )
                 )
             else:
-                raise ValueError("Unknown output format:{}.".format(output))
+                raise ValueError("Unknown output format: '{}'.".format(output))
 
             remaining_files.remove(output[1])
-            processed_files.append(output[2])
+
             if delete_processed:
-                logger.info(
-                    "Deleting file '{}' as it has been processed.".format(output[1])
-                )
+                logger.info("Deleting file '{}'.".format(output[1]))
                 os.remove(output[1])
 
     logger.info("Finished handling requests. No remaining files or threads.")
@@ -1222,9 +1454,7 @@ def retrieval_processing(
     processing_worker.close()
 
 
-if __name__ == "__main__":
-    logging.config.dictConfig(LOGGING)
-
+def monthly_averaging_example():
     requests = retrieve_hourly(
         variable=["2t", "10u", "10v"],
         start=PartialDateTime(1990, 1, 1),
@@ -1236,4 +1466,22 @@ if __name__ == "__main__":
         delete_processed=True,
         overwrite=False,
         soft_filesize_limit=3,
+    )
+
+
+if __name__ == "__main__":
+    logging.config.dictConfig(LOGGING)
+
+    requests = retrieve_hourly(
+        variable=["cape", "tp"],
+        start=PartialDateTime(1995, 1, 1),
+        end=PartialDateTime(2015, 1, 1),
+    )
+    retrieval_processing(
+        requests,
+        processing_class=CAPEPrecipWorker,
+        n_threads=12,
+        delete_processed=True,
+        overwrite=False,
+        soft_filesize_limit=50,
     )
