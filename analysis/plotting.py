@@ -121,7 +121,12 @@ def cube_plotting(
     coastline_kwargs={},
     dummy_lat_lims=(-90, 90),
     dummy_lon_lims=(-180, 180),
-    **kwargs
+    animation_output=False,
+    ax=None,
+    mesh=None,
+    new_colorbar=True,
+    title_text=None,
+    **kwargs,
 ):
     """Pretty plotting.
 
@@ -137,6 +142,13 @@ def cube_plotting(
             argument is not a cube
         dummy_lon_lims: Tuple passed to dummy_lat_lon_cube function in case the input
             argument is not a cube
+        animation_output (bool): Output additional variables required to create an
+            animation.
+        ax (matplotlib axis):
+        mesh (matplotlib.collections.QuadMesh): If given, update the mesh instead of
+            creating a new one.
+        new_colorbar (bool): If True, create a new colorbar. Turn off for animation.
+        title_text (matplotlib.text.Text): Title text.
 
         possible kwargs:
             title: str or None of False. If None or False, no title will be plotted.
@@ -155,6 +167,10 @@ def cube_plotting(
                     - panchor
 
     """
+    if animation_output and not new_colorbar:
+        raise ValueError(
+            "Can only specify `animation_output=True` if `new_colorbar=True`."
+        )
     if not isinstance(cube, iris.cube.Cube):
         cube = dummy_lat_lon_cube(
             cube, lat_lims=dummy_lat_lims, lon_lims=dummy_lon_lims
@@ -163,7 +179,6 @@ def cube_plotting(
     cube = cube.copy()
 
     if log:
-        # print("Logging cube")
         if not cube.long_name:
             cube.long_name = cube.name()
         future_name = "log " + cube.long_name
@@ -177,19 +192,25 @@ def cube_plotting(
     gridlons = cube.coord("longitude").contiguous_bounds()
     gridlats = cube.coord("latitude").contiguous_bounds()
 
-    fig, ax = plt.subplots()
-    ax = plt.axes(projection=ccrs.PlateCarree())
-    # print("Requesting data to plot")
-    plt.pcolormesh(
-        gridlons,
-        gridlats,
-        cube.data,
-        cmap=kwargs.get("cmap", "viridis"),
-        transform=ccrs.PlateCarree(),
-        rasterized=rasterized,
-        vmin=kwargs.get("vmin"),
-        vmax=kwargs.get("vmax"),
-    )
+    if ax is None:
+        fig = plt.figure()
+        ax = plt.axes(projection=ccrs.PlateCarree())
+    fig = ax.get_figure()
+
+    if mesh is not None:
+        mesh.set_array(cube.data.ravel())
+    else:
+        mesh = ax.pcolormesh(
+            gridlons,
+            gridlats,
+            cube.data,
+            cmap=kwargs.get("cmap", "viridis"),
+            transform=ccrs.PlateCarree(),
+            rasterized=rasterized,
+            vmin=kwargs.get("vmin"),
+            vmax=kwargs.get("vmax"),
+        )
+
     ax.coastlines(**coastline_kwargs)
 
     colorbar_kwargs = {
@@ -202,11 +223,17 @@ def cube_plotting(
         "anchor": kwargs.get("anchor", (0.5, 1.0)),
         "panchor": kwargs.get("panchor", (0.5, 0.0)),
     }
-
-    plt.colorbar(**colorbar_kwargs)
+    if new_colorbar:
+        cb = fig.colorbar(mesh, **colorbar_kwargs)
     title = kwargs.get("title", cube.name())
     if title:
-        plt.title(title)
+        if isinstance(title, matplotlib.text.Text):
+            title_text.set_text(title)
+        else:
+            title_text = fig.suptitle(title)
+
+    if animation_output:
+        return fig, ax, mesh, cb, title_text
     return fig
 
 
