@@ -1130,7 +1130,9 @@ def clever_cache(func):
                 "as the first argument."
             )
         original_selection = orig_args[0]
-        string_representation = str(original_selection.get("all", "raw"))
+        string_representation = "\n".join(
+            dataset._shallow for dataset in original_selection.datasets
+        ) + str(original_selection.get("all", "raw"))
 
         # Ignore instances with a __call__ method here which also wouldn't necessarily
         # have a __name__ attribute that could be used for sorting!

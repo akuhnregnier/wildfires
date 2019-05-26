@@ -364,7 +364,7 @@ class Dataset(ABC):
 
         """
         if isinstance(other, Dataset):
-            return self.__shallow == other.__shallow
+            return self._shallow == other._shallow
         return NotImplemented
 
     def __len__(self):
@@ -384,20 +384,16 @@ class Dataset(ABC):
         return self.cubes[new_index]
 
     @property
-    def __shallow(self):
+    def _shallow(self):
         """Create a hashable shallow description of the CubeList.
 
         Note:
             Only metadata and coordinates are considered.
-            Takes much longer to compute than __shallow_description.
-
 
         Returns:
-            tuple
+            str
 
         """
-        # This method also carries out sorting if necessary.
-        # TODO: Move sorting of self.cubes into __init__ or enforce it some other way.
         self.variable_names()
         with warnings.catch_warnings():
             warnings.filterwarnings(
