@@ -1832,10 +1832,10 @@ def download_daily_precipitation():
     retrieval_processing(
         requests,
         processing_class=DailyAveragingWorker,
-        n_threads=12,
+        n_threads=24,
         delete_processed=True,
         overwrite=False,
-        soft_filesize_limit=50,
+        soft_filesize_limit=250,
     )
 
 
