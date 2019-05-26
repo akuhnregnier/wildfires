@@ -1077,15 +1077,15 @@ class DailyAveragingWorker(Worker):
                     f"Expected {n_days} days, but cube has {cube_n_days} days."
                 )
             if not np.all(
-                (cube.coord("time").points[1:] - cube.coord("time").pionts[:-1]) > 0
+                (cube.coord("time").points[1:] - cube.coord("time").points[:-1]) > 0
             ):
                 which_failed.append("Monotonic time check")
                 error_details.append(
                     "Cube time coordinate did not increase monotonically."
                 )
             cube_bounds = (
-                cube.coord("time").cell(0).point.bound[0],
-                cube.coord("time").cell(-1).point.bound[1],
+                cube.coord("time").cell(0).bound[0],
+                cube.coord("time").cell(-1).bound[1],
             )
 
             if cube_bounds != datetime_range:
@@ -1818,14 +1818,11 @@ def download_monthly_precipitation():
     # )
 
 
-if __name__ == "__main__":
-    logging.config.dictConfig(LOGGING)
+def download_daily_precipitation():
     requests = retrieve(
         variable="tp",
-        # start=PartialDateTime(1990, 1, 1),
-        # end=PartialDateTime(2019, 1, 1),
         start=PartialDateTime(1990, 1, 1),
-        end=PartialDateTime(1990, 3, 1),
+        end=PartialDateTime(2019, 1, 1),
         target_dir=os.path.join(DATA_DIR, "ERA5", "tp_daily"),
         monthly_mean=False,
         download=False,
@@ -1836,7 +1833,12 @@ if __name__ == "__main__":
         requests,
         processing_class=DailyAveragingWorker,
         n_threads=12,
-        delete_processed=False,
+        delete_processed=True,
         overwrite=False,
         soft_filesize_limit=50,
     )
+
+
+if __name__ == "__main__":
+    logging.config.dictConfig(LOGGING)
+    download_daily_precipitation()
