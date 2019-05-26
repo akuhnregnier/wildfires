@@ -39,6 +39,10 @@ DATA_DIR = os.path.join(os.path.expanduser("~"), "FIREDATA")
 repo_dir = os.path.join(os.path.dirname(__file__), os.pardir)
 repo = Repo(repo_dir)
 
+# Above this mm/h threshold, a day is a 'wet day'.
+MM_PER_HR_THRES = 0.1 / 24
+MM_PER_DAY_THRES = MM_PER_HR_THRES * 24.0
+
 
 def join_adjacent_intervals(intervals):
     """Join adjacent or overlapping intervals into contiguous intervals.
@@ -1394,6 +1398,54 @@ class CRU(Dataset):
         return self.select_monthly_from_monthly(start, end)
 
 
+class ERA5_TotalPrecipitation(Dataset):
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, "ERA5", "tp")
+        self.cubes = iris.cube.CubeList(
+            [iris.load_cube(os.path.join(self.dir, "*.nc"))]
+        )
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
+class ERA5_DryDayPeriod(Dataset):
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, "ERA5", "tp_daily")
+        self.cubes = self.read_cache()
+        if self.cubes:
+            return
+
+        # FIXME: self.cubes =
+
+        self.write_cache()
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
+class ERA5_CAPEPrecip(Dataset):
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, "ERA5", "CAPE_P")
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+        files = sorted(glob.glob(os.path.join(self.dir, "**", "*.nc"), recursive=True))
+        raw_cubes = load_cubes(files)
+        self.cubes = iris.cube.CubeList([raw_cubes.merge_cube()])
+        self.write_cache()
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
 class ESA_CCI_Fire(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-Fire_burnedarea")
@@ -1886,9 +1938,6 @@ class GSMaP_dry_day_period(Dataset):
         time_unit_str = "days since 1970-01-01 00:00:00"
         time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
 
-        # Above this mm/h threshold, a day is a 'wet day'.
-        mm_per_hr_threshold = 0.1 / 24
-
         logger.info("Constructing dry day period cube.")
         dry_day_period_cubes = iris.cube.CubeList()
 
@@ -1928,7 +1977,7 @@ class GSMaP_dry_day_period(Dataset):
                 # the raw daily precipitation data.
 
                 # Calculate dry days.
-                dry_days = raw_cube.data < mm_per_hr_threshold
+                dry_days = raw_cube.data < MM_PER_HR_THRES
 
                 # Find contiguous blocks where dry_days is True.
                 structure = np.zeros((3, 3, 3), dtype=np.int64)
@@ -2038,9 +2087,6 @@ class GSMaP_precipitation(Dataset):
         time_unit_str = "days since 1970-01-01 00:00:00"
         time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
 
-        # Above this mm/h threshold, a day is a 'wet day'.
-        mm_per_hr_threshold = 0.1 / 24
-
         logger.info("Constructing average precipitation and dry days cubes.")
         monthly_average_cubes = iris.cube.CubeList()
         dry_days_cubes = iris.cube.CubeList()
@@ -2078,7 +2124,7 @@ class GSMaP_precipitation(Dataset):
 
                 # Calculate dry day statistics.
 
-                dry_days_data = np.sum(raw_cube.data < mm_per_hr_threshold, axis=0)
+                dry_days_data = np.sum(raw_cube.data < MM_PER_HR_THRES, axis=0)
 
                 coords = [
                     (monthly_cube.coord("latitude"), 0),
@@ -2457,38 +2503,7 @@ class Thurner_AGB(Dataset):
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",
-                message=(
-                    "Ignoring netCDF variable 'biomass_totalag' invalid units"
-                    r" 'kg\[C]/m2'"
-                ),
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message=(
-                    "Ignoring netCDF variable 'biomass_branches' invalid units"
-                    r" 'kg\[C]/m2'"
-                ),
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message=(
-                    "Ignoring netCDF variable 'biomass_foliage' invalid units"
-                    r" 'kg\[C]/m2'"
-                ),
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message=(
-                    "Ignoring netCDF variable 'biomass_roots' invalid units"
-                    r" 'kg\[C]/m2'"
-                ),
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message=(
-                    "Ignoring netCDF variable 'biomass_stem' invalid units"
-                    r" 'kg\[C]/m2'"
-                ),
+                message=(r"Ignoring netCDF variable.*invalid units 'kg\[C]/m2'"),
             )
 
             self.cubes = iris.load(os.path.join(self.dir, "*.nc"))

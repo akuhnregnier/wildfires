@@ -20,6 +20,7 @@ from time import sleep, time
 
 import cdsapi
 import iris
+import iris.coord_categorisation
 import numpy as np
 from dateutil.relativedelta import relativedelta
 from iris.time import PartialDateTime
@@ -32,6 +33,28 @@ logger = logging.getLogger(__name__)
 variable_mapping = get_short_to_long()
 
 
+SINGLE_LEVEL_DATASET = "reanalysis-era5-single-levels"
+PRESSURE_LEVEL_DATASET = "reanalysis-era5-pressure-levels"
+SINGLE_LEVEL_MEAN_DATASET = "reanalysis-era5-single-levels-monthly-means"
+PRESSURE_LEVEL_MEAN_DATASET = "reanalysis-era5-pressure-levels-monthly-means"
+
+SINGLE_LEVEL_NAMES = (SINGLE_LEVEL_DATASET, SINGLE_LEVEL_MEAN_DATASET)
+PRESSURE_LEVEL_NAMES = (PRESSURE_LEVEL_DATASET, PRESSURE_LEVEL_MEAN_DATASET)
+MEAN_DATASET_NAMES = (SINGLE_LEVEL_MEAN_DATASET, PRESSURE_LEVEL_MEAN_DATASET)
+
+
+def is_single_level_dataset(dataset_name):
+    return dataset_name in SINGLE_LEVEL_NAMES
+
+
+def is_pressure_level_dataset(dataset_name):
+    return dataset_name in PRESSURE_LEVEL_NAMES
+
+
+def is_mean_dataset(dataset_name):
+    return dataset_name in MEAN_DATASET_NAMES
+
+
 def format_request(request):
     """Format the request tuple for nicer printing.
 
@@ -41,34 +64,54 @@ def format_request(request):
     """
     request = deepcopy(request)
     request_dict = request[1]
-    days = []
-    for year in request_dict["year"]:
-        for month in request_dict["month"]:
-            n_days = calendar.monthrange(int(year), int(month))[1]
-            days.append(n_days)
 
-    if len(request_dict["day"]) == max(days):
-        day_str = "ALL"
-    else:
-        day_str = ", ".join(request_dict["day"])
+    if request_dict["product_type"] == "reanalysis":
+        days = []
+        for year in request_dict["year"]:
+            for month in request_dict["month"]:
+                n_days = calendar.monthrange(int(year), int(month))[1]
+                days.append(n_days)
 
-    if len(request_dict["time"]) == 24:
-        time_str = "ALL"
-    else:
-        time_str = ", ".join(request_dict["time"])
+        if len(request_dict["day"]) == max(days):
+            day_str = "ALL"
+        else:
+            day_str = ", ".join(request_dict["day"])
 
-    if len(request_dict["month"]) == 12:
-        month_str = "ALL"
-    else:
-        month_str = ", ".join(
-            calendar.month_abbr[int(month)] for month in request_dict["month"]
+        if len(request_dict["time"]) == 24:
+            time_str = "ALL"
+        else:
+            time_str = ", ".join(request_dict["time"])
+
+        if len(request_dict["month"]) == 12:
+            month_str = "ALL"
+        else:
+            month_str = ", ".join(
+                calendar.month_abbr[int(month)] for month in request_dict["month"]
+            )
+
+        year_str = ", ".join(request_dict["year"])
+
+        output = "{} from {} for year(s) {}, month(s) {}, day(s) {}, time(s) {}.".format(
+            request_dict["variable"], request[0], year_str, month_str, day_str, time_str
+        )
+    elif request_dict["product_type"] == "monthly_averaged_reanalysis":
+        if len(request_dict["month"]) == 12:
+            month_str = "ALL"
+        else:
+            month_str = ", ".join(
+                calendar.month_abbr[int(month)] for month in request_dict["month"]
+            )
+
+        year_str = ", ".join(request_dict["year"])
+
+        output = "{} from {} for year(s) {}, month(s) {}.".format(
+            request_dict["variable"], request[0], year_str, month_str
         )
 
-    year_str = ", ".join(request_dict["year"])
-
-    output = "{} from {} for year(s) {}, month(s) {}, day(s) {}, time(s) {}.".format(
-        request_dict["variable"], request[0], year_str, month_str, day_str, time_str
-    )
+    else:
+        raise ValueError(
+            "Unknown product type '{}'.".format(request_dict["product_type"])
+        )
     return output
 
 
@@ -147,14 +190,16 @@ def format_variable(
     raise TypeError(type_error_msg)
 
 
-def retrieve_hourly(
+def retrieve(
     variable="2m_temperature",
     levels="sfc",
     hours=None,
+    monthly_mean=False,
     start=PartialDateTime(2000, 1, 1),
     end=PartialDateTime(2000, 2, 1),
     target_dir=os.path.join(DATA_DIR, "ERA5"),
     download=False,
+    merge=False,
 ):
     """Retrieve hourly ERA5 data for the chosen variable.
 
@@ -184,6 +229,8 @@ def retrieve_hourly(
             retrieve all hours. Alternatively hours may be given as
             integers (eg. hours=1), strings (eg. hours='01:00') or as lists
             of these. The hours must be in the range [0, 23].
+        monthly_mean (bool): If `monthly_mean`, retrieve monthly means instead of
+            hourly data.
         start (datetime): Initial datetime. This is inclusive (see 'end').
         end (datetime): Final datetime. This is not inclusive. So
             start=PartialDateTime(2000, 1, 1), end=PartialDateTime(2000, 2, 1)
@@ -192,6 +239,10 @@ def retrieve_hourly(
         download (bool): If True, download data one requests at a time. If
             False, simply return the list of request tuples that can be
             used to download data (e.g. using `retrieval_processing`).
+        merge (bool): If `merge`, issue a single request instead of individual monthly
+            requests across the specified time interval. This may lead to more data
+            being downloaded than specified, however, as all specified months will be
+            applied to all years in the interval.
 
     Returns:
         list: list of request tuples. Each tuple contains the dataset
@@ -212,18 +263,24 @@ def retrieve_hourly(
     if not os.path.isdir(target_dir):
         os.makedirs(target_dir)
 
-    surface_level_dataset_id = "reanalysis-era5-single-levels"
-    pressure_level_dataset_id = "reanalysis-era5-pressure-levels"
-
     if levels.lower() in ("sfc", "surface"):
         logger.debug("Retrieving surface dataset.")
-        dataset = surface_level_dataset_id
+        if monthly_mean:
+            dataset = SINGLE_LEVEL_MEAN_DATASET
+        else:
+            dataset = SINGLE_LEVEL_DATASET
     else:
         logger.debug("Retrieving pressure level dataset.")
-        dataset = pressure_level_dataset_id
+        if monthly_mean:
+            dataset = PRESSURE_LEVEL_MEAN_DATASET
+        else:
+            dataset = PRESSURE_LEVEL_DATASET
 
     if hours is None:
-        hours = ["{:02d}:00".format(hour) for hour in range(0, 24)]
+        if is_mean_dataset(dataset):
+            hours = "00:00"
+        else:
+            hours = ["{:02d}:00".format(hour) for hour in range(0, 24)]
     else:
 
         def single_hour_formatter(hour):
@@ -250,9 +307,9 @@ def retrieve_hourly(
     logger.debug("Request hours: '{}'.".format(hours))
 
     # 'levels' is only relevant for the pressure level dataset.
-    if dataset == pressure_level_dataset_id:
+    if is_pressure_level_dataset(dataset):
 
-        def single_level_formatter(level):
+        def level_formatter(level):
             if isinstance(level, str):
                 # Remove 'hPa'. Trailing space would be stripped int().
                 level = int(level.lower().strip("hpa"))
@@ -261,10 +318,7 @@ def retrieve_hourly(
             return str(level)
 
         levels = format_variable(
-            levels,
-            "levels",
-            single_level_formatter,
-            (str, float, np.float, int, np.integer),
+            levels, "levels", level_formatter, (str, float, np.float, int, np.integer)
         )
     logger.debug("Request levels:{}.".format(levels))
 
@@ -275,166 +329,94 @@ def retrieve_hourly(
     end_date = datetime(end.year, end.month, end.day)
 
     # Since the date given for 'end' is not inclusive.
+    dates = []
     while current_date != end_date:
-        current_key = (current_date.year, current_date.month)
-        if current_key not in monthly_dates:
-            monthly_dates[current_key] = {
+        dates.append(current_date)
+        current_month_date = (current_date.year, current_date.month)
+        if current_month_date not in monthly_dates:
+            monthly_dates[current_month_date] = {
                 "year": [str(current_date.year)],
                 "month": ["{:02d}".format(current_date.month)],
                 "day": ["{:02d}".format(current_date.day)],
             }
         else:
-            monthly_dates[current_key]["day"].append("{:02d}".format(current_date.day))
+            monthly_dates[current_month_date]["day"].append(
+                "{:02d}".format(current_date.day)
+            )
         current_date += relativedelta(days=+1)
 
     requests = []
-    for request_date in monthly_dates.values():
-        logger.debug("Request dates: '{}'.".format(request_date))
+    if not merge:
+        for request_date in monthly_dates.values():
+            logger.debug("Request dates: '{}'.".format(request_date))
+            request_dict = {
+                "format": "netcdf",
+                "variable": variable,
+                "year": request_date["year"],
+                "month": request_date["month"],
+                "time": hours,
+            }
+
+            if is_mean_dataset(dataset):
+                request_dict["product_type"] = "monthly_averaged_reanalysis"
+                filename = "era5_hourly_reanalysis_monthly_mean_{year}_{month}.nc".format(
+                    year=request_dict["year"][0], month=request_dict["month"][0]
+                )
+            else:
+                request_dict["day"] = request_date["day"]
+                request_dict["product_type"] = "reanalysis"
+                filename = "era5_hourly_reanalysis_{year}_{month}.nc".format(
+                    year=request_dict["year"][0], month=request_dict["month"][0]
+                )
+
+            if is_pressure_level_dataset(dataset):
+                request_dict["pressure_level"] = levels
+
+            target_file = os.path.join(target_dir, filename)
+
+            request = (dataset, request_dict, target_file)
+            requests.append(request)
+    else:
+        logger.debug("Creating single request.")
         request_dict = {
-            "product_type": "reanalysis",
             "format": "netcdf",
             "variable": variable,
-            "year": request_date["year"],
-            "month": request_date["month"],
-            "day": request_date["day"],
+            "year": list(map(str, sorted(list(set(dt.year for dt in dates))))),
+            "month": list(
+                map("{:02d}".format, sorted(list(set(dt.month for dt in dates))))
+            ),
             "time": hours,
         }
 
-        if dataset == pressure_level_dataset_id:
+        if is_mean_dataset(dataset):
+            request_dict["product_type"] = "monthly_averaged_reanalysis"
+            filename = "era5_hourly_reanalysis_monthly_mean_{year}_{month}.nc".format(
+                year=request_dict["year"][0], month=request_dict["month"][0]
+            )
+        else:
+            request_dict["day"] = list(
+                map("{:02d}".format, sorted(list(set(dt.day for dt in dates))))
+            )
+            request_dict["product_type"] = "reanalysis"
+            filename = "era5_hourly_reanalysis_{year}_{month}.nc".format(
+                year=request_dict["year"][0], month=request_dict["month"][0]
+            )
+
+        if is_pressure_level_dataset(dataset):
             request_dict["pressure_level"] = levels
 
-        target_file = os.path.join(
-            target_dir,
-            "era5_hourly_reanalysis_{year}_{month}.nc".format(
-                year=request_dict["year"][0], month=request_dict["month"][0]
-            ),
-        )
+        target_file = os.path.join(target_dir, filename)
 
         request = (dataset, request_dict, target_file)
         requests.append(request)
+
+    for dataset, request_dict, target_file in requests:
         if download:
             logger.info("Starting download to: '{}'.".format(target_file))
-            client.retrieve(*request)
+            client.retrieve(dataset, request_dict, target_file)
             logger.info("Finished download to: '{}'.".format(target_file))
 
     return requests
-
-
-def retrieve_monthly(
-    variable="167.128",
-    start=PartialDateTime(2000, 1),
-    end=PartialDateTime(2000, 2),
-    target_dir=DATA_DIR,
-):
-    """Retrieve monthly ERA5 data for the chosen variable.
-
-    Possible values for the variable parameter can be taken from the short names
-    (shortName column) in the tables at
-    https://confluence.ecmwf.int/display/CKB/ERA5+data+documentation.
-
-    Note:
-        Retrieval times for these requests will be very long (because the queue these
-        requests are submitted to is not assigned a very high priority by the
-        operators of the archive). It is faster to generate requests using
-        `retrieve_hourly` and then use `retrieval_processing` to handle these requests
-        in parallel while carrying out processing (like monthly averaging with
-        `processing_class`=`AveragingWorker`).
-
-    Args:
-        variable (str): Variable of interest: eg. variable='167.128' refers to
-            the 2m surface (sfc) level temperature variable. Multiple
-            variables are also possible: eg. variable='167.128/207.128' would
-            retrieve 2m temperature and 10m wind speed.
-        start (datetime): Initial datetime. This is inclusive.
-        end (datetime): Final datetime. This is inclusive.
-        target (str): Directory path where the output files will be stored.
-
-    Returns:
-        list: list of output filenames.
-
-    Note:
-        Daily information present in the supplied dates is simply discarded.
-
-        The queue for retrieving the pre-calculated monthly means (which
-        this function relies on) has a far lower priority than the queue
-        for hourly data, leading to very large retrieval times on the order
-        of many hours, sometimes days for a single month!
-
-    The output data are organised as one file per decade:
-     - ...
-     - 'era5_moda_{variable}_1990'
-     - 'era5_moda_{variable}_2000'
-     - ...
-
-    """
-    output_filenames = []
-    client = cdsapi.Client(quiet=True)
-    # ERA5 monthly data is timestamped to the first of the month, hence dates
-    # have to be specified as a list in this format:
-    # '19950101/19950201/19950301/.../20051101/20051201'.
-
-    # Data is stored on one tape per decade, so for efficiency we split the
-    # date range into decades, hence we get multiple date lists by decade:
-    #  - '19950101/19950201/19950301/.../19991101/19991201'
-    #  - '20000101/20000201/20000301/.../20051101/20051201'
-    #  - '20000101/20000201/20000301/.../20051101/20051201'
-    start = PartialDateTime(start.year, start.month)
-    end = PartialDateTime(end.year, end.month)
-
-    decades = sorted(
-        list(
-            np.array(list(set(year // 10 for year in range(start.year, end.year + 1))))
-            * 10
-        )
-    )
-
-    for decade in decades:
-        logger.debug("decade:{}".format(decade))
-        requested_dates = []
-        # The decade is the first year, so go from there until the final
-        # year, up to 9 times (otherwise the next decade would be reached).
-        for year in range(decade, min((end.year, decade + 9)) + 1):
-            logger.debug("year:{}".format(year))
-            for month in range(1, (end.month + 1) if year == end.year else 13):
-                logger.debug("month:{}".format(month))
-                requested_dates.append("{:>04d}{:>02d}01".format(year, month))
-
-        date_request_string = "/".join(requested_dates)
-        decade_target_file = os.path.join(
-            target_dir, "era5_moda_{}_{}.nc".format(variable, decade)
-        )
-
-        logger.debug("date request:{}".format(date_request_string))
-
-        client.retrieve(
-            "reanalysis-era5-complete",
-            {
-                "class": "ea",
-                "expver": "1",
-                "stream": "moda",
-                "type": "an",
-                # 128 is table 2 version
-                # https://confluence.ecmwf.int/display/UDOC/Identification+keywords
-                "param": "167.128",
-                "levtype": "sfc",
-                "date": date_request_string,
-                "decade": str(decade),
-                "grid": "0.25/0.25",
-                # Optional. Subset (clip) to an area. Specify as N/W/S/E in
-                # Geographic lat/long degrees. Southern latitudes and
-                # western longitudes must be given as negative numbers.
-                # Requires "grid" to be set to a regular grid like "0.25/0.25".
-                # 'area': '89.75/-179.75/-89.75/179.75',
-                "format": "netcdf",
-            },
-            decade_target_file,
-        )
-        logger.info(
-            "Finished download for decade:{} to:{}".format(decade, decade_target_file)
-        )
-        output_filenames.append(decade_target_file)
-
-    return output_filenames
 
 
 class DownloadThread(Thread):
@@ -637,7 +619,7 @@ class Worker(Process, ABC):
 
         Args:
             request (iterable of str, dict, str): A request tuple as returned
-                by `retrieve_hourly`.
+                by `retrieve`.
             output (iterable of int, str, str): Output of `self.process`.
 
         Returns:
@@ -689,6 +671,140 @@ class Worker(Process, ABC):
             self.logger.debug("Exiting.")
 
 
+class NullWorker(Worker):
+    """Compute monthly averages using filenames passed in via a pipe."""
+
+    @staticmethod
+    def output_filename(input_filename):
+        """Construct the output filename from the input filename."""
+        return input_filename
+
+    @classmethod
+    def check_output(cls, request, output=None):
+        """Check that the output matches the request.
+
+        Args:
+            request (iterable of str, dict, str): A request tuple as returned
+                by `retrieve`.
+            output (None or iterable of int, str, str): Output of
+                `AveragingWorker.process`. If None, this 3-element tuple will be
+                recreated from the input request as expected in case of successful
+                processing.
+
+        Returns:
+            bool: True if the output matches the request, False otherwise.
+
+        """
+        downloaded_file = request[2]
+        if output is None:
+            output = (0, downloaded_file, cls.output_filename(downloaded_file))
+        logger.debug("Comparing request {} and output {}.".format(request, output))
+        if output[0] != 0:
+            logger.warning(
+                "Output is not as expected because processing of the "
+                "request {} failed with error code {}".format(request, output[0])
+            )
+            return False
+        output_file = output[2]
+        expected_file = cls.output_filename(downloaded_file)
+        if output_file != expected_file:
+            logger.warning(
+                "Filenames do not match. Expected '{}', got '{}'.".format(
+                    expected_file, output_file
+                )
+            )
+            return False
+
+        if not os.path.isfile(output_file):
+            logger.warning(
+                "Expected output file '{}' does not exist.".format(output_file)
+            )
+            return False
+
+        request_dict = request[1]
+
+        request_variables = request_dict["variable"]
+        expected_name_sets = []
+        for variable in request_variables:
+            expected_name_sets.append({variable, variable_mapping[variable]})
+        try:
+            output_cubes = iris.load(output_file)
+        except Exception:
+            logger.exception("Error while loading '{}'.".format(output_file))
+            return False
+
+        # Check that all expected variables are present exactly once overall, with
+        # each cube containing one variable.
+        for cube in output_cubes:
+            which_failed = []
+            error_details = []
+
+            raw_cube_names = (cube.standard_name, cube.long_name, cube.var_name)
+            cube_names = list(map(str, raw_cube_names))
+
+            for name_index, expected_name_set in enumerate(expected_name_sets):
+                if expected_name_set.intersection(cube_names):
+                    logger.debug(
+                        "Matched '{}' with '{}'".format(expected_name_set, cube_names)
+                    )
+                    # Next time, there will be one fewer variable to compare
+                    # against.
+                    del expected_name_sets[name_index]
+                    break
+            else:
+                which_failed.append("variable name check")
+                error_details.append(
+                    "None of '{}' matched one of the expected names '{}.".format(
+                        ", ".join(cube_names),
+                        ", ".join(
+                            [
+                                name
+                                for name_set in expected_name_sets
+                                for name in name_set
+                            ]
+                        ),
+                    )
+                )
+
+            if which_failed:
+                which_failed = " and ".join(which_failed)
+                error_details = " ".join(error_details)
+                logger.warning(
+                    "Failed '{}' for cube '{}'. '{}'".format(
+                        which_failed, repr(cube), error_details
+                    )
+                )
+                return False
+        return True
+
+    def process(self, request):
+        """Performs monthly averaging on the data in the given request.
+
+        Args:
+            request (tuple): Request tuple as returned by `retrieve_monthly`.
+
+        Returns:
+            int: 0 for successful computation of the average. 1 is returned
+                if an error is encountered. 2 is returned if no exception
+                was encountered, but the resulting data does not match the
+                expectations as defined by `self.check_output`. Note that
+                exceptions are merely logged and not raised.
+            str: The original filename `filename`.
+            str or None: The output filename (if successful) or None.
+
+        """
+        filename = request[2]
+        self.logger.debug("Processing: '{}'.".format(filename))
+        try:
+            save_name = self.output_filename(filename)
+            if self.check_output(request, (0, filename, save_name)):
+                return (0, filename, save_name)
+            return (2, filename, None)
+        except Exception:
+            self.logger.exception("Error while processing '{}'.".format(filename))
+            return (1, filename, None)
+
+
 class AveragingWorker(Worker):
     """Compute monthly averages using filenames passed in via a pipe."""
 
@@ -703,7 +819,7 @@ class AveragingWorker(Worker):
 
         Args:
             request (iterable of str, dict, str): A request tuple as returned
-                by `retrieve_hourly`.
+                by `retrieve`.
             output (None or iterable of int, str, str): Output of
                 `AveragingWorker.process`. If None, this 3-element tuple will be
                 recreated from the input request as expected in case of successful
@@ -865,6 +981,202 @@ class AveragingWorker(Worker):
             return (1, filename, None)
 
 
+class DailyAveragingWorker(Worker):
+    """Compute daily averages using filenames passed in via a pipe."""
+
+    @staticmethod
+    def output_filename(input_filename):
+        """Construct the output filename from the input filename."""
+        return input_filename.split(".nc")[0] + "_daily_mean.nc"
+
+    @classmethod
+    def check_output(cls, request, output=None):
+        """Check that the output matches the request.
+
+        Args:
+            request (iterable of str, dict, str): A request tuple as returned
+                by `retrieve`.
+            output (None or iterable of int, str, str): Output of
+                `AveragingWorker.process`. If None, this 3-element tuple will be
+                recreated from the input request as expected in case of successful
+                processing.
+
+        Returns:
+            bool: True if the output matches the request, False otherwise.
+
+        """
+        downloaded_file = request[2]
+        if output is None:
+            output = (0, downloaded_file, cls.output_filename(downloaded_file))
+        logger.debug("Comparing request {} and output {}.".format(request, output))
+        if output[0] != 0:
+            logger.warning(
+                "Output is not as expected because processing of the "
+                "request {} failed with error code {}".format(request, output[0])
+            )
+            return False
+        output_file = output[2]
+        expected_file = cls.output_filename(downloaded_file)
+        if output_file != expected_file:
+            logger.warning(
+                "Filenames do not match. Expected '{}', got '{}'.".format(
+                    expected_file, output_file
+                )
+            )
+            return False
+
+        if not os.path.isfile(output_file):
+            logger.warning(
+                "Expected output file '{}' does not exist.".format(output_file)
+            )
+            return False
+
+        request_dict = request[1]
+        years = list(map(int, request_dict["year"]))
+        months = list(map(int, request_dict["month"]))
+        days = list(map(int, request_dict["day"]))
+        hours = [int(time.replace(":00", "")) for time in request_dict["time"]]
+
+        # Since downloaded data can only reach the end of the last calendar month.
+        max_days = min((max(days), calendar.monthrange(max(years), max(months))[1]))
+        datetime_range = (
+            datetime(min(years), min(months), min(days), min(hours)),
+            datetime(max(years), max(months), max_days, max(hours)),
+        )
+
+        request_variables = request_dict["variable"]
+        # TODO: Can this be made more fine-grained to check each individual
+        # expected name against the corresponding cube? This is impeded
+        # by not knowing how the cubes are ordered with respect to the
+        # ordering of variables in the original request.
+        # NOTE: The current approach achieves the same thing, as sets
+        # are deleted (consumed) as they are matched, but it is more cumbersome.
+        expected_name_sets = []
+        for variable in request_variables:
+            expected_name_sets.append({variable, variable_mapping[variable]})
+        try:
+            output_cubes = iris.load(output_file)
+            assert {"time", "latitude", "longitude"}.intersection(
+                {coord.name() for coord in output_cubes[0].coords()}
+            )
+        except Exception:
+            logger.exception("Error while loading '{}'.".format(output_file))
+            return False
+
+        # Check the temporal bounds for each cube and that all expected variables are
+        # present exactly once overall, with each cube containing one variable.
+        for cube in output_cubes:
+            which_failed = []
+            error_details = []
+
+            n_days = 1 + datetime_range[1].day - datetime_range[0].day
+            cube_n_days = len(cube.coord("time").points)
+            if cube_n_days != n_days:
+                which_failed.append("Number of days check")
+                error_details.append(
+                    f"Expected {n_days} days, but cube has {cube_n_days} days."
+                )
+            if not np.all(
+                (cube.coord("time").points[1:] - cube.coord("time").pionts[:-1]) > 0
+            ):
+                which_failed.append("Monotonic time check")
+                error_details.append(
+                    "Cube time coordinate did not increase monotonically."
+                )
+            cube_bounds = (
+                cube.coord("time").cell(0).point.bound[0],
+                cube.coord("time").cell(-1).point.bound[1],
+            )
+
+            if cube_bounds != datetime_range:
+                which_failed.append("bounds check")
+                error_details.append(
+                    f"Expected bounds '{datetime_range}', got bounds '{cube_bounds}'."
+                )
+
+            raw_cube_names = (cube.standard_name, cube.long_name, cube.var_name)
+            cube_names = list(map(str, raw_cube_names))
+
+            for name_index, expected_name_set in enumerate(expected_name_sets):
+                if expected_name_set.intersection(cube_names):
+                    logger.debug(f"Matched '{expected_name_set}' with '{cube_names}'.")
+                    # Next time, there will be one fewer variable to compare
+                    # against.
+                    del expected_name_sets[name_index]
+                    break
+            else:
+                which_failed.append("variable name check")
+                error_details.append(
+                    "None of '{}' matched one of the expected names '{}.".format(
+                        ", ".join(cube_names),
+                        ", ".join(
+                            [
+                                name
+                                for name_set in expected_name_sets
+                                for name in name_set
+                            ]
+                        ),
+                    )
+                )
+
+            if which_failed:
+                which_failed = " and ".join(which_failed)
+                error_details = " ".join(error_details)
+                logger.warning(
+                    f"Failed '{which_failed}' for cube '{repr(cube)}'. "
+                    f"'{error_details}'."
+                )
+                return False
+        return True
+
+    def process(self, request):
+        """Performs monthly averaging on the data in the given request.
+
+        Args:
+            request (tuple): Request tuple as returned by `retrieve_monthly`.
+
+        Returns:
+            int: 0 for successful computation of the average. 1 is returned
+                if an error is encountered. 2 is returned if no exception
+                was encountered, but the resulting data does not match the
+                expectations as defined by `self.check_output`. Note that
+                exceptions are merely logged and not raised.
+            str: The original filename `filename`.
+            str or None: The output filename (if successful) or None.
+
+        """
+        filename = request[2]
+        self.logger.debug("Processing: '{}'.".format(filename))
+        try:
+            cubes = iris.load(filename)
+            output_cubes = iris.cube.CubeList()
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=(
+                        "Collapsing a non-contiguous coordinate. Metadata may not "
+                        "be fully descriptive for 'time'."
+                    ),
+                )
+                for cube in cubes:
+                    iris.coord_categorisation.add_day_of_year(cube, "time")
+                    iris.coord_categorisation.add_year(cube, "time")
+                    output_cubes.append(
+                        cube.aggregated_by(["day_of_year", "year"], iris.analysis.MEAN)
+                    )
+            save_name = self.output_filename(filename)
+            if not os.path.isdir(os.path.dirname(save_name)):
+                os.makedirs(os.path.dirname(save_name))
+            iris.save(output_cubes, save_name, zlib=False)
+            # If everything went well.
+            if self.check_output(request, (0, filename, save_name)):
+                return (0, filename, save_name)
+            return (2, filename, None)
+        except Exception:
+            self.logger.exception("Error while processing '{}'.".format(filename))
+            return (1, filename, None)
+
+
 class CAPEPrecipWorker(Worker):
     """Compute monthly averages of hourly products of CAPE and Precipitation."""
 
@@ -887,7 +1199,7 @@ class CAPEPrecipWorker(Worker):
 
         Args:
             request (iterable of str, dict, str): A request tuple as returned
-                by `retrieve_hourly`.
+                by `retrieve`.
             output (None or iterable of int, str, str): Output of
                 `AveragingWorker.process`. If None, this 3-element tuple will be
                 recreated from the input request as expected in case of successful
@@ -1150,7 +1462,7 @@ def new_download_thread(new_request, overwrite, processing_class):
     """Start a new download thread given conditions.
 
     Args:
-        new_request (tuple): A request tuple as returned by `retrieve_hourly`.
+        new_request (tuple): A request tuple as returned by `retrieve`.
         overwrite (bool): If True, overwrite existing data.
         processing_class (class): Subclass of `Worker`, responsible for
             processing downloaded data. See `processing_class` in
@@ -1455,7 +1767,7 @@ def retrieval_processing(
 
 
 def monthly_averaging_example():
-    requests = retrieve_hourly(
+    requests = retrieve(
         variable=["2t", "10u", "10v"],
         start=PartialDateTime(1990, 1, 1),
         end=PartialDateTime(2019, 1, 1),
@@ -1469,10 +1781,8 @@ def monthly_averaging_example():
     )
 
 
-if __name__ == "__main__":
-    logging.config.dictConfig(LOGGING)
-
-    requests = retrieve_hourly(
+def cape_precipitation():
+    requests = retrieve(
         variable=["cape", "tp"],
         start=PartialDateTime(1995, 1, 1),
         end=PartialDateTime(2015, 1, 1),
@@ -1482,6 +1792,51 @@ if __name__ == "__main__":
         processing_class=CAPEPrecipWorker,
         n_threads=12,
         delete_processed=True,
+        overwrite=False,
+        soft_filesize_limit=50,
+    )
+
+
+def download_monthly_precipitation():
+    retrieve(
+        variable="tp",
+        start=PartialDateTime(1990, 1, 1),
+        end=PartialDateTime(2019, 1, 1),
+        target_dir=os.path.join(DATA_DIR, "ERA5", "tp"),
+        monthly_mean=True,
+        download=True,
+        merge=True,
+    )
+    # Not needed with `download=True`.
+    # retrieval_processing(
+    #     requests,
+    #     processing_class=NullWorker,
+    #     n_threads=12,
+    #     delete_processed=False,
+    #     overwrite=False,
+    #     soft_filesize_limit=10,
+    # )
+
+
+if __name__ == "__main__":
+    logging.config.dictConfig(LOGGING)
+    requests = retrieve(
+        variable="tp",
+        # start=PartialDateTime(1990, 1, 1),
+        # end=PartialDateTime(2019, 1, 1),
+        start=PartialDateTime(1990, 1, 1),
+        end=PartialDateTime(1990, 3, 1),
+        target_dir=os.path.join(DATA_DIR, "ERA5", "tp_daily"),
+        monthly_mean=False,
+        download=False,
+        merge=False,
+    )
+
+    retrieval_processing(
+        requests,
+        processing_class=DailyAveragingWorker,
+        n_threads=12,
+        delete_processed=False,
         overwrite=False,
         soft_filesize_limit=50,
     )
