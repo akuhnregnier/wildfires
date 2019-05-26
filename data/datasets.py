@@ -1427,7 +1427,7 @@ class ERA5_DryDayPeriod(Dataset):
         # Sort so that time is increasing.
         filenames = sorted(
             glob.glob(os.path.join(self.dir, "**", "*_daily_mean.nc"), recursive=True)
-        )[-12:]
+        )
 
         logger.info("Constructing dry day period cube.")
         dry_day_period_cubes = iris.cube.CubeList()
