@@ -227,7 +227,7 @@ def cube_plotting(
         cb = fig.colorbar(mesh, **colorbar_kwargs)
     title = kwargs.get("title", cube.name())
     if title:
-        if isinstance(title, matplotlib.text.Text):
+        if isinstance(title, mpl.text.Text):
             title_text.set_text(title)
         else:
             title_text = fig.suptitle(title)
