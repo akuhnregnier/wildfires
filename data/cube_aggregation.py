@@ -1188,11 +1188,6 @@ def clever_cache(func):
             )
             return out
 
-        print()
-        print(orig_args)
-        print(orig_kwargs)
-        print()
-
         return takes_split_selection(
             func_code, string_representation, *orig_args, **orig_kwargs
         )
