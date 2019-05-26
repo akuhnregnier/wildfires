@@ -41,8 +41,7 @@ repo = Repo(repo_dir)
 
 # Above this mm/h threshold, a day is a 'wet day'.
 MM_PER_HR_THRES = 0.1 / 24
-MM_PER_DAY_THRES = MM_PER_HR_THRES * 24
-M_PER_DAY_THRES = MM_PER_DAY_THRES / 1000
+M_PER_HR_THRES = MM_PER_HR_THRES / 1000
 
 
 def join_adjacent_intervals(intervals):
@@ -1463,8 +1462,9 @@ class ERA5_DryDayPeriod(Dataset):
                     prev_dry_day_period = np.zeros((n_lats, n_lons), dtype=np.int64)
                     prev_end = np.zeros((n_lats, n_lons), dtype=np.bool_)
 
-                # Calculate dry days.
-                dry_days = raw_cube.data < M_PER_DAY_THRES
+                # Calculate dry days using metre per hour threshold, since the daily
+                # data here is an average of the hourly total precipitation data.
+                dry_days = raw_cube.data < M_PER_HR_THRES
 
                 # Find contiguous blocks in the time dimension where dry_days is True.
                 structure = np.zeros((3, 3, 3), dtype=np.int64)
