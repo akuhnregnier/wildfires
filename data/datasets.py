@@ -467,6 +467,12 @@ class Dataset(ABC):
     def cubes(self, new_cubes):
         self.__cubes = new_cubes
 
+    @property
+    def cube(self):
+        if len(self.cubes) != 1:
+            raise ValueError(f"Expected 1 cube, but found {len(self.cubes)} cubes.")
+        return self.cubes[0]
+
     def copy(self, deep=False):
         """Make a copy.
 
@@ -1458,7 +1464,7 @@ class ERA5_DryDayPeriod(Dataset):
                     prev_end = np.zeros((n_lats, n_lons), dtype=np.bool_)
 
                 # Calculate dry days.
-                dry_days = raw_cube.data < (M_PER_DAY_THRES * n_days)
+                dry_days = raw_cube.data < M_PER_DAY_THRES
 
                 # Find contiguous blocks in the time dimension where dry_days is True.
                 structure = np.zeros((3, 3, 3), dtype=np.int64)

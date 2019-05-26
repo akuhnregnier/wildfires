@@ -1126,7 +1126,8 @@ def clever_cache(func):
         ):
             raise TypeError(
                 "The first positional argument, and only the first argument "
-                "should be a `Datasets` instance."
+                f"should be a `Datasets` instance, got '{type(orig_args[0])}' "
+                "as the first argument."
             )
         original_selection = orig_args[0]
         string_representation = str(original_selection.get("all", "raw"))
@@ -1169,7 +1170,7 @@ def clever_cache(func):
             original_selection,
             *args,
             dataset_function=None,
-            **kwargs
+            **kwargs,
         ):
             # NOTE: The reason why this works is that the combination of
             # [original_selection] + args here is fed the original `orig_args`
@@ -1217,7 +1218,7 @@ def process_dataset(monthly_dataset, min_time, max_time):
     # procedures.
 
     climatology = monthly_dataset.copy(deep=False)
-    climatology.cubes = [None] * len(monthly_dataset)
+    climatology.cubes = []
 
     mean_dataset = deepcopy(climatology)
 
@@ -1240,10 +1241,10 @@ def process_dataset(monthly_dataset, min_time, max_time):
         for i, cube in enumerate(monthly_dataset):
             # TODO: Implement __setitem__ for Dataset to make this cleaner.
             if cube.coords("time"):
-                mean_dataset.cubes[i] = cube.collapsed("time", iris.analysis.MEAN)
+                mean_dataset.cubes.append(cube.collapsed("time", iris.analysis.MEAN))
             else:
                 # XXX: Should we copy the cube here?
-                mean_dataset.cubes[i] = cube
+                mean_dataset.cubes.append(cube)
 
     # Get monthly data over the chosen interval for all dataset.
     # TODO: Inplace argument for get_monthly_data methods?
@@ -1257,8 +1258,8 @@ def process_dataset(monthly_dataset, min_time, max_time):
         for i, cube in enumerate(monthly_dataset):
             if not cube.coords("month_number"):
                 iris.coord_categorisation.add_month_number(cube, "time")
-            climatology.cubes[i] = cube.aggregated_by(
-                "month_number", iris.analysis.MEAN
+            climatology.cubes.append(
+                cube.aggregated_by("month_number", iris.analysis.MEAN)
             )
 
     for dataset in (monthly_dataset, mean_dataset, climatology):
