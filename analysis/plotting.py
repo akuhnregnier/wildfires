@@ -32,7 +32,7 @@ def get_cubes_vmin_vmax(cubes, vmin_vmax_percentiles=(10, 90)):
             `vmin` and `vmax` parameters take precedence.
 
     Returns:
-        tuple of float
+        tuple of float: (vmin, vmax).
 
     """
     if vmin_vmax_percentiles is None:
@@ -161,6 +161,7 @@ def cube_plotting(
     mesh=None,
     new_colorbar=True,
     title_text=None,
+    auto_log_title=False,
     **kwargs,
 ):
     """Pretty plotting.
@@ -189,6 +190,8 @@ def cube_plotting(
             creating a new one.
         new_colorbar (bool): If True, create a new colorbar. Turn off for animation.
         title_text (matplotlib.text.Text): Title text.
+        auto_log_title (bool): If `auto_log_title`, prepend "log " to `title` if
+            `log`.
 
         possible kwargs:
             title: str or None of False. If None or False, no title will be plotted.
@@ -266,6 +269,8 @@ def cube_plotting(
     if new_colorbar:
         fig.colorbar(mesh, **colorbar_kwargs)
     title = kwargs.get("title", cube.name())
+    if log and auto_log_title and kwargs.get("title"):
+        title = "log " + title
     if title:
         if isinstance(title, mpl.text.Text):
             title_text.set_text(title)

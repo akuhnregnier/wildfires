@@ -259,6 +259,16 @@ class Datasets:
     def datasets(self, new_datasets):
         self.__datasets = new_datasets
 
+    @property
+    def dataset(self):
+        """Convenience method to access a single stored dataset."""
+        if len(self.datasets) != 1:
+            raise ValueError(
+                f"Expected 1 Dataset instance, but found {len(self.datasets)} "
+                "Dataset instances."
+            )
+        return self.datasets[0]
+
     def copy(self, deep=False):
         """Return a copy of the dataset collection.
 
@@ -1215,7 +1225,7 @@ def process_dataset(monthly_dataset, min_time, max_time):
     # procedures.
 
     climatology = monthly_dataset.copy(deep=False)
-    climatology.cubes = []
+    climatology.cubes = iris.cube.CubeList([])
 
     mean_dataset = deepcopy(climatology)
 

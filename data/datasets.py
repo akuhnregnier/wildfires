@@ -467,6 +467,7 @@ class Dataset(ABC):
 
     @property
     def cube(self):
+        """Convenience method to access a single stored cube."""
         if len(self.cubes) != 1:
             raise ValueError(f"Expected 1 cube, but found {len(self.cubes)} cubes.")
         return self.cubes[0]
