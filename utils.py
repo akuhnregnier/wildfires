@@ -5,15 +5,50 @@
 """
 import logging
 import os
+from time import time
 
 import fiona
 import numpy as np
 from affine import Affine
 from rasterio import features
+from tqdm import tqdm
 
 from wildfires.data.datasets import DATA_DIR
 
 logger = logging.getLogger(__name__)
+
+
+class TqdmContext(tqdm):
+    """Use like:
+        `with TqdmContext(unit=" plots", desc="Plotting", total=10) as t:`
+
+    Where `total` refers to the total number of elements.
+
+    Call t.update_to(iteration) which will increment the internal counter to
+    `iteration`.
+
+    Add the total keyword to change the total number of expected iterations.
+
+    Alternatively, call t.update() (defined in the core tqdm class) to increment the
+    counter by 1.
+
+    """
+
+    def update_to(self, total=None):
+        if total is not None:
+            self.total = total
+        self.update(iteration - self.n)
+
+
+class Time:
+    def __init__(self, name=""):
+        self.name = name
+
+    def __enter__(self, name=""):
+        self.start = time()
+
+    def __exit__(self, type, value, traceback):
+        print("Time taken for {}: {}".format(self.name, time() - self.start))
 
 
 class RampVar:

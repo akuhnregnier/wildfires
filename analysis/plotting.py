@@ -156,7 +156,11 @@ def cube_plotting(
     dummy_lon_lims=(-180, 180),
     vmin_vmax_percentiles=(10, 90),
     projection=ccrs.Robinson(),
-    # projection=ccrs.PlateCarree(),
+    animation_output=False,
+    ax=None,
+    mesh=None,
+    new_colorbar=True,
+    title_text=None,
     **kwargs,
 ):
     """Pretty plotting.
@@ -178,6 +182,13 @@ def cube_plotting(
             of the data (equivalent to percentiles of (0, 100)). Explicitly passed-in
             `vmin` and `vmax` parameters take precedence.
         projection: A projection as defined in `cartopy.crs`.
+        animation_output (bool): Output additional variables required to create an
+            animation.
+        ax (matplotlib axis):
+        mesh (matplotlib.collections.QuadMesh): If given, update the mesh instead of
+            creating a new one.
+        new_colorbar (bool): If True, create a new colorbar. Turn off for animation.
+        title_text (matplotlib.text.Text): Title text.
 
         possible kwargs:
             title: str or None of False. If None or False, no title will be plotted.
@@ -204,7 +215,6 @@ def cube_plotting(
     cube = cube.copy()
 
     if log:
-        # print("Logging cube")
         if not cube.long_name:
             cube.long_name = cube.name()
         future_name = "log " + cube.long_name
@@ -218,22 +228,29 @@ def cube_plotting(
     gridlons = cube.coord("longitude").contiguous_bounds()
     gridlats = cube.coord("latitude").contiguous_bounds()
 
-    fig, ax = plt.subplots()
-    ax = plt.axes(projection=projection)
-
     data_vmin, data_vmax = get_cubes_vmin_vmax([cube], vmin_vmax_percentiles)
 
-    plt.pcolormesh(
-        gridlons,
-        gridlats,
-        cube.data,
-        cmap=kwargs.get("cmap", "viridis"),
-        # NOTE: This transform argument here may differ from the projection argument.
-        transform=ccrs.PlateCarree(),
-        rasterized=rasterized,
-        vmin=kwargs.get("vmin", data_vmin),
-        vmax=kwargs.get("vmax", data_vmax),
-    )
+    if ax is None:
+        fig = plt.figure()
+        ax = plt.axes(projection=projection)
+    else:
+        fig = ax.get_figure()
+
+    if mesh is not None:
+        mesh.set_array(cube.data.ravel())
+    else:
+        mesh = ax.pcolormesh(
+            gridlons,
+            gridlats,
+            cube.data,
+            cmap=kwargs.get("cmap", "viridis"),
+            # NOTE: This transform here may differ from the projection argument.
+            transform=ccrs.PlateCarree(),
+            rasterized=rasterized,
+            vmin=kwargs.get("vmin", data_vmin),
+            vmax=kwargs.get("vmax", data_vmax),
+        )
+
     ax.coastlines(resolution="110m", **coastline_kwargs)
 
     colorbar_kwargs = {
@@ -246,11 +263,17 @@ def cube_plotting(
         "anchor": kwargs.get("anchor", (0.5, 1.0)),
         "panchor": kwargs.get("panchor", (0.5, 0.0)),
     }
-
-    plt.colorbar(**colorbar_kwargs)
+    if new_colorbar:
+        fig.colorbar(mesh, **colorbar_kwargs)
     title = kwargs.get("title", cube.name())
     if title:
-        plt.title(title)
+        if isinstance(title, mpl.text.Text):
+            title_text.set_text(title)
+        else:
+            title_text = fig.suptitle(title)
+
+    if animation_output:
+        return fig, ax, mesh, title_text
     return fig
 
 

@@ -460,6 +460,9 @@ class Dataset(ABC):
 
     @cubes.setter
     def cubes(self, new_cubes):
+        assert isinstance(
+            new_cubes, iris.cube.CubeList
+        ), "New cube list must be an iris CubeList (`iris.cube.CubeList`)."
         self.__cubes = new_cubes
 
     @property
