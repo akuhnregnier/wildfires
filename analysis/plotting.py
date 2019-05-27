@@ -21,6 +21,39 @@ from wildfires.logging_config import LOGGING
 logger = logging.getLogger(__name__)
 
 
+def get_cubes_vmin_vmax(cubes, vmin_vmax_percentiles=(10, 90)):
+    """Get vmin and vmax from a list of cubes given two percentiles.
+
+    Args:
+        cubes (iris.cube.CubeList): List of cubes.
+        vmin_vmax_percentiles (tuple or None): The two percentiles, used to set the minimum
+            and maximum values on the colorbar. If `None`, use the minimum and maximum
+            of the data (equivalent to percentiles of (0, 100)). Explicitly passed-in
+            `vmin` and `vmax` parameters take precedence.
+
+    Returns:
+        tuple of float
+
+    """
+    if vmin_vmax_percentiles is None:
+        vmin_vmax_percentiles = (0, 100)
+    limits = []
+    for cube in cubes:
+        if isinstance(cube.data, np.ma.core.MaskedArray):
+            if isinstance(cube.data.mask, np.ndarray):
+                valid_data = cube.data.data[~cube.data.mask]
+            elif cube.data.mask:
+                raise ValueError("All data is masked.")
+            else:
+                valid_data = cube.data.data
+        else:
+            valid_data = cube.data
+
+        limits.append(np.percentile(valid_data, vmin_vmax_percentiles))
+
+    return min(limit[0] for limit in limits), max(limit[1] for limit in limits)
+
+
 def map_model_output(ba_predicted, ba_data, model_name, textsize, coast_linewidth):
     """Plotting of burned area data & predictions.
 
@@ -121,7 +154,10 @@ def cube_plotting(
     coastline_kwargs={},
     dummy_lat_lims=(-90, 90),
     dummy_lon_lims=(-180, 180),
-    **kwargs
+    vmin_vmax_percentiles=(10, 90),
+    projection=ccrs.Robinson(),
+    # projection=ccrs.PlateCarree(),
+    **kwargs,
 ):
     """Pretty plotting.
 
@@ -137,6 +173,11 @@ def cube_plotting(
             argument is not a cube
         dummy_lon_lims: Tuple passed to dummy_lat_lon_cube function in case the input
             argument is not a cube
+        vmin_vmax_percentiles (tuple or None): The two percentiles, used to set the minimum
+            and maximum values on the colorbar. If `None`, use the minimum and maximum
+            of the data (equivalent to percentiles of (0, 100)). Explicitly passed-in
+            `vmin` and `vmax` parameters take precedence.
+        projection: A projection as defined in `cartopy.crs`.
 
         possible kwargs:
             title: str or None of False. If None or False, no title will be plotted.
@@ -178,19 +219,22 @@ def cube_plotting(
     gridlats = cube.coord("latitude").contiguous_bounds()
 
     fig, ax = plt.subplots()
-    ax = plt.axes(projection=ccrs.PlateCarree())
-    # print("Requesting data to plot")
+    ax = plt.axes(projection=projection)
+
+    data_vmin, data_vmax = get_cubes_vmin_vmax([cube], vmin_vmax_percentiles)
+
     plt.pcolormesh(
         gridlons,
         gridlats,
         cube.data,
         cmap=kwargs.get("cmap", "viridis"),
+        # NOTE: This transform argument here may differ from the projection argument.
         transform=ccrs.PlateCarree(),
         rasterized=rasterized,
-        vmin=kwargs.get("vmin"),
-        vmax=kwargs.get("vmax"),
+        vmin=kwargs.get("vmin", data_vmin),
+        vmax=kwargs.get("vmax", data_vmax),
     )
-    ax.coastlines(**coastline_kwargs)
+    ax.coastlines(resolution="110m", **coastline_kwargs)
 
     colorbar_kwargs = {
         "label": kwargs.get("label", str(cube.units)),

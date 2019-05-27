@@ -39,6 +39,10 @@ DATA_DIR = os.path.join(os.path.expanduser("~"), "FIREDATA")
 repo_dir = os.path.join(os.path.dirname(__file__), os.pardir)
 repo = Repo(repo_dir)
 
+# Above this mm/h threshold, a day is a 'wet day'.
+MM_PER_HR_THRES = 0.1 / 24
+M_PER_HR_THRES = MM_PER_HR_THRES / 1000
+
 
 def join_adjacent_intervals(intervals):
     """Join adjacent or overlapping intervals into contiguous intervals.
@@ -337,7 +341,7 @@ class Dataset(ABC):
     # pretty) contained therein are unique to avoid errors later on.
 
     # TODO: Make sure these get overridden by the subclasses, or that every
-    # dataset uses these.
+    # dataset uses these consistently (if defining custom date coordinates).
     calendar = "gregorian"
     time_unit_str = "days since 1970-01-01 00:00:00"
     time_unit = cf_units.Unit(time_unit_str, calendar="gregorian")
@@ -360,7 +364,7 @@ class Dataset(ABC):
 
         """
         if isinstance(other, Dataset):
-            return self.__shallow == other.__shallow
+            return self._shallow == other._shallow
         return NotImplemented
 
     def __len__(self):
@@ -380,20 +384,16 @@ class Dataset(ABC):
         return self.cubes[new_index]
 
     @property
-    def __shallow(self):
+    def _shallow(self):
         """Create a hashable shallow description of the CubeList.
 
         Note:
             Only metadata and coordinates are considered.
-            Takes much longer to compute than __shallow_description.
-
 
         Returns:
-            tuple
+            str
 
         """
-        # This method also carries out sorting if necessary.
-        # TODO: Move sorting of self.cubes into __init__ or enforce it some other way.
         self.variable_names()
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -449,6 +449,10 @@ class Dataset(ABC):
 
     @property
     def cubes(self):
+        # This might happen when assigning self.cubes to the result of
+        # self.read_cache(), for example.
+        if self.__cubes is None:
+            return None
         self.__cubes = iris.cube.CubeList(
             sorted(self.__cubes, key=lambda cube: cube.name())
         )
@@ -457,6 +461,12 @@ class Dataset(ABC):
     @cubes.setter
     def cubes(self, new_cubes):
         self.__cubes = new_cubes
+
+    @property
+    def cube(self):
+        if len(self.cubes) != 1:
+            raise ValueError(f"Expected 1 cube, but found {len(self.cubes)} cubes.")
+        return self.cubes[0]
 
     def copy(self, deep=False):
         """Make a copy.
@@ -1394,6 +1404,168 @@ class CRU(Dataset):
         return self.select_monthly_from_monthly(start, end)
 
 
+class ERA5_TotalPrecipitation(Dataset):
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, "ERA5", "tp")
+        self.cubes = iris.cube.CubeList(
+            [iris.load_cube(os.path.join(self.dir, "*.nc"))]
+        )
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
+class ERA5_DryDayPeriod(Dataset):
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, "ERA5", "tp_daily")
+        self.cubes = self.read_cache()
+        if self.cubes:
+            return
+
+        # Sort so that time is increasing.
+        filenames = sorted(
+            glob.glob(os.path.join(self.dir, "**", "*_daily_mean.nc"), recursive=True)
+        )
+
+        logger.info("Constructing dry day period cube.")
+        dry_day_period_cubes = iris.cube.CubeList()
+
+        prev_dry_day_period = None
+        prev_end = None
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=(
+                    "Collapsing a non-contiguous coordinate. Metadata may not "
+                    "be fully descriptive for 'time'."
+                ),
+            )
+            for filename in tqdm(filenames):
+                raw_cube = iris.load_cube(filename)
+                n_days = raw_cube.shape[0]
+                n_lats = raw_cube.shape[1]
+                n_lons = raw_cube.shape[2]
+
+                # The first time around only, create empty arrays. This will introduce
+                # some negative bias for the first month(s), but this should be
+                # negligible overall (especially since the first year is probably not
+                # being used anyway).
+                if prev_dry_day_period is None:
+                    assert prev_end is None
+                    prev_dry_day_period = np.zeros((n_lats, n_lons), dtype=np.int64)
+                    prev_end = np.zeros((n_lats, n_lons), dtype=np.bool_)
+
+                # Calculate dry days using metre per hour threshold, since the daily
+                # data here is an average of the hourly total precipitation data.
+                dry_days = raw_cube.data < M_PER_HR_THRES
+
+                # Find contiguous blocks in the time dimension where dry_days is True.
+                structure = np.zeros((3, 3, 3), dtype=np.int64)
+                structure[:, 1, 1] = 1
+                labelled = scipy.ndimage.label(dry_days, structure=structure)
+                slices = scipy.ndimage.find_objects(labelled[0])
+
+                dry_day_period = np.zeros((n_lats, n_lons), dtype=np.int64)
+                beginning = np.zeros((n_lats, n_lons), dtype=np.bool_)
+                end = np.zeros_like(beginning)
+
+                for slice_object in slices:
+                    time_slice = slice_object[0]
+                    lat_slice = slice_object[1]
+                    lon_slice = slice_object[2]
+                    assert lat_slice.stop - lat_slice.start == 1
+                    assert lon_slice.stop - lon_slice.start == 1
+
+                    latitude = lat_slice.start
+                    longitude = lon_slice.start
+
+                    period_length = time_slice.stop - time_slice.start
+
+                    if period_length > dry_day_period[latitude, longitude]:
+                        dry_day_period[latitude, longitude] = period_length
+                        if time_slice.start == 0:
+                            beginning[latitude, longitude] = True
+                        else:
+                            beginning[latitude, longitude] = False
+                        if time_slice.stop == n_days:
+                            end[latitude, longitude] = True
+                        else:
+                            end[latitude, longitude] = False
+
+                # Once the data for the current month has been processed, look at the
+                # previous month to see if dry day periods may be joined up.
+                overlap = prev_end & beginning
+                dry_day_period[overlap] += prev_dry_day_period[overlap]
+
+                # Prepare for the next month's analysis.
+                prev_dry_day_period = dry_day_period
+                prev_end = end
+
+                # Create new Cube with the same latitudes and longitudes, and an
+                # averaged time.
+                coords = [
+                    (raw_cube.coord("latitude"), 0),
+                    (raw_cube.coord("longitude"), 1),
+                ]
+
+                # Modify the time coordinate such that it is recorded with
+                # respect to a common date, as opposed to relative to the
+                # beginning of the respective month as is the case for the
+                # cube loaded above.
+
+                # Take the new 'mean' time as the average of the first and last time.
+                min_time = raw_cube.coord("time").cell(0).point
+                max_time = raw_cube.coord("time").cell(-1).point
+                centre_datetime = min_time + ((max_time - min_time) / 2)
+
+                new_time = cf_units.date2num(
+                    centre_datetime, self.time_unit_str, self.calendar
+                )
+                time_coord = iris.coords.DimCoord(
+                    new_time, units=self.time_unit, standard_name="time"
+                )
+
+                dry_day_period_cube = iris.cube.Cube(
+                    dry_day_period,
+                    dim_coords_and_dims=coords,
+                    units=cf_units.Unit("days"),
+                    var_name="dry_day_period",
+                    aux_coords_and_dims=[(time_coord, None)],
+                )
+                dry_day_period_cube.units = cf_units.Unit("days")
+
+                dry_day_period_cubes.append(dry_day_period_cube)
+
+        self.cubes = iris.cube.CubeList([dry_day_period_cubes.merge_cube()])
+        self.write_cache()
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
+class ERA5_CAPEPrecip(Dataset):
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, "ERA5", "CAPE_P")
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+        files = sorted(glob.glob(os.path.join(self.dir, "**", "*.nc"), recursive=True))
+        raw_cubes = load_cubes(files)
+        self.cubes = iris.cube.CubeList([raw_cubes.merge_cube()])
+        self.write_cache()
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
 class ESA_CCI_Fire(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-Fire_burnedarea")
@@ -1882,13 +2054,6 @@ class GSMaP_dry_day_period(Dataset):
         # Sort so that time is increasing.
         filenames = sorted(glob.glob(os.path.join(self.dir, "**", "*.nc")))
 
-        calendar = "gregorian"
-        time_unit_str = "days since 1970-01-01 00:00:00"
-        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
-
-        # Above this mm/h threshold, a day is a 'wet day'.
-        mm_per_hr_threshold = 0.1 / 24
-
         logger.info("Constructing dry day period cube.")
         dry_day_period_cubes = iris.cube.CubeList()
 
@@ -1928,9 +2093,9 @@ class GSMaP_dry_day_period(Dataset):
                 # the raw daily precipitation data.
 
                 # Calculate dry days.
-                dry_days = raw_cube.data < mm_per_hr_threshold
+                dry_days = raw_cube.data < MM_PER_HR_THRES
 
-                # Find contiguous blocks where dry_days is True.
+                # Find contiguous blocks in the time dimension where dry_days is True.
                 structure = np.zeros((3, 3, 3), dtype=np.int64)
                 structure[:, 1, 1] = 1
                 labelled = scipy.ndimage.label(dry_days, structure=structure)
@@ -1989,9 +2154,11 @@ class GSMaP_dry_day_period(Dataset):
                 max_time = raw_cube.coord("time").cell(-1).point
                 centre_datetime = min_time + ((max_time - min_time) / 2)
 
-                new_time = cf_units.date2num(centre_datetime, time_unit_str, calendar)
+                new_time = cf_units.date2num(
+                    centre_datetime, self.time_unit_str, self.calendar
+                )
                 time_coord = iris.coords.DimCoord(
-                    new_time, units=time_unit, standard_name="time"
+                    new_time, units=self.time_unit, standard_name="time"
                 )
 
                 dry_day_period_cube = iris.cube.Cube(
@@ -2038,9 +2205,6 @@ class GSMaP_precipitation(Dataset):
         time_unit_str = "days since 1970-01-01 00:00:00"
         time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
 
-        # Above this mm/h threshold, a day is a 'wet day'.
-        mm_per_hr_threshold = 0.1 / 24
-
         logger.info("Constructing average precipitation and dry days cubes.")
         monthly_average_cubes = iris.cube.CubeList()
         dry_days_cubes = iris.cube.CubeList()
@@ -2078,7 +2242,7 @@ class GSMaP_precipitation(Dataset):
 
                 # Calculate dry day statistics.
 
-                dry_days_data = np.sum(raw_cube.data < mm_per_hr_threshold, axis=0)
+                dry_days_data = np.sum(raw_cube.data < MM_PER_HR_THRES, axis=0)
 
                 coords = [
                     (monthly_cube.coord("latitude"), 0),
@@ -2457,38 +2621,7 @@ class Thurner_AGB(Dataset):
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",
-                message=(
-                    "Ignoring netCDF variable 'biomass_totalag' invalid units"
-                    r" 'kg\[C]/m2'"
-                ),
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message=(
-                    "Ignoring netCDF variable 'biomass_branches' invalid units"
-                    r" 'kg\[C]/m2'"
-                ),
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message=(
-                    "Ignoring netCDF variable 'biomass_foliage' invalid units"
-                    r" 'kg\[C]/m2'"
-                ),
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message=(
-                    "Ignoring netCDF variable 'biomass_roots' invalid units"
-                    r" 'kg\[C]/m2'"
-                ),
-            )
-            warnings.filterwarnings(
-                "ignore",
-                message=(
-                    "Ignoring netCDF variable 'biomass_stem' invalid units"
-                    r" 'kg\[C]/m2'"
-                ),
+                message=(r"Ignoring netCDF variable.*invalid units 'kg\[C]/m2'"),
             )
 
             self.cubes = iris.load(os.path.join(self.dir, "*.nc"))
