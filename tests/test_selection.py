@@ -27,7 +27,6 @@ memory = Memory(location=os.environ.get("TMPDIR", "/tmp"))
 
 class DummyDataset(wildfire_datasets.Dataset):
     def __init__(self):
-
         data = np.random.random((100, 100, 100))
         data = np.ma.MaskedArray(data, mask=data > 0.5)
 

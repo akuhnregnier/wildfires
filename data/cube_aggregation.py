@@ -34,12 +34,12 @@ from joblib import Memory
 
 import wildfires.data.datasets as wildfire_datasets
 from wildfires.analysis.processing import fill_cube
-from wildfires.data.datasets import DATA_DIR, dataset_times
+from wildfires.data.datasets import DATA_DIR, data_is_available, dataset_times
 from wildfires.logging_config import LOGGING
 from wildfires.utils import match_shape
 
 logger = logging.getLogger(__name__)
-memory = Memory(location=DATA_DIR, verbose=1)
+memory = Memory(location=DATA_DIR if data_is_available() else None, verbose=1)
 
 # TODO: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
 
@@ -176,8 +176,7 @@ class Datasets:
     to be unique amongst all raw and pretty dataset names in the selection.
 
     Examples:
-        >>> from .datasets import HYDE
-        >>> from ..tests.test_datasets import data_is_available
+        >>> from .datasets import HYDE, data_is_available
         >>> instance_sel = Datasets()
         >>> if data_is_available:
         ...     sel = Datasets().add(HYDE())
@@ -806,10 +805,9 @@ class Datasets:
             logger.warning("Duplicated variable names: {}".format(duplicated_variables))
             logger.warning("Duplicated datasets: {}".format(duplicated_datasets))
             raise ValueError(
-                "Raw and pretty variable names are not unique ({} duplicate(s)). Use "
-                "dictionaries for selection. or remove some of the datasets {}.".format(
-                    n_duplicates, duplicated_datasets
-                )
+                f"Raw and pretty variable names are not unique ({n_duplicates} "
+                "duplicate(s)). Use dictionaries for selection, or remove some "
+                f"of the datasets '{duplicated_datasets}'."
             )
 
         removal_dict = contents.copy()

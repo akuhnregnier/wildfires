@@ -44,6 +44,16 @@ MM_PER_HR_THRES = 0.1 / 24
 M_PER_HR_THRES = MM_PER_HR_THRES / 1000
 
 
+def data_is_available():
+    """Check if DATA_DIR exists.
+
+    Returns:
+        bool: True if the data directory exists.
+
+    """
+    return os.path.exists(DATA_DIR)
+
+
 def join_adjacent_intervals(intervals):
     """Join adjacent or overlapping intervals into contiguous intervals.
 
@@ -176,20 +186,21 @@ def data_map_plot(
 
 
 def load_cubes(files, n=None):
-    """Similar to iris.load(), but seems to scale much better with the
-    number of files to load.
+    """Similar to iris.load(), but seems to scale much better.
+
+    The better scaling is partly due to the fact that this function does not try to
+    merge any cubes.
+
+    This function also solves the problem that the order in which iris.load() loads
+    cubes into a CubeList is not constant, varying from one run to the next
+    (presumably due to some random seed).
 
     """
-    # TODO: Avoid double sorting
-    # NOTE: The order in which iris.load() loads cubes into a CubeList is
-    # not constant but varies from one execution to the next (presumably
-    # due to a random seed of some sort)!
-
     # Make sure files are sorted so that times increase.
     files.sort()
     cube_list = iris.cube.CubeList()
     logger.info("Loading files.")
-    for f in tqdm(files[slice(0, n, 1)]):
+    for f in tqdm(files[slice(0, n)]):
         cube_list.extend(iris.load(f))
     return cube_list
 
@@ -358,15 +369,14 @@ def monthly_constraint(
 
 
 class Dataset(ABC):
-    # TODO: When adding / accessing cubes, make sure that the variables names (raw and
-    # pretty) contained therein are unique to avoid errors later on.
-
     # TODO: Make sure these get overridden by the subclasses, or that every
     # dataset uses these consistently (if defining custom date coordinates).
     calendar = "gregorian"
     time_unit_str = "days since 1970-01-01 00:00:00"
     time_unit = cf_units.Unit(time_unit_str, calendar="gregorian")
+
     pretty_variable_names = dict()
+    _pretty = None
 
     def __str__(self):
         return "{} ({}, {}, {})".format(
@@ -468,6 +478,28 @@ class Dataset(ABC):
                     cubelist_hash_items += [str(key) + str(value)]
         return "\n".join(cubelist_hash_items)
 
+    def __check_cubes(self):
+        """Functions that should be run prior to accessing data.
+
+        Cubes are sorted by name and the uniqueness of the variables names is
+        verified.
+
+        """
+        self.__cubes = iris.cube.CubeList(
+            sorted(self.__cubes, key=lambda cube: cube.name())
+        )
+
+        raw_names = tuple(cube.name() for cube in self.__cubes)
+        all_names = []
+        for raw_name in raw_names:
+            all_names.append(raw_name)
+            if raw_name in self.pretty_variable_names:
+                all_names.append(self.pretty_variable_names[raw_name])
+
+        assert len(set(all_names)) == len(
+            all_names
+        ), "All variable names should be unique."
+
     @property
     def cubes(self):
         # This might happen when assigning self.cubes to the result of
@@ -475,11 +507,9 @@ class Dataset(ABC):
         # FIXME: Resolve this hack by changing the way the result of self.read_cache()
         # FIXME: is used.
         if self.__cubes is None:
-            logger.warning(f"Cubes is None.")
+            logger.warning("Cubes is None.")
             return None
-        self.__cubes = iris.cube.CubeList(
-            sorted(self.__cubes, key=lambda cube: cube.name())
-        )
+        self.__check_cubes()
         return self.__cubes
 
     @cubes.setter
@@ -561,19 +591,28 @@ class Dataset(ABC):
 
     def names(self, which="all", squeeze=True):
         if which == "all":
-            return (self.name, getattr(self, "pretty", self.name))
+            return (self.name, self.pretty)
         if which == "raw":
             if squeeze:
                 return self.name
             return (self.name,)
         if which == "pretty":
             if squeeze:
-                return getattr(self, "pretty", self.name)
-            return (getattr(self, "pretty", self.name),)
+                return self.pretty
+            return (self.pretty,)
         raise ValueError("Unknown format: '{}'.".format(which))
 
+    @property
+    def pretty(self):
+        if self._pretty is None:
+            return self.name
+        return self._pretty
+
+    @pretty.setter
+    def pretty(self, value):
+        self._pretty = value
+
     def variable_names(self, which="all"):
-        # Cubes will be sorted by name using the cubes getter method.
         raw_names = tuple(cube.name() for cube in self.cubes)
 
         if which == "all":
@@ -887,6 +926,8 @@ class Dataset(ABC):
 
 
 class AvitabileAGB(Dataset):
+    _pretty = "Avitabile AGB"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "Avitabile_AGB")
         self.cubes = iris.cube.CubeList(
@@ -900,6 +941,8 @@ class AvitabileAGB(Dataset):
 
 
 class AvitabileThurnerAGB(Dataset):
+    _pretty = "Avitabile Thurner AGB"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "AvitabileThurner-merged_AGB")
         self.cubes = iris.cube.CubeList(
@@ -917,6 +960,8 @@ class AvitabileThurnerAGB(Dataset):
 
 
 class CarvalhaisGPP(Dataset):
+    _pretty = "Carvalhais GPP"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "Carvalhais_VegC-TotalC-Tau")
         self.cubes = iris.cube.CubeList(
@@ -943,6 +988,8 @@ class CHELSA(Dataset):
     easily construct a large iris Cube containing all the data.
 
     """
+
+    _pretty = "CHELSA"
 
     def __init__(self, process_slice=slice(None)):
         """Initialise the cubes.
@@ -1158,6 +1205,8 @@ class Copernicus_SWI(Dataset):
     2019-03.
 
     """
+
+    _pretty = "Copernicus SWI"
 
     def __init__(self, process_slice=slice(None)):
         """Initialise the cubes.
@@ -1405,6 +1454,9 @@ class Copernicus_SWI(Dataset):
 
 
 class CRU(Dataset):
+
+    _pretty = "CRU"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "CRU")
         # Ignore warning regarding cloud cover units - they are fixed below.
@@ -1441,6 +1493,8 @@ class CRU(Dataset):
 
 
 class ERA5_TotalPrecipitation(Dataset):
+    _pretty = "ERA5 Total Precipitation"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ERA5", "tp")
         self.cubes = iris.cube.CubeList(
@@ -1454,6 +1508,8 @@ class ERA5_TotalPrecipitation(Dataset):
 
 
 class ERA5_DryDayPeriod(Dataset):
+    _pretty = "ERA5 Dry Day Period"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ERA5", "tp_daily")
         self.cubes = self.read_cache()
@@ -1585,6 +1641,8 @@ class ERA5_DryDayPeriod(Dataset):
 
 
 class ERA5_CAPEPrecip(Dataset):
+    _pretty = "ERA5 Cape x Precip"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ERA5", "CAPE_P")
         self.cubes = self.read_cache()
@@ -1603,6 +1661,8 @@ class ERA5_CAPEPrecip(Dataset):
 
 
 class ESA_CCI_Fire(Dataset):
+    _pretty = "ESA CCI Fire"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-Fire_burnedarea")
         self.cubes = iris.cube.CubeList(
@@ -1624,6 +1684,8 @@ class ESA_CCI_Fire(Dataset):
 
 
 class ESA_CCI_Landcover(Dataset):
+    _pretty = "ESA CCI Landcover"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-LC_landcover", "0d25_landcover")
 
@@ -1706,6 +1768,8 @@ class ESA_CCI_Landcover(Dataset):
 
 
 class ESA_CCI_Landcover_PFT(Dataset):
+    _pretty = "ESA CCI Land Cover PFT"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-LC_landcover", "0d25_lc2pft")
         self.cubes = iris.load(os.path.join(self.dir, "*.nc"))
@@ -1735,6 +1799,8 @@ class ESA_CCI_Landcover_PFT(Dataset):
 
 
 class ESA_CCI_Soilmoisture(Dataset):
+    _pretty = "ESA CCI Soil Moisture"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-SM_soilmoisture")
         self.cubes = iris.load(os.path.join(self.dir, "*.nc"))
@@ -1746,6 +1812,8 @@ class ESA_CCI_Soilmoisture(Dataset):
 
 
 class ESA_CCI_Soilmoisture_Daily(Dataset):
+    _pretty = "ESA CCI Daily Soil Moisture"
+
     def __init__(self):
         raise NotImplementedError("Use ESA_CCI_Soilmoisture Dataset for monthly data!")
         self.dir = os.path.join(DATA_DIR, "soil-moisture", "daily_files", "COMBINED")
@@ -1793,6 +1861,8 @@ class GFEDv4(Dataset):
     """Without small fires.
 
     """
+
+    _pretty = "GFED4"
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "gfed4", "data")
@@ -1886,6 +1956,8 @@ class GFEDv4s(Dataset):
 
     """
 
+    _pretty = "GFED4s"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "gfed4", "data")
 
@@ -1976,6 +2048,8 @@ class GFEDv4s(Dataset):
 
 
 class GlobFluo_SIF(Dataset):
+    _pretty = "Glob Fluo SIF"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "GlobFluo_SIF")
         self.cubes = iris.cube.CubeList(
@@ -2008,6 +2082,8 @@ class GlobFluo_SIF(Dataset):
 
 
 class GPW_v4_pop_dens(Dataset):
+    _pretty = "GPW4 Pop Density"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "GPW_v4_pop_dens")
         netcdf_dataset = netCDF4.Dataset(glob.glob(os.path.join(self.dir, "*.nc"))[0])
@@ -2070,6 +2146,8 @@ class GSMaP_dry_day_period(Dataset):
     could also be implemented in post-processing.
 
     """
+
+    _pretty = "GSMaP Dry Day Period"
 
     def __init__(self, times="00Z-23Z"):
         self.dir = os.path.join(
@@ -2218,6 +2296,8 @@ class GSMaP_dry_day_period(Dataset):
 
 
 class GSMaP_precipitation(Dataset):
+    _pretty = "GSMaP Precipitation"
+
     def __init__(self, times="00Z-23Z"):
         self.dir = os.path.join(
             DATA_DIR,
@@ -2308,6 +2388,8 @@ class GSMaP_precipitation(Dataset):
 
 
 class HYDE(Dataset):
+    _pretty = "HYDE"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "HYDE")
 
@@ -2398,6 +2480,8 @@ class HYDE(Dataset):
 
 
 class LIS_OTD_lightning_climatology(Dataset):
+    _pretty = "LIS/OTD Climatology"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "LIS_OTD_lightning_climatology")
         self.cubes = iris.cube.CubeList(
@@ -2517,6 +2601,8 @@ class LIS_OTD_lightning_climatology(Dataset):
 
 
 class LIS_OTD_lightning_time_series(Dataset):
+    _pretty = "LIS/OTD Time Series"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "LIS_OTD_lightning_time_series")
 
@@ -2581,6 +2667,8 @@ class LIS_OTD_lightning_time_series(Dataset):
 
 
 class Liu_VOD(Dataset):
+    _pretty = "Liu VOD"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "Liu_VOD")
         self.cubes = iris.cube.CubeList(
@@ -2613,6 +2701,8 @@ class Liu_VOD(Dataset):
 
 
 class MOD15A2H_LAI_fPAR(Dataset):
+    _pretty = "MOD15A2H"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "MOD15A2H_LAI-fPAR")
         self.cubes = iris.load(os.path.join(self.dir, "*.nc"))
@@ -2636,6 +2726,8 @@ class MOD15A2H_LAI_fPAR(Dataset):
 
 
 class Simard_canopyheight(Dataset):
+    _pretty = "Simard Canopy Height"
+
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "Simard_canopyheight")
         self.cubes = iris.cube.CubeList(
@@ -2649,6 +2741,7 @@ class Simard_canopyheight(Dataset):
 
 
 class Thurner_AGB(Dataset):
+    _pretty = "Thurner AGB"
     # TODO: Look at data values - seems like there is a major issue there!
 
     def __init__(self):

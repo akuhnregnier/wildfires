@@ -11,12 +11,12 @@ import requests
 from bs4 import BeautifulSoup
 from joblib import Memory
 
-from wildfires.data.datasets import DATA_DIR
+from wildfires.data.datasets import DATA_DIR, data_is_available
 from wildfires.logging_config import LOGGING
 
 logger = logging.getLogger(__name__)
 URL = "https://confluence.ecmwf.int/display/CKB/ERA5+data+documentation"
-memory = Memory(location=DATA_DIR, verbose=0)
+memory = Memory(location=DATA_DIR if data_is_available() else None, verbose=0)
 
 
 @memory.cache

@@ -1,74 +1,61 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
 from copy import deepcopy
-from datetime import datetime
 
 import cf_units
 import iris
 import numpy as np
 import pytest
-from dateutil.relativedelta import relativedelta
 from iris.time import PartialDateTime
 
 import wildfires.data.datasets as wildfire_datasets
-from wildfires.data.datasets import DATA_DIR, get_centres
-
-
-def data_is_available():
-    """Check if DATA_DIR exists.
-
-    Returns:
-        bool
-
-    """
-    return os.path.exists(DATA_DIR)
-
+from wildfires.data.cube_aggregation import Datasets
+from wildfires.data.datasets import (
+    DATA_DIR,
+    data_is_available,
+    dummy_lat_lon_cube,
+    get_centres,
+)
 
 data_availability = pytest.mark.skipif(
     not data_is_available(), reason="Data directory is unavailable."
 )
 
 
-class DummyDataset(wildfire_datasets.Dataset):
-    def __init__(self):
+class DummyDataset2(wildfire_datasets.Dataset):
+    pretty = "Dummy2"
+    pretty_variable_names = {"VarA": "A2", "VarB": "B2"}
 
+    def __init__(self):
         data = np.random.random((100, 100, 100))
         data = np.ma.MaskedArray(data, mask=data > 0.5)
 
-        latitudes = iris.coords.DimCoord(
-            get_centres(np.linspace(-90, 90, data.shape[1] + 1)),
-            standard_name="latitude",
-            units="degrees",
-        )
-        longitudes = iris.coords.DimCoord(
-            get_centres(np.linspace(-180, 180, data.shape[2] + 1)),
-            standard_name="longitude",
-            units="degrees",
+        self.cubes = iris.cube.CubeList(
+            [
+                dummy_lat_lon_cube(data, units=cf_units.Unit("1"), long_name="VarA"),
+                dummy_lat_lon_cube(data, units=cf_units.Unit("1"), long_name="VarB"),
+            ]
         )
 
-        calendar = "gregorian"
-        time_unit_str = "days since 1970-01-01 00:00:00"
-        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
 
-        datetimes = [datetime(2000, 1, 1)]
-        while len(datetimes) < 100:
-            datetimes.append(datetimes[-1] + relativedelta(months=+1))
 
-        time_coord = iris.coords.DimCoord(
-            cf_units.date2num(datetimes, time_unit_str, calendar),
-            standard_name="time",
-            units=time_unit,
+class DummyDataset(wildfire_datasets.Dataset):
+    def __init__(self):
+        data = np.random.random((100, 100, 100))
+        data = np.ma.MaskedArray(data, mask=data > 0.5)
+
+        self.cubes = iris.cube.CubeList(
+            [
+                dummy_lat_lon_cube(
+                    data, units=cf_units.Unit("1"), long_name="A" + self.name
+                )
+            ]
         )
-        coords = [(time_coord, 0), (latitudes, 1), (longitudes, 2)]
-        cube = iris.cube.Cube(
-            data,
-            dim_coords_and_dims=coords,
-            units=cf_units.Unit("1"),
-            long_name="A" + self.name,
-        )
-        self.cubes = iris.cube.CubeList([cube])
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
@@ -109,3 +96,57 @@ def test_equality():
 def test_sorting(big_dataset):
     sorted_cube_names = tuple(sorted(cube.name() for cube in big_dataset))
     assert sorted_cube_names == tuple(cube.name() for cube in big_dataset)
+
+
+def test_pretty_names():
+    datasets = Datasets(DummyDataset2())
+    assert datasets.get("all", "all") == {
+        ("DummyDataset2", "Dummy2"): (("VarA", "A2"), ("VarB", "B2"))
+    }
+
+    dummy3 = DummyDataset2()
+    dummy3.pretty = "Dummy3"
+
+    with pytest.raises(
+        ValueError, match="Matching datasets.*DummyDataset2.*DummyDataset2.*"
+    ):
+        datasets.add(dummy3)
+
+    assert datasets.select_datasets("DummyDataset2", inplace=False) == datasets
+    assert datasets.select_datasets("Dummy2", inplace=False) == datasets
+    assert datasets.select_variables(("B2", "A2"), inplace=False) == datasets
+    assert datasets.select_variables(("VarB", "A2"), inplace=False) == datasets
+    assert datasets.select_variables(("B2", "VarA"), inplace=False) == datasets
+
+
+def test_duplication():
+    class DummyDataset(wildfire_datasets.Dataset):
+        pretty = "Dummy"
+        pretty_variable_names = {"VarA": "A2", "VarB": "B2", "VarC": "B2"}
+
+        def __init__(self):
+            data = np.random.random((100, 100, 100))
+            data = np.ma.MaskedArray(data, mask=data > 0.5)
+
+            self.cubes = iris.cube.CubeList(
+                [
+                    dummy_lat_lon_cube(
+                        data, units=cf_units.Unit("1"), long_name="VarA"
+                    ),
+                    dummy_lat_lon_cube(
+                        data, units=cf_units.Unit("1"), long_name="VarB"
+                    ),
+                    dummy_lat_lon_cube(
+                        data, units=cf_units.Unit("1"), long_name="VarC"
+                    ),
+                ]
+            )
+
+        def get_monthly_data(
+            self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+        ):
+            return self.select_monthly_from_monthly(start, end)
+
+    # This error is only raised when the `cubes` property is accessed.
+    with pytest.raises(AssertionError, match="All variable names should be unique."):
+        DummyDataset().cubes
