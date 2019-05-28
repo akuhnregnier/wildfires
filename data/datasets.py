@@ -101,6 +101,18 @@ def join_adjacent_intervals(intervals):
 
 
 def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180), **kwargs):
+    """Construct a cube from data given certain assumptions and optional arguments.
+
+    Args:
+        lat_lims (2-tuple):
+        lon_lims (2-tuple):
+        kwargs:
+            Of note are:
+                - dim_coords_and_dims: If supplied, will be use to initialise
+                      coordinates instead of `lat_lims`, `lon_lims` and a simple
+                      numerical time coordinate.
+
+    """
     n_dims = len(data.shape)
     assert n_dims in {2, 3}
     new_latitudes = get_centres(np.linspace(*lat_lims, data.shape[0 + n_dims % 2] + 1))
@@ -120,7 +132,16 @@ def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180), **kwargs)
             (new_lat_coord, 1),
             (new_lon_coord, 2),
         ]
-    return iris.cube.Cube(data, dim_coords_and_dims=grid_coords, **kwargs)
+
+    kwargs_mod = kwargs.copy()
+    if "dim_coords_and_dims" in kwargs_mod:
+        del kwargs_mod["dim_coords_and_dims"]
+
+    return iris.cube.Cube(
+        data,
+        dim_coords_and_dims=kwargs.get("dim_coords_and_dims", grid_coords),
+        **kwargs_mod,
+    )
 
 
 def data_map_plot(
@@ -451,7 +472,10 @@ class Dataset(ABC):
     def cubes(self):
         # This might happen when assigning self.cubes to the result of
         # self.read_cache(), for example.
+        # FIXME: Resolve this hack by changing the way the result of self.read_cache()
+        # FIXME: is used.
         if self.__cubes is None:
+            logger.warning(f"Cubes is None.")
             return None
         self.__cubes = iris.cube.CubeList(
             sorted(self.__cubes, key=lambda cube: cube.name())
@@ -460,10 +484,18 @@ class Dataset(ABC):
 
     @cubes.setter
     def cubes(self, new_cubes):
-        assert isinstance(
-            new_cubes, iris.cube.CubeList
-        ), "New cube list must be an iris CubeList (`iris.cube.CubeList`)."
-        self.__cubes = new_cubes
+        # This might happen when assigning self.cubes to the result of
+        # self.read_cache(), for example.
+        # FIXME: Resolve this hack by changing the way the result of self.read_cache()
+        # FIXME: is used.
+        if new_cubes is None:
+            logger.warning(f"Assigning None to cubes.")
+            self.__cubes = None
+        else:
+            assert isinstance(
+                new_cubes, iris.cube.CubeList
+            ), "New cube list must be an iris CubeList (`iris.cube.CubeList`)."
+            self.__cubes = new_cubes
 
     @property
     def cube(self):

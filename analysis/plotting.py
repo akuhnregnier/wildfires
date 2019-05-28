@@ -21,7 +21,7 @@ from wildfires.logging_config import LOGGING
 logger = logging.getLogger(__name__)
 
 
-def get_cubes_vmin_vmax(cubes, vmin_vmax_percentiles=(10, 90)):
+def get_cubes_vmin_vmax(cubes, vmin_vmax_percentiles=(2.5, 97.5)):
     """Get vmin and vmax from a list of cubes given two percentiles.
 
     Args:
@@ -154,7 +154,7 @@ def cube_plotting(
     coastline_kwargs={},
     dummy_lat_lims=(-90, 90),
     dummy_lon_lims=(-180, 180),
-    vmin_vmax_percentiles=(10, 90),
+    vmin_vmax_percentiles=(2.5, 97.5),
     projection=ccrs.Robinson(),
     animation_output=False,
     ax=None,
@@ -162,6 +162,7 @@ def cube_plotting(
     new_colorbar=True,
     title_text=None,
     auto_log_title=False,
+    transform_vmin_vmax=False,
     **kwargs,
 ):
     """Pretty plotting.
@@ -192,7 +193,9 @@ def cube_plotting(
         title_text (matplotlib.text.Text): Title text.
         auto_log_title (bool): If `auto_log_title`, prepend "log " to `title` if
             `log`.
-
+        transform_vmin_vmax (bool): If `transform_vmin_vmax` and `log`, apply the log
+            function used to transform the data to `vmin` and `vmax` (in `kwargs`)
+            as well.
         possible kwargs:
             title: str or None of False. If None or False, no title will be plotted.
             cmap: Example: 'viridis', 'Reds', 'Reds_r', etc...
@@ -223,6 +226,13 @@ def cube_plotting(
         future_name = "log " + cube.long_name
         cube = iris.analysis.maths.log(cube)
         cube.long_name = future_name
+        if transform_vmin_vmax:
+            for limit in ("vmin", "vmax"):
+                if limit in kwargs:
+                    if np.isclose(kwargs[limit], 0) or kwargs[limit] < 0:
+                        kwargs[limit] = None
+                    else:
+                        kwargs[limit] = np.log(kwargs[limit])
 
     for coord_name in ["latitude", "longitude"]:
         if not cube.coord(coord_name).has_bounds():

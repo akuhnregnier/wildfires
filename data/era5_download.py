@@ -1784,16 +1784,16 @@ def monthly_averaging_example():
 def cape_precipitation():
     requests = retrieve(
         variable=["cape", "tp"],
-        start=PartialDateTime(1995, 1, 1),
-        end=PartialDateTime(2015, 1, 1),
+        start=PartialDateTime(1990, 1, 1),
+        end=PartialDateTime(2019, 1, 1),
     )
     retrieval_processing(
         requests,
         processing_class=CAPEPrecipWorker,
-        n_threads=12,
+        n_threads=24,
         delete_processed=True,
         overwrite=False,
-        soft_filesize_limit=50,
+        soft_filesize_limit=150,
     )
 
 
@@ -1841,4 +1841,4 @@ def download_daily_precipitation():
 
 if __name__ == "__main__":
     logging.config.dictConfig(LOGGING)
-    download_daily_precipitation()
+    cape_precipitation()
