@@ -1229,14 +1229,6 @@ class Copernicus_SWI(Dataset):
         self.cubes = self.read_cache()
         # If a CubeList has been loaded successfully, exit __init__
         if self.cubes:
-            self.cubes = iris.cube.CubeList(
-                [
-                    c
-                    for c in self.cubes
-                    if c.attributes["processing_mode"] == "Reprocessing"
-                ]
-            )
-            logger.debug("Found Copernicus cubes, returning.")
             return
 
         # The raw data is daily data, which has to be averaged to yield
@@ -1435,9 +1427,11 @@ class Copernicus_SWI(Dataset):
 
         logger.debug("Merging final cubes.")
         # TODO: Verify that this works as expected.
-        self.cubes = monthly_cubes.merge()
+        merged_cubes = monthly_cubes.merge()
         self.cubes = iris.cube.CubeList(
-            [c for c in self.cubes if c.attributes["processing_mode"] == "Reprocessing"]
+            cube
+            for cube in merged_cubes
+            if cube.attributes["processing_mode"] == "Reprocessing"
         )
 
         logger.debug("Finished merging.")
