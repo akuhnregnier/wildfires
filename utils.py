@@ -323,7 +323,7 @@ def get_unmasked(array, strict=True):
     if not strict:
         accepted_types.append(np.ndarray)
 
-    if not isinstance(array, accepted_types):
+    if not isinstance(array, tuple(accepted_types)):
         raise TypeError(f"The input array had an invalid type '{type(array)}'.")
 
     if not strict and isinstance(array, np.ndarray):

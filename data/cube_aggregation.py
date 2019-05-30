@@ -321,6 +321,11 @@ class Datasets:
             cube for dataset in self.datasets for cube in dataset.cubes
         )
 
+    @property
+    def cube(self):
+        """Return a single cube, if only one cube is stored in the collection."""
+        return self.dataset.cube
+
     def get_index(self, dataset_name, full_index=False):
         """Get dataset index from a dataset name.
 

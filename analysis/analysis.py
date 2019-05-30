@@ -148,11 +148,10 @@ if __name__ == "__main__":
     # Apply masks.
     ###################################################################################
 
-    masks_to_apply = (lat_mask, land_mask)
-
     # Make a deep copy so that the original cubes are preserved.
     masked_datasets = mean_datasets.copy(deep=True)
 
+    masks_to_apply = (lat_mask, land_mask)
     for cube in masked_datasets.cubes:
         cube.data.mask |= reduce(np.logical_or, masks_to_apply)
 
@@ -160,13 +159,13 @@ if __name__ == "__main__":
     # Histograms of all the datasets.
     ###################################################################################
 
-    n_cols = 4
     n_plots = len(masked_datasets.cubes)
+    n_cols = int(np.ceil(np.sqrt(n_plots)))
 
     mpl.rcParams["figure.figsize"] = (20, 12)
 
     fig, axes = plt.subplots(
-        nrows=int(np.ceil(float(n_plots) / n_cols)), ncols=n_cols, squeeze=False
+        nrows=int(np.ceil(n_plots / n_cols)), ncols=n_cols, squeeze=False
     )
     axes = axes.flatten()
     for (i, (ax, feature)) in enumerate(zip(axes, range(n_plots))):
@@ -263,6 +262,8 @@ if __name__ == "__main__":
         "monthly burned area", inplace=False
     ).cube
     endog_data = pd.Series(get_unmasked(burned_area_cube.data))
+    master_mask = burned_area_cube.data.mask
+
     names = []
     data = []
     for cube in filled_datasets.cubes:
@@ -291,6 +292,7 @@ if __name__ == "__main__":
 
     # Carry out square root transformation
     sqrt_var_names = ["Combined Flash Rate Monthly Climatology", "popd"]
+
     for name in sqrt_var_names:
         assert np.all(exog_data[name] >= 0), "{:}".format(name)
         exog_data["sqrt " + name] = np.sqrt(exog_data[name])
@@ -372,17 +374,16 @@ if __name__ == "__main__":
         plt.colorbar()
 
     # Data generation.
-    global_mask = burned_area_cube.data.mask
 
     # Predicted burned area values.
-    ba_predicted = np.zeros_like(global_mask, dtype=np.float64)
-    ba_predicted[~global_mask] = model_results.fittedvalues
-    ba_predicted = np.ma.MaskedArray(ba_predicted, mask=global_mask)
+    ba_predicted = np.zeros_like(master_mask, dtype=np.float64)
+    ba_predicted[~master_mask] = model_results.fittedvalues
+    ba_predicted = np.ma.MaskedArray(ba_predicted, mask=master_mask)
 
     # Observed values.
-    ba_data = np.zeros_like(global_mask, dtype=np.float64)
-    ba_data[~global_mask] = endog_data.values
-    ba_data = np.ma.MaskedArray(ba_data, mask=global_mask)
+    ba_data = np.zeros_like(master_mask, dtype=np.float64)
+    ba_data[~master_mask] = endog_data.values
+    ba_data = np.ma.MaskedArray(ba_data, mask=master_mask)
 
     # Plotting of burned area data & predictions:
     #  - ba_predicted: predicted burned area
@@ -467,15 +468,13 @@ if __name__ == "__main__":
     print("R2 train:", regr.score(X_train, y_train))
     print("R2 test:", regr.score(X_test, y_test))
 
-    global_mask = burned_area_cube.data.mask
+    ba_predicted = np.zeros_like(master_mask, dtype=np.float64)
+    ba_predicted[~master_mask] = regr.predict(exog_data2)
+    ba_predicted = np.ma.MaskedArray(ba_predicted, mask=master_mask)
 
-    ba_predicted = np.zeros_like(global_mask, dtype=np.float64)
-    ba_predicted[~global_mask] = regr.predict(exog_data2)
-    ba_predicted = np.ma.MaskedArray(ba_predicted, mask=global_mask)
-
-    ba_data = np.zeros_like(global_mask, dtype=np.float64)
-    ba_data[~global_mask] = endog_data
-    ba_data = np.ma.MaskedArray(ba_data, mask=global_mask)
+    ba_data = np.zeros_like(master_mask, dtype=np.float64)
+    ba_data[~master_mask] = endog_data
+    ba_data = np.ma.MaskedArray(ba_data, mask=master_mask)
 
     # Plotting of burned area data & predictions:
     #  - ba_predicted: predicted burned area

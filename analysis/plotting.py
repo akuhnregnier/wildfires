@@ -69,7 +69,9 @@ class FigureSaver:
             self.directory = directory
 
         self.filenames = (filename,) if isinstance(filename, str) else filename
-        self.directories = (directory,) if isinstance(directory, str) else directory
+        self.directories = (
+            (self.directory,) if isinstance(self.directory, str) else self.directory
+        )
 
         if len(self.directories) != 1 and len(self.directories) != len(self.filenames):
             raise ValueError(
