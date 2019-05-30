@@ -775,6 +775,8 @@ class Dataset(ABC):
 
     @staticmethod
     def date_order_check(start, end):
+        if start is None and end is None:
+            return
         if not all(
             hasattr(date, required_type) and getattr(date, required_type) is not None
             for date in (start, end)
@@ -873,7 +875,7 @@ class Dataset(ABC):
             units=time_unit,
         )
 
-        new_cubes = []
+        new_cubes = iris.cube.CubeList()
         for cube in self.cubes:
             new_data = np.ma.vstack([cube.data[np.newaxis] for i in datetimes])
             coords = [
@@ -2758,7 +2760,30 @@ class Thurner_AGB(Dataset):
         return self.broadcast_static_data(start, end)
 
 
-def dataset_times(datasets=None):
+class VODCA(Dataset):
+    """Global VOD Dataset.
+
+    See: https://zenodo.org/record/2575599#.XO6qXHVKibI
+
+    """
+
+    _pretty = "VODCA"
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, "VODCA")
+        iris.load(os.path.join(self.dir, "**", "*.nc"))
+        # TODO: Isolate different VOD bands, ignore masks (maybe put in different
+        # `Dataset` instance?)
+        # FIXME
+        # self.cubes = ...
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
+def dataset_times(datasets=None, dataset_names=None):
     """Compile dataset time span information.
 
     Args:
@@ -2778,13 +2803,21 @@ def dataset_times(datasets=None):
                 - Simard_canopyheight(),
                 - Thurner_AGB(),
             Alternatively, a list of Dataset instances can be given.
+        dataset_names (iterable of `str` or None): The names used for the datasets,
+            the number of which should match the number of items in `datasets`. If
+            None, use the `dataset.pretty` name for each `Dataset` in `datasets`.
 
     Returns:
-        min_time: Minimum shared time of all datasets.
-        max_time: Maximum shared time of all datasets.
-        times_df: Pandas DataFrame encapsulating the timespan information.
+        If valid starting and end times can be found for at least one of the datasets:
+            - min_time: Minimum shared time of all datasets.
+            - max_time: Maximum shared time of all datasets.
+            - times_df: Pandas DataFrame encapsulating the timespan information.
+        Otherwise the 3-tuple (None, None, None) will be returned.
 
     """
+    # TODO: Use the 'get_all_datasets' function from cube_aggregation.py here, listing
+    # the excluded datasets only in the docstring. This should make accommodating new
+    # datasets even easier.
     if datasets is None:
         datasets = [
             AvitabileThurnerAGB(),
@@ -2802,12 +2835,12 @@ def dataset_times(datasets=None):
             Thurner_AGB(),
         ]
 
+    if dataset_names is None:
+        dataset_names = tuple(dataset.pretty for dataset in datasets)
+
     time_dict = OrderedDict(
-        (
-            dataset.name,
-            list(map(str, (dataset.min_time, dataset.max_time, dataset.frequency))),
-        )
-        for dataset in datasets
+        (name, list(map(str, (dataset.min_time, dataset.max_time, dataset.frequency))))
+        for dataset, name in zip(datasets, dataset_names)
     )
     min_times, max_times = [], []
     for dataset in datasets:
@@ -2830,6 +2863,10 @@ def dataset_times(datasets=None):
 
         min_times.append(dataset_times[0])
         max_times.append(dataset_times[1])
+
+    if not min_times and not max_times:
+        logger.debug("No valid start or end times found.")
+        return None, None, None
 
     # This timespan will encompass all the datasets.
     min_time = np.max(min_times)

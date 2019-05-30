@@ -3,31 +3,36 @@
 """Data analysis."""
 import logging
 import logging.config
-import os
 from copy import deepcopy
+from functools import reduce
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+from joblib import Memory
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
 
-import wildfires.utils as utils
 from wildfires.analysis.plotting import (
+    FigureSaver,
     cube_plotting,
     map_model_output,
     partial_dependence_plot,
 )
 from wildfires.analysis.processing import log_map, map_name, vif
 from wildfires.data.cube_aggregation import get_all_datasets, prepare_selection
-from wildfires.data.datasets import dataset_times
+from wildfires.data.datasets import DATA_DIR, data_is_available, dataset_times
 from wildfires.logging_config import LOGGING
+from wildfires.utils import get_unmasked
+from wildfires.utils import land_mask as get_land_mask
 
 logger = logging.getLogger(__name__)
 logging.config.dictConfig(LOGGING)
+
+memory = Memory(location=DATA_DIR if data_is_available() else None, verbose=1)
 
 
 def log_mapping(key):
@@ -40,12 +45,33 @@ def log_mapping(key):
     return False
 
 
+def TripleFigureSaver(model_name, *args, **kwargs):
+    return FigureSaver(
+        filename=(
+            "predicted_burned_area_" + model_name,
+            "mean_observed_burned_area_" + model_name,
+            "difference_burned_area_" + model_name,
+        ),
+        *args,
+        **kwargs
+    )
+
+
 if __name__ == "__main__":
+    logging.config.dictConfig(LOGGING)
+
+    FigureSaver.directory = "~/tmp/to_send"
+    FigureSaver.debug = True
+
+    # TODO: Plotting setup in a more rigorous manner.
     normal_size = 9.0
     normal_coast_linewidth = 0.5
     dpi = 600
 
-    logging.config.dictConfig(LOGGING)
+    ###################################################################################
+    # Dataset selection.
+    ###################################################################################
+
     selection = get_all_datasets(
         ignore_names=(
             "AvitabileAGB",
@@ -82,45 +108,59 @@ if __name__ == "__main__":
         "Fraction of Absorbed Photosynthetically Active Radiation",
         "Leaf Area Index",
     ]
+    selection.remove_datasets("GSMaP Dry Day Period")
 
     selection = selection.select_variables(selected_names, strict=True)
     selection.show("pretty")
 
+    times_df = dataset_times(selection.datasets)[2]
+    if times_df is not None:
+        print(times_df.to_string(index=False))
+        # print(times_df.to_latex(index=False))
+
     monthly_datasets, mean_datasets, climatology_datasets = prepare_selection(selection)
 
-    min_time, max_time, times_df = dataset_times(selection.datasets)
-    # print(times_df)
-    print(times_df.to_latex(index=False))
-
+    ###################################################################################
+    # Land Mask.
+    ###################################################################################
     mpl.rcParams["figure.figsize"] = (8, 5)
 
     # Get land mask.
-    land_mask = ~utils.land_mask(n_lon=1440)
+    land_mask = ~get_land_mask(n_lon=1440)
 
-    fig = cube_plotting(land_mask.astype("int64"), title="Land Mask", cmap="Reds_r")
+    with FigureSaver("land_mask"):
+        fig = cube_plotting(land_mask.astype("int64"), title="Land Mask", cmap="Reds_r")
 
-    filename = os.path.expanduser(os.path.join("~/tmp/to_send", "land_mask" + ".pdf"))
-    print("Saving to {}".format(filename))
-    fig.savefig(
-        filename, dpi=dpi, bbox_inches="tight", transparent=True, rasterised=True
-    )
+    ###################################################################################
+    # Latitude mask.
+    ###################################################################################
 
-    # Define a latitude mask which ignores data beyond 60 degrees, as the precipitation data does not extend to those latitudes.
+    # Define a latitude mask which ignores data beyond 60 degrees, as GSMaP data does
+    # not extend to those latitudes.
     lats = mean_datasets.cubes[0].coord("latitude").points
     lons = mean_datasets.cubes[0].coord("longitude").points
 
     latitude_grid = np.meshgrid(lats, lons, indexing="ij")[0]
     lat_mask = np.abs(latitude_grid) > 60
 
-    # Make a deep copy so that the original cubes are preserved.
-    lat_land_datasets = mean_datasets.copy(deep=True)
+    ###################################################################################
+    # Apply masks.
+    ###################################################################################
 
-    for cube in lat_land_datasets.cubes:
-        cube.data.mask[lat_mask] = True
-        cube.data.mask[land_mask] = True
+    masks_to_apply = (lat_mask, land_mask)
+
+    # Make a deep copy so that the original cubes are preserved.
+    masked_datasets = mean_datasets.copy(deep=True)
+
+    for cube in masked_datasets.cubes:
+        cube.data.mask |= reduce(np.logical_or, masks_to_apply)
+
+    ###################################################################################
+    # Histograms of all the datasets.
+    ###################################################################################
 
     n_cols = 4
-    n_plots = len(lat_land_datasets.cubes)
+    n_plots = len(masked_datasets.cubes)
 
     mpl.rcParams["figure.figsize"] = (20, 12)
 
@@ -130,13 +170,13 @@ if __name__ == "__main__":
     axes = axes.flatten()
     for (i, (ax, feature)) in enumerate(zip(axes, range(n_plots))):
         ax.hist(
-            lat_land_datasets.cubes[feature].data.data[
-                ~lat_land_datasets.cubes[feature].data.mask
+            masked_datasets.cubes[feature].data.data[
+                ~masked_datasets.cubes[feature].data.mask
             ],
             density=True,
             bins=70,
         )
-        ax.set_xlabel(lat_land_datasets.pretty_variable_names[feature])
+        ax.set_xlabel(masked_datasets.pretty_variable_names[feature])
         ax.set_yscale("log")
 
     for ax in axes[n_plots:]:
@@ -144,138 +184,97 @@ if __name__ == "__main__":
 
     plt.tight_layout()
 
-    # Get names of all the cubes we have access to.
-    from pprint import pprint
+    ###################################################################################
+    # Plotting burned area and AGB.
+    ###################################################################################
 
-    pprint(lat_land_datasets.raw_variable_names)
-
-    figsize = (5, 3.8)
-    dpi = 600
-    mpl.rcParams["figure.figsize"] = figsize
+    mpl.rcParams["figure.figsize"] = (5, 3.8)
     mpl.rcParams["font.size"] = normal_size
 
-    cube = lat_land_datasets.select_variables(
-        "monthly burned area", inplace=False
-    ).cubes[0]
-    fig = cube_plotting(
-        cube,
-        cmap="Reds",
-        log=True,
-        label="ln(Fraction)",
-        title="Log Mean Burned Area (GFEDv4)",
-        coastline_kwargs={"linewidth": normal_coast_linewidth},
-    )
-    filename = os.path.expanduser(
-        os.path.join("~/tmp/to_send", cube.name().replace(" ", "_") + ".pdf")
-    )
-    print("Saving to {}".format(filename))
-    fig.savefig(
-        filename, dpi=dpi, bbox_inches="tight", transparent=True, rasterised=True
-    )
+    cube = masked_datasets.select_variables("monthly burned area", inplace=False).cube
+    with FigureSaver(cube.name().replace(" ", "_")):
+        fig = cube_plotting(
+            cube,
+            cmap="Reds",
+            log=True,
+            label="ln(Fraction)",
+            title="Log Mean Burned Area (GFEDv4)",
+            coastline_kwargs={"linewidth": normal_coast_linewidth},
+        )
 
-    figsize = (4, 2.7)
-    dpi = 600
-    mpl.rcParams["figure.figsize"] = figsize
+    mpl.rcParams["figure.figsize"] = (4, 2.7)
     mpl.rcParams["font.size"] = normal_size
 
-    cube = lat_land_datasets.select_variables("AGBtree", inplace=False).cubes[0]
-    fig = cube_plotting(
-        cube,
-        cmap="viridis",
-        log=True,
-        label=r"kg m$^{-2}$",
-        title="AGBtree",
-        coastline_kwargs={"linewidth": normal_coast_linewidth},
-    )
-    filename = os.path.expanduser(
-        os.path.join("~/tmp/to_send", cube.name().replace(" ", "_") + ".pdf")
-    )
-    print("Saving to {}".format(filename))
-    fig.savefig(
-        filename, dpi=dpi, bbox_inches="tight", transparent=True, rasterised=True
-    )
+    cube = masked_datasets.select_variables("AGBtree", inplace=False).cube
 
-    sif_cube = lat_land_datasets.select_variables("SIF", inplace=False).cubes[0]
+    with FigureSaver(cube.name().replace(" ", "_")):
+        fig = cube_plotting(
+            cube,
+            cmap="viridis",
+            log=True,
+            label=r"kg m$^{-2}$",
+            title="AGBtree",
+            coastline_kwargs={"linewidth": normal_coast_linewidth},
+        )
+
+    ###################################################################################
+    # Filling/processing/cleaning datasets.
+    ###################################################################################
+
+    sif_cube = masked_datasets.select_variables("SIF", inplace=False).cube
     sif_cube.data.mask |= sif_cube.data.data > 20
     sif_cube.data.mask |= sif_cube.data.data < 0
 
-    lightning_cube = lat_land_datasets.select_variables(
+    lightning_cube = masked_datasets.select_variables(
         "Combined Flash Rate Monthly Climatology", inplace=False
     ).cubes[0]
     lightning_cube.data.mask |= lightning_cube.data.data < 0
 
-    filled_datasets = lat_land_datasets.copy(deep=True).fill(
-        land_mask=land_mask, lat_mask=lat_mask
-    )
+    filled_datasets = masked_datasets.copy(deep=True).fill(land_mask, lat_mask)
 
-    figsize = (4, 2.7)
-    dpi = 600
-    mpl.rcParams["figure.figsize"] = figsize
-    mpl.rcParams["font.size"] = normal_size
-
-    cube = filled_datasets.select_variables("AGBtree", inplace=False).cubes[0]
-    fig = cube_plotting(
-        cube,
-        cmap="viridis",
-        log=True,
-        label=r"kg m$^{-2}$",
-        title="AGBtree",
-        coastline_kwargs={"linewidth": normal_coast_linewidth},
-    )
+    ###################################################################################
+    # Plotting of Mask and AGB (again).
+    ###################################################################################
 
     mpl.rcParams["figure.figsize"] = (8, 5)
-    fig = cube_plotting(
-        filled_datasets.select_variables(
-            "monthly burned area", strict=True, inplace=False
+    with FigureSaver("land_mask2"):
+        fig = cube_plotting(
+            filled_datasets.select_variables(
+                "monthly burned area", strict=True, inplace=False
+            ).cube.data.mask.astype("int64"),
+            title="Land Mask",
+            cmap="Reds_r",
         )
-        .cubes[0]
-        .data.mask.astype("int64"),
-        title="Land Mask",
-        cmap="Reds_r",
-    )
 
-    filename = os.path.expanduser(os.path.join("~/tmp/to_send", "land_mask2" + ".pdf"))
-    print("Saving to {}".format(filename))
-    fig.savefig(
-        filename, dpi=dpi, bbox_inches="tight", transparent=True, rasterised=True
-    )
-
-    figsize = (4, 2.7)
-    dpi = 600
-    mpl.rcParams["figure.figsize"] = figsize
+    mpl.rcParams["figure.figsize"] = (4, 2.7)
     mpl.rcParams["font.size"] = normal_size
 
-    cube = filled_datasets.select_variables(
-        "AGBtree", strict=True, inplace=False
-    ).cubes[0]
-    fig = cube_plotting(
-        cube,
-        cmap="viridis",
-        log=True,
-        label=r"kg m$^{-2}$",
-        title="AGBtree (interpolated)",
-        coastline_kwargs={"linewidth": normal_coast_linewidth},
-    )
-    filename = os.path.expanduser(
-        os.path.join(
-            "~/tmp/to_send", cube.name().replace(" ", "_") + "_interpolated" + ".pdf"
+    cube = filled_datasets.select_variables("AGBtree", inplace=False).cube
+
+    with FigureSaver(cube.name().replace(" ", "_") + "_interpolated"):
+        cube_plotting(
+            cube,
+            cmap="viridis",
+            log=True,
+            label=r"kg m$^{-2}$",
+            title="AGBtree (interpolated)",
+            coastline_kwargs={"linewidth": normal_coast_linewidth},
         )
-    )
-    print("Saving to {}".format(filename))
-    fig.savefig(
-        filename, dpi=dpi, bbox_inches="tight", transparent=True, rasterised=True
-    )
+
+    ###################################################################################
+    # Creating exog and endog pandas containers.
+    ###################################################################################
 
     burned_area_cube = filled_datasets.select_variables(
-        "monthly burned area", strict=True, inplace=False
-    ).cubes[0]
-    endog_data = pd.Series(burned_area_cube.data.data[~burned_area_cube.data.mask])
+        "monthly burned area", inplace=False
+    ).cube
+    endog_data = pd.Series(get_unmasked(burned_area_cube.data))
     names = []
     data = []
     for cube in filled_datasets.cubes:
         if cube.name() != "monthly burned area":
             names.append(cube.name())
-            data.append(cube.data.data[~cube.data.mask].reshape(-1, 1))
+            data.append(get_unmasked(cube.data).reshape(-1, 1))
 
     exog_data = pd.DataFrame(np.hstack(data), columns=names)
 
@@ -306,6 +305,10 @@ if __name__ == "__main__":
     print("Names after:")
     print(exog_data.columns)
 
+    ###################################################################################
+    # VIF analysis.
+    ###################################################################################
+
     vifs = vif(exog_data)
     print(vifs.to_string(index=False, float_format="{:0.1f}".format))
 
@@ -325,7 +328,10 @@ if __name__ == "__main__":
         )
     )
 
+    ###################################################################################
     # Remove redundant variables.
+    ###################################################################################
+
     exog_data2 = deepcopy(exog_data)
     for key in (
         "Fraction of Absorbed Photosynthetically Active Radiation",
@@ -352,28 +358,25 @@ if __name__ == "__main__":
         )
     )
 
+    ###################################################################################
+    # GLM.
+    ###################################################################################
+
     model = sm.GLM(endog_data, exog_data2, family=sm.families.Binomial())
     model_results = model.fit()
 
     print(model_results.summary())
     print("R2:", r2_score(y_true=endog_data, y_pred=model_results.fittedvalues))
 
-    figsize = (4, 2.7)
-    dpi = 600
-    mpl.rcParams["figure.figsize"] = figsize
+    mpl.rcParams["figure.figsize"] = (4, 2.7)
     mpl.rcParams["font.size"] = normal_size
 
-    plt.figure()
-    plt.hexbin(endog_data, model_results.fittedvalues, bins="log")
-    plt.xlabel("real data")
-    plt.ylabel("prediction")
-    plt.colorbar()
-
-    filename = os.path.expanduser(os.path.join("~/tmp/to_send", "hexbin_GLM1" + ".pdf"))
-    print("Saving to {}".format(filename))
-    plt.savefig(
-        filename, dpi=dpi, bbox_inches="tight", transparent=True, rasterised=True
-    )
+    with FigureSaver("hexbin_GLM1"):
+        plt.figure()
+        plt.hexbin(endog_data, model_results.fittedvalues, bins="log")
+        plt.xlabel("real data")
+        plt.ylabel("prediction")
+        plt.colorbar()
 
     # Data generation.
     global_mask = burned_area_cube.data.mask
@@ -393,13 +396,12 @@ if __name__ == "__main__":
     #  - ba_data: observed
     #  - model_name: Name for titles AND filenames
     model_name = "GLMv1"
-    figs = map_model_output(
-        ba_predicted, ba_data, model_name, normal_size, normal_coast_linewidth
-    )
+    with TripleFigureSaver(model_name):
+        figs = map_model_output(
+            ba_predicted, ba_data, model_name, normal_size, normal_coast_linewidth
+        )
 
-    figsize = (5, 3)
-    dpi = 600
-    mpl.rcParams["figure.figsize"] = figsize
+    mpl.rcParams["figure.figsize"] = (5, 3)
     mpl.rcParams["font.size"] = normal_size
 
     columns = list(map(map_name, exog_data2.columns))
@@ -416,57 +418,54 @@ if __name__ == "__main__":
     # https://stackoverflow.com/questions/55289921/matplotlib-matshow-xtick-labels-on-top-and-bottom/55289968
     n = len(columns)
 
-    fig, ax = plt.subplots()
+    with FigureSaver("correlation_GLM1"):
+        fig, ax = plt.subplots()
 
-    corr_arr = np.ma.MaskedArray(exog_data2.corr().values)
-    corr_arr.mask = np.zeros_like(corr_arr)
-    # Ignore diagnals, since they will all be 1 anyway!
-    np.fill_diagonal(corr_arr.mask, True)
+        corr_arr = np.ma.MaskedArray(exog_data2.corr().values)
+        corr_arr.mask = np.zeros_like(corr_arr)
+        # Ignore diagnals, since they will all be 1 anyway!
+        np.fill_diagonal(corr_arr.mask, True)
 
-    im = ax.matshow(corr_arr, interpolation="none")
+        im = ax.matshow(corr_arr, interpolation="none")
 
-    fig.colorbar(im, pad=0.04, shrink=0.95)
+        fig.colorbar(im, pad=0.04, shrink=0.95)
 
-    ax.set_xticks(np.arange(n))
-    ax.set_xticklabels(map(get_trim_func(), columns))
-    ax.set_yticks(np.arange(n))
-    ax.set_yticklabels(columns)
+        ax.set_xticks(np.arange(n))
+        ax.set_xticklabels(map(get_trim_func(), columns))
+        ax.set_yticks(np.arange(n))
+        ax.set_yticklabels(columns)
 
-    # Set ticks on top of axes on
-    ax.tick_params(axis="x", bottom=False, top=True, labelbottom=False, labeltop=True)
-    # Rotate and align bottom ticklabels
-    # plt.setp([tick.label1 for tick in ax.xaxis.get_major_ticks()], rotation=45,
-    #          ha="right", va="center", rotation_mode="anchor")
-    # Rotate and align top ticklabels
-    plt.setp(
-        [tick.label2 for tick in ax.xaxis.get_major_ticks()],
-        rotation=45,
-        ha="left",
-        va="center",
-        rotation_mode="anchor",
-    )
+        # Set ticks on top of axes on
+        ax.tick_params(
+            axis="x", bottom=False, top=True, labelbottom=False, labeltop=True
+        )
+        # Rotate and align bottom ticklabels
+        # plt.setp([tick.label1 for tick in ax.xaxis.get_major_ticks()], rotation=45,
+        #          ha="right", va="center", rotation_mode="anchor")
+        # Rotate and align top ticklabels
+        plt.setp(
+            [tick.label2 for tick in ax.xaxis.get_major_ticks()],
+            rotation=45,
+            ha="left",
+            va="center",
+            rotation_mode="anchor",
+        )
 
-    # For some reason the code below does not work and produces overallping top labels.
-    # Maybe needed to set the rotation_mode, ha, and va parameters from above?
-    # plt.xticks(range(len(columns)), map(get_trim_func(), columns), rotation=45)
-    # plt.yticks(range(len(columns)), columns)
-    # plt.colorbar(pad=0.2)
+        # For some reason the code below does not work and produces overlapping top labels.
+        # Maybe needed to set the rotation_mode, ha, and va parameters from above?
+        # plt.xticks(range(len(columns)), map(get_trim_func(), columns), rotation=45)
+        # plt.yticks(range(len(columns)), columns)
+        # plt.colorbar(pad=0.2)
 
-    # ax.set_title("Correlation Matrix", pad=40)
-    fig.tight_layout()
-
-    filename = os.path.expanduser(
-        os.path.join("~/tmp/to_send", "correlation_GLM1" + ".pdf")
-    )
-    print("Saving to {}".format(filename))
-    fig.savefig(
-        filename, dpi=dpi, bbox_inches="tight", transparent=True, rasterised=True
-    )
+        # ax.set_title("Correlation Matrix", pad=40)
+        fig.tight_layout()
 
     print(model_results.summary().as_latex())
 
+    ###################################################################################
     # # Random Forest
     # ## Using same data as for the GLMv1 above
+    ###################################################################################
 
     regr = RandomForestRegressor(n_estimators=100, random_state=1)
     X_train, X_test, y_train, y_test = train_test_split(
@@ -491,30 +490,28 @@ if __name__ == "__main__":
     #  - ba_data: observed
     #  - model_name: Name for titles AND filenames
     model_name = "RFv1"
-    figs = map_model_output(
-        ba_predicted, ba_data, model_name, normal_size, normal_coast_linewidth
-    )
+    with TripleFigureSaver(model_name):
+        figs = map_model_output(
+            ba_predicted, ba_data, model_name, normal_size, normal_coast_linewidth
+        )
 
     mpl.rcParams["figure.figsize"] = (20, 12)
     mpl.rcParams["font.size"] = 18
-    fig, axes = partial_dependence_plot(
-        regr,
-        X_test,
-        X_test.columns,
-        n_cols=4,
-        grid_resolution=70,
-        coverage=0.05,
-        predicted_name="burned area",
-    )
-    plt.subplots_adjust(wspace=0.16)
-    _ = list(ax.axes.get_yaxis().set_ticks([]) for ax in axes)
 
-    filename = os.path.expanduser(os.path.join("~/tmp/to_send", "pdp_RFv1" + ".pdf"))
-    print("Saving to {}".format(filename))
-    fig.savefig(
-        filename, dpi=dpi, bbox_inches="tight", transparent=True, rasterised=True
-    )
+    with FigureSaver("pdp_RFv1"):
+        fig, axes = partial_dependence_plot(
+            regr,
+            X_test,
+            X_test.columns,
+            n_cols=4,
+            grid_resolution=70,
+            coverage=0.05,
+            predicted_name="burned area",
+        )
+        plt.subplots_adjust(wspace=0.16)
+        _ = list(ax.axes.get_yaxis().set_ticks([]) for ax in axes)
 
+    # FIXME: Get rid of this chunk and document how/why it doesn't work.
     ################ DOES NOT DEMONSTRATE ANYTHING!! #################
     lims = []
     varnames = []
@@ -552,43 +549,27 @@ if __name__ == "__main__":
         )
     )
 
+    ###################################################################################
     # # Creating backup slides
     # ## First the datasets that were simply selected
     # ## Then the datasets after they were modified with NN interpolation and isolated outlier removal
+    ###################################################################################
 
-    figsize = (5, 3.8)
-    dpi = 600
-    mpl.rcParams["figure.figsize"] = figsize
+    mpl.rcParams["figure.figsize"] = (5, 3.8)
     mpl.rcParams["font.size"] = normal_size
 
-    for cube in lat_land_datasets.cubes:
-        fig = cube_plotting(
-            cube,
-            log=log_map(cube.name()),
-            coastline_kwargs={"linewidth": normal_coast_linewidth},
-        )
-        filename = os.path.expanduser(
-            os.path.join(
-                "~/tmp/to_send", "backup_" + cube.name().replace(" ", "_") + ".pdf"
+    for cube in masked_datasets.cubes:
+        with FigureSaver("backup_" + cube.name().replace(" ", "_")):
+            fig = cube_plotting(
+                cube,
+                log=log_map(cube.name()),
+                coastline_kwargs={"linewidth": normal_coast_linewidth},
             )
-        )
-        print("Saving to {}".format(filename))
-        fig.savefig(
-            filename, dpi=dpi, bbox_inches="tight", transparent=True, rasterised=True
-        )
 
     for cube in filled_datasets.cubes:
-        fig = cube_plotting(
-            cube,
-            log=log_map(cube.name()),
-            coastline_kwargs={"linewidth": normal_coast_linewidth},
-        )
-        filename = os.path.expanduser(
-            os.path.join(
-                "~/tmp/to_send", "backup_mod_" + cube.name().replace(" ", "_") + ".pdf"
+        with FigureSaver("backup_mod_" + cube.name().replace(" ", "_")):
+            fig = cube_plotting(
+                cube,
+                log=log_map(cube.name()),
+                coastline_kwargs={"linewidth": normal_coast_linewidth},
             )
-        )
-        print("Saving to {}".format(filename))
-        fig.savefig(
-            filename, dpi=dpi, bbox_inches="tight", transparent=True, rasterised=True
-        )

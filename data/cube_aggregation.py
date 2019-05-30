@@ -9,7 +9,6 @@ TODO: Enable regex based processing of dataset names too (e.g. for
 TODO: Selection.remove_datasets or Selection.select_datasets).
 
 """
-import functools
 import inspect
 import json
 import logging
@@ -21,7 +20,7 @@ import socket
 import warnings
 from collections import OrderedDict
 from copy import deepcopy
-from functools import partial, wraps
+from functools import partial, reduce, wraps
 from inspect import iscode
 from multiprocessing.dummy import Pool as ThreadedPool
 from pprint import pformat, pprint
@@ -955,16 +954,16 @@ class Datasets:
             return output.copy(deep=True)
         return output
 
-    def fill(self, land_mask=None, lat_mask=None, reference_variable="burned.*area"):
+    def fill(self, *masks, reference_variable="burned.*area"):
         """Fill data gaps in-place.
 
         Args:
-            land_mask (numpy.ndarray or None): This mask (boolean array) will be
-                ORed with `lat_mask` as well as the mask derived from
-                `reference_variable`. This resulting mask will be applied to all
-                variables in the dataset collection. If this mask completely masks out
-                all missing data points, then no filling will be done.
-            lat_mask (numpy.ndarray or None): See description for `land_mask`.
+            *masks: Iterable of masks (each of type numpy.ndarray). These masks
+                (boolean arrays) will be logical ORed with each other as well as the
+                mask derived from `reference_variable`. The resulting mask will be
+                applied to all variables in the dataset collection. If this mask
+                completely masks out all missing data points, then no filling will be
+                done. Common masks would be a land mask and a latitude mask.
             reference_variable (str or None): See description for `land_mask`. If str,
                 use this to search for a variable whose mask will be used. If None, do
                 not use a mask from a reference variable.
@@ -980,19 +979,19 @@ class Datasets:
                 reference_variable, exact=False, strict=True, inplace=False, copy=False
             ).cubes[0]
             final_masks = [reference_cube.data.mask]
-
-        assert len(land_mask.shape) in (2, 3)
-        assert len(cube_shape) in (2, 3)
+        for mask in masks:
+            assert len(mask.shape) in (2, 3)
 
         # Make sure masks have a matching shape.
-        for mask in (land_mask, lat_mask):
+        for mask in masks:
             if mask is not None:
                 mask = match_shape(land_mask, cube_shape)
-            else:
-                mask = np.zeros(cube_shape, dtype=np.bool_)
-            final_masks.append(mask)
+                final_masks.append(mask)
 
-        combined_mask = functools.reduce(lambda x, y: x | y, final_masks)
+        if final_masks:
+            combined_mask = reduce(np.logical_or, final_masks)
+        else:
+            combined_mask = np.zeros(cube_shape, dtype=np.bool_)
 
         prev_shape = cube_shape
         for cube in self.cubes:

@@ -21,6 +21,122 @@ from wildfires.logging_config import LOGGING
 logger = logging.getLogger(__name__)
 
 
+class FigureSaver:
+    """Saving figures.
+
+    If `debug`, `debug_options` will be used. Otherwise `options` are used.
+
+    Use like to save created figure(s) automatically:
+
+    with FigureSaver("filename"):
+        plt.figure()
+        ...
+
+    with FigureSaver(("filename", "filename2")):
+        plt.figure()
+        ...
+        plt.figure()
+        ...
+
+    """
+
+    debug = False
+    directory = "."
+
+    # These options serve as default value that may be overridden during
+    # initialisation.
+    options = {
+        "bbox_inches": "tight",
+        "transparent": True,
+        "rasterised": True,
+        "filetype": "pdf",
+        "dpi": 600,
+    }
+
+    debug_options = {
+        "bbox_inches": "tight",
+        "transparent": True,
+        "rasterised": True,
+        "filetype": "png",
+        "dpi": 200,
+    }
+
+    def __init__(self, filename="", directory=None, debug=None, **kwargs):
+        if debug is not None:
+            self.debug = debug
+
+        if directory is not None:
+            self.directory = directory
+
+        self.filenames = (filename,) if isinstance(filename, str) else filename
+        self.directories = (directory,) if isinstance(directory, str) else directory
+
+        if len(self.directories) != 1 and len(self.directories) != len(self.filenames):
+            raise ValueError(
+                "If more than one directory is given, the number of given directories "
+                "has to match the number of given file names. Got "
+                f"{len(self.directories)} directories and {len(self.filenames)} "
+                "file names."
+            )
+        if len(self.directories) == 1:
+            self.directories = [self.directories[0]] * len(self.filenames)
+
+        self.options = self.debug_options.copy() if self.debug else self.options.copy()
+        self.options.update(kwargs)
+
+        self.suffix = (
+            self.options["filetype"]
+            if "." in self.options["filetype"]
+            else "." + self.options["filetype"]
+        )
+        del self.options["filetype"]
+
+    def __enter__(self):
+        self.old_fignums = plt.get_fignums()
+
+    def __exit__(self, type, value, traceback):
+        if type is not None:
+            return False  # Re-raise exception.
+        new_figure_numbers = plt.get_fignums()
+        if new_figure_numbers == self.old_fignums:
+            raise RuntimeError("No new figures detected.")
+
+        fignums_save = [
+            num for num in new_figure_numbers if num not in self.old_fignums
+        ]
+
+        if len(fignums_save) != len(self.filenames):
+            raise RuntimeError(
+                f"Expected {len(self.filenames)} figures, but got {len(fignums_save)}"
+            )
+
+        saved_figures = [
+            num
+            if not plt.figure(num).get_label()
+            else (num, plt.figure(num).get_label())
+            for num in fignums_save
+        ]
+
+        logger.debug(f"Saving figures {saved_figures}.")
+
+        for fignum, directory, filename in zip(
+            fignums_save, self.directories, self.filenames
+        ):
+            fig = plt.figure(fignum)
+            self.save_figure(fig, directory, filename)
+
+    def save_figure(self, fig, directory, filename):
+        filepath = os.path.expanduser(
+            os.path.abspath(os.path.expanduser(os.path.join(directory, filename)))
+        )
+
+        filepath = filepath + self.suffix
+
+        logger.debug("Saving figure to '{}'.".format(filepath))
+
+        fig.savefig(filepath, **self.options)
+
+
 def get_cubes_vmin_vmax(cubes, vmin_vmax_percentiles=(2.5, 97.5)):
     """Get vmin and vmax from a list of cubes given two percentiles.
 
@@ -69,7 +185,6 @@ def map_model_output(ba_predicted, ba_data, model_name, textsize, coast_linewidt
     figs = []
     # Plotting params.
     figsize = (4, 2.7)
-    dpi = 600
     mpl.rcParams["figure.figsize"] = figsize
     mpl.rcParams["font.size"] = textsize
 
@@ -89,14 +204,6 @@ def map_model_output(ba_predicted, ba_data, model_name, textsize, coast_linewidt
     )
     figs.append(fig)
 
-    filename = os.path.expanduser(
-        os.path.join("~/tmp/to_send", "predicted_burned_area_" + model_name + ".pdf")
-    )
-    print("Saving to {}".format(filename))
-    fig.savefig(
-        filename, dpi=dpi, bbox_inches="tight", transparent=True, rasterised=True
-    )
-
     # Plotting observed.
     fig = cube_plotting(
         ba_data,
@@ -109,16 +216,6 @@ def map_model_output(ba_predicted, ba_data, model_name, textsize, coast_linewidt
         vmax=log_vmax,
     )
     figs.append(fig)
-
-    filename = os.path.expanduser(
-        os.path.join(
-            "~/tmp/to_send", "mean_observed_burned_area_" + model_name + ".pdf"
-        )
-    )
-    print("Saving to {}".format(filename))
-    fig.savefig(
-        filename, dpi=dpi, bbox_inches="tight", transparent=True, rasterised=True
-    )
 
     # Plotting differences.
 
@@ -136,14 +233,6 @@ def map_model_output(ba_predicted, ba_data, model_name, textsize, coast_linewidt
         coastline_kwargs={"linewidth": coast_linewidth},
     )
     figs.append(fig)
-
-    filename = os.path.expanduser(
-        os.path.join("~/tmp/to_send", "difference_burned_area_" + model_name + ".pdf")
-    )
-    print("Saving to {}".format(filename))
-    fig.savefig(
-        filename, dpi=dpi, bbox_inches="tight", transparent=True, rasterised=True
-    )
     return figs
 
 
@@ -421,6 +510,6 @@ if __name__ == "__main__":
 
     model = A()
     X = pd.DataFrame(np.random.random((m, n)), columns=list(string.ascii_lowercase)[:n])
-    features = ["a", "b", "c", "d", "e", "f", "g", "h", "i"]
+    features = list(string.ascii_lowercase[:9])
 
     fig, axes = partial_dependence_plot(model, X, features, grid_resolution=100)

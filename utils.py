@@ -44,7 +44,7 @@ class Time:
     def __init__(self, name=""):
         self.name = name
 
-    def __enter__(self, name=""):
+    def __enter__(self):
         self.start = time()
 
     def __exit__(self, type, value, traceback):
@@ -300,3 +300,38 @@ def match_shape(array, target_shape):
                 )
             )
     return array
+
+
+def get_unmasked(array, strict=True):
+    """Get the flattened unmasked elements from a masked array.
+
+    Args:
+        array (numpy.ma.core.MaskedArray or numpy.ndarray): If `strict` (default),
+            only accept masked arrays.
+        strict (bool): See above.
+
+    Raises:
+        TypeError: If `strict` and `array` is of type `numpy.ndarray`. Regardless of
+            `strict`, types other than `numpy.ma.core.MaskedArray` and `numpy.ndarray`
+            will also raise a TypeError.
+
+    Returns:
+        numpy.ndarray: Flattened, unmasked data.
+
+    """
+    accepted_types = [np.ma.core.MaskedArray]
+    if not strict:
+        accepted_types.append(np.ndarray)
+
+    if not isinstance(array, accepted_types):
+        raise TypeError(f"The input array had an invalid type '{type(array)}'.")
+
+    if not strict and isinstance(array, np.ndarray):
+        return array.ravel()
+
+    if isinstance(array.mask, np.ndarray):
+        return array.data[~array.mask].ravel()
+    elif array.mask:
+        np.array([])
+    else:
+        return array.ravel()
