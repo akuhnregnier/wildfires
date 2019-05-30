@@ -170,7 +170,7 @@ def get_cubes_vmin_vmax(cubes, vmin_vmax_percentiles=(2.5, 97.5)):
     return min(limit[0] for limit in limits), max(limit[1] for limit in limits)
 
 
-def map_model_output(ba_predicted, ba_data, model_name, textsize, coast_linewidth):
+def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     """Plotting of burned area data & predictions.
 
     Args:
@@ -186,7 +186,6 @@ def map_model_output(ba_predicted, ba_data, model_name, textsize, coast_linewidt
     # Plotting params.
     figsize = (4, 2.7)
     mpl.rcParams["figure.figsize"] = figsize
-    mpl.rcParams["font.size"] = textsize
 
     log_vmin = min((np.min(np.log(ba_predicted)), np.min(np.log(ba_data))))
     log_vmax = max((np.max(np.log(ba_predicted)), np.max(np.log(ba_data))))
@@ -222,6 +221,7 @@ def map_model_output(ba_predicted, ba_data, model_name, textsize, coast_linewidt
     # https://blogs.sas.com/content/iml/2014/07/14/log-transformation-of-pos-neg.html
     # Use log-modulus transformation
 
+    # TODO: Improve upon the log-modulus!
     perc_diffs = (ba_data - ba_predicted) / ba_data
     log_mod_diffs = log_modulus(perc_diffs)
 

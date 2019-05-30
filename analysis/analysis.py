@@ -67,6 +67,7 @@ if __name__ == "__main__":
     normal_size = 9.0
     normal_coast_linewidth = 0.5
     dpi = 600
+    mpl.rcParams["font.size"] = normal_size
 
     ###################################################################################
     # Dataset selection.
@@ -170,11 +171,7 @@ if __name__ == "__main__":
     axes = axes.flatten()
     for (i, (ax, feature)) in enumerate(zip(axes, range(n_plots))):
         ax.hist(
-            masked_datasets.cubes[feature].data.data[
-                ~masked_datasets.cubes[feature].data.mask
-            ],
-            density=True,
-            bins=70,
+            get_unmasked(masked_datasets.cubes[feature].data), density=True, bins=70
         )
         ax.set_xlabel(masked_datasets.pretty_variable_names[feature])
         ax.set_yscale("log")
@@ -189,7 +186,6 @@ if __name__ == "__main__":
     ###################################################################################
 
     mpl.rcParams["figure.figsize"] = (5, 3.8)
-    mpl.rcParams["font.size"] = normal_size
 
     cube = masked_datasets.select_variables("monthly burned area", inplace=False).cube
     with FigureSaver(cube.name().replace(" ", "_")):
@@ -203,7 +199,6 @@ if __name__ == "__main__":
         )
 
     mpl.rcParams["figure.figsize"] = (4, 2.7)
-    mpl.rcParams["font.size"] = normal_size
 
     cube = masked_datasets.select_variables("AGBtree", inplace=False).cube
 
@@ -227,7 +222,7 @@ if __name__ == "__main__":
 
     lightning_cube = masked_datasets.select_variables(
         "Combined Flash Rate Monthly Climatology", inplace=False
-    ).cubes[0]
+    ).cube
     lightning_cube.data.mask |= lightning_cube.data.data < 0
 
     filled_datasets = masked_datasets.copy(deep=True).fill(land_mask, lat_mask)
@@ -247,7 +242,6 @@ if __name__ == "__main__":
         )
 
     mpl.rcParams["figure.figsize"] = (4, 2.7)
-    mpl.rcParams["font.size"] = normal_size
 
     cube = filled_datasets.select_variables("AGBtree", inplace=False).cube
 
@@ -369,7 +363,6 @@ if __name__ == "__main__":
     print("R2:", r2_score(y_true=endog_data, y_pred=model_results.fittedvalues))
 
     mpl.rcParams["figure.figsize"] = (4, 2.7)
-    mpl.rcParams["font.size"] = normal_size
 
     with FigureSaver("hexbin_GLM1"):
         plt.figure()
@@ -398,11 +391,10 @@ if __name__ == "__main__":
     model_name = "GLMv1"
     with TripleFigureSaver(model_name):
         figs = map_model_output(
-            ba_predicted, ba_data, model_name, normal_size, normal_coast_linewidth
+            ba_predicted, ba_data, model_name, normal_coast_linewidth
         )
 
     mpl.rcParams["figure.figsize"] = (5, 3)
-    mpl.rcParams["font.size"] = normal_size
 
     columns = list(map(map_name, exog_data2.columns))
 
@@ -492,7 +484,7 @@ if __name__ == "__main__":
     model_name = "RFv1"
     with TripleFigureSaver(model_name):
         figs = map_model_output(
-            ba_predicted, ba_data, model_name, normal_size, normal_coast_linewidth
+            ba_predicted, ba_data, model_name, normal_coast_linewidth
         )
 
     mpl.rcParams["figure.figsize"] = (20, 12)
@@ -556,7 +548,6 @@ if __name__ == "__main__":
     ###################################################################################
 
     mpl.rcParams["figure.figsize"] = (5, 3.8)
-    mpl.rcParams["font.size"] = normal_size
 
     for cube in masked_datasets.cubes:
         with FigureSaver("backup_" + cube.name().replace(" ", "_")):
