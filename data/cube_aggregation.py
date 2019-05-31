@@ -40,6 +40,20 @@ from wildfires.utils import match_shape
 logger = logging.getLogger(__name__)
 memory = Memory(location=DATA_DIR if data_is_available() else None, verbose=1)
 
+IGNORED_DATASETS = [
+    "AvitabileAGB",
+    "CRU",
+    "ESA_CCI_Fire",
+    "ESA_CCI_Landcover",
+    "ESA_CCI_Soilmoisture",
+    "ESA_CCI_Soilmoisture_Daily",
+    "GFEDv4s",
+    "GPW_v4_pop_dens",
+    "LIS_OTD_lightning_time_series",
+    "Simard_canopyheight",
+    "Thurner_AGB",
+]
+
 # TODO: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
 
 
@@ -1011,7 +1025,7 @@ class Datasets:
 
 
 def get_all_datasets(
-    pretty_dataset_names=None, pretty_variable_names=None, ignore_names=None
+    pretty_dataset_names=None, pretty_variable_names=None, ignore_names=IGNORED_DATASETS
 ):
     """Get all valid datasets defined in the `wildfires.data.datasets` module.
 

@@ -335,3 +335,45 @@ def get_unmasked(array, strict=True):
         np.array([])
     else:
         return array.ravel()
+
+
+def get_masked_array(data, mask=False, dtype=np.float64):
+    """Get a masked array from data and an optional mask.
+
+    Args:
+        data (iterable):
+        mask (numpy.ndarray or bool):
+        dtype (numpy dtype):
+
+    Returns:
+        numpy.ma.core.MaskedArray
+
+    Examples:
+        >>> import numpy as np
+        >>> print(get_masked_array([1, 2], [True, False, False], np.int64))
+        [-- 1 2]
+        >>> print(get_masked_array([0, 1, 2], [True, False, False], np.int64))
+        [-- 1 2]
+        >>> print(get_masked_array([0, 1, 2], dtype=np.int64))
+        [0 1 2]
+        >>> a = np.arange(20).reshape(5, 4)
+        >>> b = np.arange(7*4).reshape(7, 4)
+        >>> mask = np.zeros((7, 4), dtype=np.bool_)
+        >>> mask[np.logical_or(b < 4, b > 23)] = True
+        >>> stacked = np.vstack((np.zeros((1, 4)), a, np.zeros((1, 4))))
+        >>> ma = np.ma.MaskedArray(stacked, mask=mask)
+        >>> np.all(ma == get_masked_array(a, mask, np.int64))
+        True
+
+    """
+    data = np.asarray(data)
+    mask = np.asarray(mask, dtype=np.bool_)
+    # Make sure mask is an array and not just a single value, and that the data and
+    # mask sizes differ.
+    if mask.shape and data.size != mask.size:
+        shape = mask.shape
+        array_data = np.zeros(shape, dtype=dtype).ravel()
+        array_data[~mask.ravel()] = data.ravel()
+        array_data = array_data.reshape(shape)
+        return np.ma.MaskedArray(array_data, mask=mask)
+    return np.ma.MaskedArray(data, mask=mask, dtype=dtype)

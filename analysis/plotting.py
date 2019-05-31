@@ -38,6 +38,11 @@ class FigureSaver:
         plt.figure()
         ...
 
+    with FigureSaver() as saver:
+        fig = plt.figure()
+        ...
+        saver.save_figure(fig, "plot_name")
+
     """
 
     debug = False
@@ -61,27 +66,52 @@ class FigureSaver:
         "dpi": 200,
     }
 
-    def __init__(self, filename="", directory=None, debug=None, **kwargs):
-        if debug is not None:
+    def __init__(self, filename=None, directory=None, debug=None, **kwargs):
+        """Initialise figure saver.
+
+        Args:
+            filename ((iterable of) str or None): If None, disable automatic saving. Otherwise the
+                number of strings passed must match the number of opened figures at
+                the termination of the context manager.
+            directory ((iterable of) str or None): The directory to save figures in.
+                If None, use the class default.
+            debug (bool or None): If None, use the class default.
+
+        """
+        if debug is None:
+            # Reset to default.
+            self.debug = type(self).debug
+        else:
             self.debug = debug
 
-        if directory is not None:
+        if directory is None:
+            # Reset to default.
+            self.directory = type(self).directory
+        else:
             self.directory = directory
 
-        self.filenames = (filename,) if isinstance(filename, str) else filename
-        self.directories = (
-            (self.directory,) if isinstance(self.directory, str) else self.directory
-        )
-
-        if len(self.directories) != 1 and len(self.directories) != len(self.filenames):
-            raise ValueError(
-                "If more than one directory is given, the number of given directories "
-                "has to match the number of given file names. Got "
-                f"{len(self.directories)} directories and {len(self.filenames)} "
-                "file names."
+        if filename is None:
+            # Disable automatic saving.
+            logger.debug("Automatic saving disabled.")
+            self.filenames = None
+            self.directories = None
+        else:
+            self.filenames = (filename,) if isinstance(filename, str) else filename
+            self.directories = (
+                (self.directory,) if isinstance(self.directory, str) else self.directory
             )
-        if len(self.directories) == 1:
-            self.directories = [self.directories[0]] * len(self.filenames)
+
+            if len(self.directories) != 1 and len(self.directories) != len(
+                self.filenames
+            ):
+                raise ValueError(
+                    "If more than one directory is given, the number of given directories "
+                    "has to match the number of given file names. Got "
+                    f"{len(self.directories)} directories and {len(self.filenames)} "
+                    "file names."
+                )
+            if len(self.directories) == 1:
+                self.directories = [self.directories[0]] * len(self.filenames)
 
         self.options = self.debug_options.copy() if self.debug else self.options.copy()
         self.options.update(kwargs)
@@ -95,6 +125,7 @@ class FigureSaver:
 
     def __enter__(self):
         self.old_fignums = plt.get_fignums()
+        return self
 
     def __exit__(self, type, value, traceback):
         if type is not None:
@@ -125,14 +156,19 @@ class FigureSaver:
             fignums_save, self.directories, self.filenames
         ):
             fig = plt.figure(fignum)
-            self.save_figure(fig, directory, filename)
+            self.save_figure(fig, filename, directory)
 
-    def save_figure(self, fig, directory, filename):
-        filepath = os.path.expanduser(
-            os.path.abspath(os.path.expanduser(os.path.join(directory, filename)))
+    def save_figure(self, fig, filename, directory=None):
+        if directory is None:
+            # Use default.
+            directory = type(self).directory
+
+        filepath = (
+            os.path.expanduser(
+                os.path.abspath(os.path.expanduser(os.path.join(directory, filename)))
+            )
+            + self.suffix
         )
-
-        filepath = filepath + self.suffix
 
         logger.debug("Saving figure to '{}'.".format(filepath))
 
@@ -387,7 +423,8 @@ def partial_dependence_plot(
     model,
     X,
     features,
-    n_cols=3,
+    n_cols="auto",
+    prefer="columns",
     grid_resolution=100,
     percentiles=(0.05, 0.95),
     coverage=1,
@@ -403,7 +440,10 @@ def partial_dependence_plot(
             partial dependence plots are generated.
         features (list): A list of int or string with which to select
             columns from X. The type must match the column labels.
-        n_cols (int): Number of columns in the resulting plot.
+        n_cols (int or str): Number of columns in the resulting plot. If 'auto',
+            try to produce a square grid. Preference will be given to more rows or
+            more columns based on `prefer`.
+        prefer (str): If 'rows', prefer more rows. If 'columns', prefer more columns.
         grid_resolution (int): Number of points to plot between the
             specified percentiles.
         percentiles (tuple of float): Percentiles between which to plot the
@@ -422,8 +462,6 @@ def partial_dependence_plot(
         fig, ax: Figure and axes holding the pdp.
 
     """
-    if norm_y_ticks:
-        predicted_name = "relative " + predicted_name
     features = list(features)
 
     quantiles = X[features].quantile(percentiles)
@@ -465,8 +503,24 @@ def partial_dependence_plot(
     datasets = np.hstack(datasets)
     results = pd.DataFrame(datasets, columns=features)
 
+    # TODO:
+    if norm_y_ticks:
+        predicted_name = "relative " + predicted_name
+
+    valid = ("rows", "columns")
+    if prefer not in valid:
+        raise ValueError(
+            f"Unknown parameter value '{prefer}' for `prefer`."
+            f"Choose one of '{valid}'."
+        )
+
+    if prefer == "rows":
+        n_cols = int(math.floor(np.sqrt(len(features))))
+    else:
+        n_cols = int(math.ceil(np.sqrt(len(features))))
+
     fig, axes = plt.subplots(
-        nrows=int(math.ceil(float(len(features)) / n_cols)), ncols=n_cols, squeeze=False
+        nrows=int(math.ceil(len(features)) / n_cols), ncols=n_cols, squeeze=False
     )
 
     axes = axes.flatten()
