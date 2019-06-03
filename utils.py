@@ -37,7 +37,7 @@ class TqdmContext(tqdm):
     def update_to(self, total=None):
         if total is not None:
             self.total = total
-        self.update(iteration - self.n)
+        self.update()
 
 
 class Time:
@@ -115,13 +115,14 @@ def land_mask(n_lon=1440):
 
     Examples:
         >>> import numpy as np
-        >>> mask = land_mask(n_lon=1440)
-        >>> mask.dtype == np.bool_
+        >>> from wildfires.data.datasets import data_is_available
+        >>> print(True)
         True
-        >>> mask.sum()
-        343928
-        >>> mask.shape
-        (720, 1440)
+        >>> if data_is_available():
+        ...     mask = land_mask(n_lon=1440)
+        ...     assert mask.dtype == np.bool_
+        ...     assert mask.sum() == 343928
+        ...     assert mask.shape == (720, 1440)
 
     """
     assert n_lon % 2 == 0, (

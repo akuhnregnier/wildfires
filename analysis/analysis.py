@@ -68,6 +68,18 @@ def TripleFigureSaver(model_name, *args, **kwargs):
     )
 
 
+def print_dataset_times(datasets, latex=False):
+    """Print information about the dataset times to stdout."""
+    times_df = dataset_times(datasets.datasets)[2]
+    if times_df is not None:
+        if latex:
+            print(times_df.to_latex(index=False))
+        else:
+            print(times_df.to_string(index=False))
+    else:
+        print("No time information found.")
+
+
 if __name__ == "__main__":
     logging.config.dictConfig(LOGGING)
 
@@ -82,10 +94,9 @@ if __name__ == "__main__":
     # Dataset selection.
     ###################################################################################
 
-    selection = get_all_datasets(
-        ignore_names=IGNORED_DATASETS + ["GSMaP Dry Day Period"]
-    )
+    selection = get_all_datasets(ignore_names=IGNORED_DATASETS)
 
+    selection.remove_datasets("GSMaP Dry Day Period")
     selection = selection.select_variables(
         [
             "AGBtree",
@@ -111,11 +122,10 @@ if __name__ == "__main__":
     )
     selection.show("pretty")
 
-    times_df = dataset_times(selection.datasets)[2]
-    if times_df is not None:
-        print(times_df.to_string(index=False))
-        # print(times_df.to_latex(index=False))
+    print_dataset_times(selection)
 
+    # TODO: Caching on a per-dataset basis, so as to avoid recalculations of
+    # (partially overlapping) subsets.
     monthly_datasets, mean_datasets, climatology_datasets = prepare_selection(selection)
 
     ###################################################################################
@@ -124,6 +134,7 @@ if __name__ == "__main__":
     mpl.rcParams["figure.figsize"] = (8, 5)
 
     # Get land mask.
+    # TODO: 1440 should be selection.datasets[0].cubes[0].shape[2]
     land_mask = ~get_land_mask(n_lon=1440)
 
     with FigureSaver("land_mask"):

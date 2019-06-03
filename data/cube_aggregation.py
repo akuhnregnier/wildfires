@@ -191,7 +191,7 @@ class Datasets:
     Examples:
         >>> from .datasets import HYDE, data_is_available
         >>> instance_sel = Datasets()
-        >>> if data_is_available:
+        >>> if data_is_available():
         ...     sel = Datasets().add(HYDE())
         ...     assert "popd" in sel.raw_variable_names
 
