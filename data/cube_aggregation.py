@@ -1004,7 +1004,7 @@ class Datasets:
         # Make sure masks have a matching shape.
         for mask in masks:
             if mask is not None:
-                mask = match_shape(land_mask, cube_shape)
+                mask = match_shape(mask, cube_shape)
                 final_masks.append(mask)
 
         if final_masks:
