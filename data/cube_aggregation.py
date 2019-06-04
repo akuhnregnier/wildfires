@@ -17,11 +17,9 @@ import os
 import platform
 import re
 import socket
-import warnings
 from collections import OrderedDict
 from copy import deepcopy
 from functools import partial, reduce, wraps
-from inspect import iscode
 from multiprocessing.dummy import Pool as ThreadedPool
 from pprint import pformat, pprint
 from subprocess import CalledProcessError, check_output
@@ -29,11 +27,18 @@ from subprocess import CalledProcessError, check_output
 import iris
 import iris.coord_categorisation
 import numpy as np
-from joblib import Memory
 
 import wildfires.data.datasets as wildfire_datasets
+from joblib import Memory
 from wildfires.analysis.processing import fill_cube
-from wildfires.data.datasets import DATA_DIR, data_is_available, dataset_times
+from wildfires.data.datasets import (
+    DATA_DIR,
+    data_is_available,
+    dataset_times,
+    homogenise_cube_mask,
+    process_dataset,
+)
+from wildfires.joblib.caching import CodeObj, wrap_decorator
 from wildfires.logging_config import LOGGING
 from wildfires.utils import match_shape
 
@@ -57,24 +62,101 @@ IGNORED_DATASETS = [
 # TODO: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
 
 
-def homogenise_cube_mask(cube):
-    """Ensure cube.data is a masked array with a full mask (in-place).
+@wrap_decorator
+def datasets_cache(func):
+    # NOTE: There is a known bug preventing joblib from pickling numpy MaskedArray!
+    # NOTE: https://github.com/joblib/joblib/issues/573
+    # NOTE: We will avoid this bug by replacing Dataset instances (which may hold
+    # NOTE: references to masked arrays) with their (shallow) immutable string
+    # NOTE: representations.
+    """Circumvent bug preventing joblib from pickling numpy MaskedArray instances.
+
+    This applies to MaskedArray in the input arguments only.
+
+    Do this by giving joblib a different version of the input arguments to cache,
+    while still passing the normal arguments to the decorated function.
 
     Note:
-        This function realises the cube's lazy data (if any).
+        `dataset_function` argument in `func` must be a keyword argument.
 
     """
-    array = cube.data
-    if isinstance(array, np.ma.core.MaskedArray):
-        if isinstance(array.mask, np.ndarray):
-            return cube
-        else:
-            if array.mask:
-                raise ValueError(
-                    "The only mask entry is True, meaning all entries are masked!"
-                )
-    cube.data = np.ma.MaskedArray(array, mask=np.zeros_like(array, dtype=np.bool_))
-    return cube
+
+    @wraps(func)
+    def takes_original_selection(*orig_args, **orig_kwargs):
+        """Function that is visible to the outside."""
+        if not isinstance(orig_args[0], Datasets) or any(
+            isinstance(arg, Datasets)
+            for arg in list(orig_args[1:]) + list(orig_kwargs.values())
+        ):
+            raise TypeError(
+                "The first positional argument, and only the first argument "
+                f"should be a `Datasets` instance, got '{type(orig_args[0])}' "
+                "as the first argument."
+            )
+        original_selection = orig_args[0]
+        string_representation = "\n".join(
+            dataset._shallow for dataset in original_selection.datasets
+        ) + str(original_selection.get("all", "raw"))
+
+        # Ignore instances with a __call__ method here which also wouldn't necessarily
+        # have a __name__ attribute that could be used for sorting!
+        functions = [func]
+        for param_name, param_value in inspect.signature(func).parameters.items():
+            default_value = param_value.default
+            # If the default value is a function, and it is not given in `orig_kwargs`
+            # already. This is guaranteed to work as long as `func` employs a
+            # keyword-only argument for functions like this.
+            if (
+                param_name not in orig_kwargs
+                and default_value is not inspect.Parameter.empty
+                and hasattr(default_value, "__code__")
+            ):
+                functions.append(default_value)
+                orig_kwargs[param_name] = default_value
+
+        functions.extend(
+            f
+            for f in list(orig_args[1:]) + list(orig_kwargs.values())
+            if hasattr(f, "__code__")
+        )
+
+        functions = list(set(functions))
+        functions.sort(key=lambda f: f.__name__)
+        func_code = tuple(CodeObj(f.__code__).hashable() for f in functions)
+
+        assert len(func_code) == 2, (
+            "Only 2 functions are currently supported. One is the decorated function, "
+            "the other is the processing function `dataset_function`."
+        )
+
+        @memory.cache(ignore=["original_selection", "dataset_function"])
+        def takes_split_selection(
+            func_code,
+            string_representation,
+            original_selection,
+            *args,
+            dataset_function=None,
+            **kwargs,
+        ):
+            # NOTE: The reason why this works is that the combination of
+            # [original_selection] + args here is fed the original `orig_args`
+            # iterable. In effect, the `original_selection` argument absorbs one of
+            # the elements of `orig_args` in the function call to
+            # `takes_split_selection`, so it is not passed in twice. The `*args`
+            # parameter above absorbs the rest. This explicit listing of
+            # `original_selection` is necessary, as we need to explicitly ignore
+            # `original_selection`, which is the whole point of this decorator.
+            assert dataset_function is not None
+            out = func(
+                original_selection, *args, dataset_function=dataset_function, **kwargs
+            )
+            return out
+
+        return takes_split_selection(
+            func_code, string_representation, *orig_args, **orig_kwargs
+        )
+
+    return takes_original_selection
 
 
 def get_qstat_ncpus():
@@ -1064,244 +1146,11 @@ def get_all_datasets(
     return selection
 
 
-def wrap_decorator(decorator):
-    @wraps(decorator)
-    def new_decorator(*args, **kwargs):
-        if len(args) == 1 and not kwargs and callable(args[0]):
-            return decorator(args[0])
-
-        def decorator_wrapper(f):
-            return decorator(f, *args, **kwargs)
-
-        return decorator_wrapper
-
-    return new_decorator
-
-
-class CodeObj:
-    """Return a (somewhat) flattened, hashable version of func.__code__.
-
-    For a function `func`, use like so:
-        code_obj = CodeObj(func.__code__).hashable()
-
-    """
-
-    expansion_limit = 1000
-
-    def __init__(self, code, __expansion_count=0):
-        assert iscode(code), "Must pass in a code object (function.__code__)."
-        self.code = code
-        self.__expansion_count = __expansion_count
-
-    def hashable(self):
-        if self.__expansion_count > self.expansion_limit:
-            raise RuntimeError(
-                "Maximum number of code object expansions exceeded ({} > {}).".format(
-                    self.__expansion_count, self.expansion_limit
-                )
-            )
-
-        # Get co_ attributes that describe the code object. Ignore the line number and
-        # file name of the function definition here, since we don't want unrelated
-        # changes to cause a recalculation of a cached result. Changes in comments are
-        # ignored, but changes in the docstring will still causes comparisons to fail
-        # (this could be ignored as well, however)!
-        self.code_dict = OrderedDict(
-            (attr, getattr(self.code, attr))
-            for attr in dir(self.code)
-            if "co_" in attr
-            and "co_firstlineno" not in attr
-            and "co_filename" not in attr
-        )
-        # Replace any nested code object (eg. for list comprehensions) with a reduced
-        # version by calling the hashable function recursively.
-        new_co_consts = []
-        for value in self.code_dict["co_consts"]:
-            if iscode(value):
-                self.__expansion_count += 1
-                value = type(self)(value, self.__expansion_count).hashable()
-            new_co_consts.append(value)
-
-        self.code_dict["co_consts"] = tuple(new_co_consts)
-
-        return tuple(self.code_dict.values())
-
-
-@wrap_decorator
-def clever_cache(func):
-    # NOTE: There is a known bug preventing joblib from pickling numpy MaskedArray!
-    # NOTE: https://github.com/joblib/joblib/issues/573
-    # NOTE: We will avoid this bug by replacing Dataset instances (which may hold
-    # NOTE: references to masked arrays) with their (shallow) immutable string
-    # NOTE: representations.
-    """Circumvent bug preventing joblib from pickling numpy MaskedArray instances.
-
-    This applies to MaskedArray in the input arguments only.
-
-    Do this by giving joblib a different version of the input arguments to cache,
-    while still passing the normal arguments to the decorated function.
-
-    """
-
-    @wraps(func)
-    def takes_original_selection(*orig_args, **orig_kwargs):
-        """Function that is visible to the outside."""
-        if not isinstance(orig_args[0], Datasets) or any(
-            isinstance(arg, Datasets)
-            for arg in list(orig_args[1:]) + list(orig_kwargs.values())
-        ):
-            raise TypeError(
-                "The first positional argument, and only the first argument "
-                f"should be a `Datasets` instance, got '{type(orig_args[0])}' "
-                "as the first argument."
-            )
-        original_selection = orig_args[0]
-        string_representation = "\n".join(
-            dataset._shallow for dataset in original_selection.datasets
-        ) + str(original_selection.get("all", "raw"))
-
-        # Ignore instances with a __call__ method here which also wouldn't necessarily
-        # have a __name__ attribute that could be used for sorting!
-        functions = [func]
-        for param_name, param_value in inspect.signature(func).parameters.items():
-            default_value = param_value.default
-            # If the default value is a function, and it is not given in `orig_kwargs`
-            # already. This is guaranteed to work as long as `func` employs a
-            # keyword-only argument for functions like this.
-            if (
-                param_name not in orig_kwargs
-                and default_value is not inspect.Parameter.empty
-                and hasattr(default_value, "__code__")
-            ):
-                functions.append(default_value)
-                orig_kwargs[param_name] = default_value
-
-        functions.extend(
-            f
-            for f in list(orig_args[1:]) + list(orig_kwargs.values())
-            if hasattr(f, "__code__")
-        )
-
-        functions = list(set(functions))
-        functions.sort(key=lambda f: f.__name__)
-        func_code = tuple(CodeObj(f.__code__).hashable() for f in functions)
-
-        assert len(func_code) == 2, (
-            "Only 2 functions are currently supported. One is the decorated function, "
-            "the other is the processing function `dataset_function`."
-        )
-
-        @memory.cache(ignore=["original_selection", "dataset_function"])
-        def takes_split_selection(
-            func_code,
-            string_representation,
-            original_selection,
-            *args,
-            dataset_function=None,
-            **kwargs,
-        ):
-            # NOTE: The reason why this works is that the combination of
-            # [original_selection] + args here is fed the original `orig_args`
-            # iterable. In effect, the `original_selection` argument absorbs one of
-            # the elements of `orig_args` in the function call to
-            # `takes_split_selection`, so it is not passed in twice. The `*args`
-            # parameter above absorbs the rest. This explicit listing of
-            # `original_selection` is necessary, as we need to explicitly ignore
-            # `original_selection`, which is the whole point of this decorator.
-            assert dataset_function is not None
-            out = func(
-                original_selection, *args, dataset_function=dataset_function, **kwargs
-            )
-            return out
-
-        return takes_split_selection(
-            func_code, string_representation, *orig_args, **orig_kwargs
-        )
-
-    return takes_original_selection
-
-
 def print_datasets_dates(selection):
     min_time, max_time, times_df = dataset_times(selection.datasets)
     print(times_df)
 
 
-def process_dataset(monthly_dataset, min_time, max_time):
-    """Modifies `dataset` in-place, also generating temporal averages.
-
-    TODO:
-        Currently `dataset` is modified by regridding, temporal selection and
-        `get_monthly_data`. Should this be circumvented by copying it?
-
-    Returns:
-        tuple of `Dataset`
-
-    """
-    # Create empty datasets to hold the results of the different temporal averaging
-    # procedures.
-
-    climatology = monthly_dataset.copy(deep=False)
-    climatology.cubes = iris.cube.CubeList([])
-
-    mean_dataset = deepcopy(climatology)
-
-    # Limit the amount of data that has to be processed.
-    monthly_dataset.limit_months(min_time, max_time)
-
-    # Regrid cubes to the same lat-lon grid.
-    # TODO: change lat and lon limits and also the number of points!!
-    # Always work in 0.25 degree steps? From the same starting point?
-    monthly_dataset.regrid()
-
-    # Generate overall temporal mean. Do this before monthly data is created for all
-    # datasets, since this will only increase the computational burden and skew the
-    # mean towards newly synthesised months (created using `get_monthly_data`,
-    # for static, yearly, or climatological datasets).
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", message=r".*Collapsing a non-contiguous coordinate.*"
-        )
-        for i, cube in enumerate(monthly_dataset):
-            # TODO: Implement __setitem__ for Dataset to make this cleaner.
-            if cube.coords("time"):
-                mean_dataset.cubes.append(cube.collapsed("time", iris.analysis.MEAN))
-            else:
-                # XXX: Should we copy the cube here?
-                mean_dataset.cubes.append(cube)
-
-    # Get monthly data over the chosen interval for all dataset.
-    # TODO: Inplace argument for get_monthly_data methods?
-    monthly_dataset.cubes = monthly_dataset.get_monthly_data(min_time, max_time)
-
-    # Calculate monthly climatology.
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", message=r".*Collapsing a non-contiguous coordinate.*"
-        )
-        for i, cube in enumerate(monthly_dataset):
-            if not cube.coords("month_number"):
-                iris.coord_categorisation.add_month_number(cube, "time")
-            climatology.cubes.append(
-                cube.aggregated_by("month_number", iris.analysis.MEAN)
-            )
-
-    for dataset in (monthly_dataset, mean_dataset, climatology):
-        for cube in dataset:
-            # This function has the wanted side-effect of realising the data.
-            # Without this, calculations of things like the total temporal mean are
-            # delayed until the cube is needed, which we do not want here as we are
-            # caching the results.
-            homogenise_cube_mask(cube)
-
-    # The data returned here needs to be realised (not lazy), which is ensured by
-    # calling homogenise_cube_mask() on every cube above.
-    return monthly_dataset, mean_dataset, climatology
-
-
-# TODO: Use keyword-only argument here to make the simple function detection in the
-# decorator work. This workaround could be removed with some more advanced usage of
-# the function Signature object.
-@clever_cache
 def prepare_selection(selection, *, dataset_function=process_dataset):
     """Prepare cubes matching the given selection for analysis.
 
@@ -1354,24 +1203,24 @@ if __name__ == "__main__":
     )
     selected_names = [
         "AGBtree",
-        "maximum temperature",
-        "minimum temperature",
+        # "maximum temperature",
+        # "minimum temperature",
         "Soil Water Index with T=1",
-        "ShrubAll",
-        "TreeAll",
-        "pftBare",
-        "pftCrop",
-        "pftHerb",
-        "monthly burned area",
-        "dry_days",
-        "dry_day_period",
-        "precip",
-        "SIF",
-        "popd",
-        "Combined Flash Rate Monthly Climatology",
-        "VODorig",
-        "Fraction of Absorbed Photosynthetically Active Radiation",
-        "Leaf Area Index",
+        # "ShrubAll",
+        # "TreeAll",
+        # "pftBare",
+        # "pftCrop",
+        # "pftHerb",
+        # "monthly burned area",
+        # "dry_days",
+        # "dry_day_period",
+        # "precip",
+        # "SIF",
+        # "popd",
+        # "Combined Flash Rate Monthly Climatology",
+        # "VODorig",
+        # "Fraction of Absorbed Photosynthetically Active Radiation",
+        # "Leaf Area Index",
     ]
 
     selection = selection.select_variables(selected_names, strict=True)

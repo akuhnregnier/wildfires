@@ -4,6 +4,7 @@
 
 """
 import glob
+import inspect
 import logging
 import logging.config
 import operator
@@ -14,6 +15,7 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from copy import copy, deepcopy
 from datetime import datetime
+from functools import wraps
 
 import cf_units
 import h5py
@@ -32,9 +34,14 @@ from iris.time import PartialDateTime
 from pyhdf.SD import SD, SDC
 from tqdm import tqdm
 
+from joblib import Memory
+from wildfires.joblib.caching import CodeObj, wrap_decorator
+from wildfires.joblib.iris_backend import register_backend
+
 logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.expanduser("~"), "FIREDATA")
+
 
 repo_dir = os.path.join(os.path.dirname(__file__), os.pardir)
 repo = Repo(repo_dir)
@@ -52,6 +59,223 @@ def data_is_available():
 
     """
     return os.path.exists(DATA_DIR)
+
+
+register_backend()
+iris_memory = Memory(
+    location=DATA_DIR if data_is_available() else None, backend="iris", verbose=1
+)
+
+
+@wrap_decorator
+def dataset_cache(func):
+    # NOTE: There is a known bug preventing joblib from pickling numpy MaskedArray!
+    # NOTE: https://github.com/joblib/joblib/issues/573
+    # NOTE: We will avoid this bug by replacing Dataset instances (which may hold
+    # NOTE: references to masked arrays) with their (shallow) immutable string
+    # NOTE: representations.
+    """Circumvent bug preventing joblib from pickling numpy MaskedArray instances.
+
+    This applies to MaskedArray in the input arguments only.
+
+    Do this by giving joblib a different version of the input arguments to cache,
+    while still passing the normal arguments to the decorated function.
+
+    Note:
+        `dataset_function` argument in `func` must be a keyword argument.
+
+    """
+
+    @wraps(func)
+    def accepts_dataset(*orig_args, **orig_kwargs):
+        """Function that is visible to the outside."""
+        if not isinstance(orig_args[0], Dataset) or any(
+            isinstance(arg, Dataset)
+            for arg in list(orig_args[1:]) + list(orig_kwargs.values())
+        ):
+            raise TypeError(
+                "The first positional argument, and only the first argument "
+                f"should be a `Dataset` instance, got '{type(orig_args[0])}' "
+                "as the first argument."
+            )
+        dataset = orig_args[0]
+        string_representation = dataset._shallow
+
+        # Ignore instances with a __call__ method here which also wouldn't necessarily
+        # have a __name__ attribute that could be used for sorting!
+        functions = [func]
+        for param_name, param_value in inspect.signature(func).parameters.items():
+            default_value = param_value.default
+            # If the default value is a function, and it is not given in `orig_kwargs`
+            # already. This is guaranteed to work as long as `func` employs a
+            # keyword-only argument for functions like this.
+            if (
+                param_name not in orig_kwargs
+                and default_value is not inspect.Parameter.empty
+                and hasattr(default_value, "__code__")
+            ):
+                functions.append(default_value)
+                orig_kwargs[param_name] = default_value
+
+        functions.extend(
+            f
+            for f in list(orig_args[1:]) + list(orig_kwargs.values())
+            if hasattr(f, "__code__")
+        )
+
+        functions = list(set(functions))
+        functions.sort(key=lambda f: f.__name__)
+        func_code = tuple(CodeObj(f.__code__).hashable() for f in functions)
+
+        assert len(func_code) == 2, (
+            "Only 2 functions are currently supported. One is the decorated function, "
+            "the other is the processing function `dataset_function`."
+        )
+
+        @iris_memory.cache(ignore=["original_dataset", "dataset_function"])
+        def accepts_string_dataset(
+            func_code,
+            string_representation,
+            original_dataset,
+            *args,
+            dataset_function=None,
+            **kwargs,
+        ):
+            # NOTE: The reason why this works is that the combination of
+            # [original_selection] + args here is fed the original `orig_args`
+            # iterable. In effect, the `original_selection` argument absorbs one of
+            # the elements of `orig_args` in the function call to
+            # `takes_split_selection`, so it is not passed in twice. The `*args`
+            # parameter above absorbs the rest. This explicit listing of
+            # `original_selection` is necessary, as we need to explicitly ignore
+            # `original_selection`, which is the whole point of this decorator.
+            assert dataset_function is not None
+            out = func(
+                original_dataset, *args, dataset_function=dataset_function, **kwargs
+            )
+            return out
+
+        return accepts_string_dataset(
+            func_code, string_representation, *orig_args, **orig_kwargs
+        )
+
+    return accepts_dataset
+
+
+def homogenise_cube_mask(cube):
+    """Ensure cube.data is a masked array with a full mask (in-place).
+
+    Note:
+        This function realises the cube's lazy data (if any).
+
+    """
+    array = cube.data
+    if isinstance(array, np.ma.core.MaskedArray):
+        if isinstance(array.mask, np.ndarray):
+            return cube
+        else:
+            if array.mask:
+                raise ValueError(
+                    "The only mask entry is True, meaning all entries are masked!"
+                )
+    cube.data = np.ma.MaskedArray(array, mask=np.zeros_like(array, dtype=np.bool_))
+    return cube
+
+
+@dataset_cache
+def process_dataset(monthly_dataset, min_time, max_time, *args, **kwargs):
+    """Modifies `monthly_dataset` in-place, also generating temporal averages.
+
+    TODO:
+        Currently `monthly_dataset` is modified by regridding, temporal selection and
+        `get_monthly_data`. Should this be circumvented by copying it?
+
+    Returns:
+        tuple of `Dataset`
+
+    """
+    # Limit the amount of data that has to be processed.
+    monthly_dataset.limit_months(min_time, max_time)
+
+    # Regrid cubes to the same lat-lon grid.
+    # TODO: change lat and lon limits and also the number of points!!
+    # Always work in 0.25 degree steps? From the same starting point?
+    monthly_dataset.regrid()
+
+    # Generate overall temporal mean. Do this before monthly data is created for all
+    # datasets, since this will only increase the computational burden and skew the
+    # mean towards newly synthesised months (created using `get_monthly_data`,
+    # for static, yearly, or climatological datasets).
+    mean_dataset = monthly_dataset.get_mean_dataset()
+
+    climatology = monthly_dataset.get_climatology_dataset(min_time, max_time)
+
+    # Get monthly data over the chosen interval for all dataset.
+    # TODO: Inplace argument for get_monthly_data methods?
+    monthly_dataset = monthly_dataset.get_monthly_dataset(min_time, max_time)
+
+    return monthly_dataset, mean_dataset, climatology
+
+
+@dataset_cache
+def get_dataset_mean_cubes(dataset, *args, **kwargs):
+    """Return mean cubes."""
+    # TODO: Should we copy the cube if it does not require averaging?
+    mean_cubes = iris.cube.CubeList(
+        cube.collapsed("time", iris.analysis.MEAN) if cube.coords("time") else cube
+        for cube in dataset
+    )
+    for cube in mean_cubes:
+        # This function has the wanted side-effect of realising the data.
+        # Without this, calculations of things like the total temporal mean are
+        # delayed until the cube is needed, which we do not want here as we are
+        # caching the results.
+        homogenise_cube_mask(cube)
+
+    # This return value will be cached by writing it to disk as NetCDF files.
+    return mean_cubes
+
+
+@dataset_cache
+def get_dataset_monthly_cubes(dataset, start, end, *args, **kwargs):
+    """Return monthly cubes between two dates."""
+    monthly_cubes = dataset.get_monthly_data(start, end)
+    for cube in monthly_cubes:
+        # This function has the wanted side-effect of realising the data.
+        # Without this, calculations of things like the total temporal mean are
+        # delayed until the cube is needed, which we do not want here as we are
+        # caching the results.
+        homogenise_cube_mask(cube)
+
+    # This return value will be cached by writing it to disk as NetCDF files.
+    return monthly_cubes
+
+
+@dataset_cache
+def get_dataset_climatology_cubes(dataset, start, end, *args, **kwargs):
+    monthly_dataset = dataset.copy()
+    monthly_dataset.cubes = get_dataset_monthly_cubes(dataset, start, end)
+    climatology_cubes = iris.cube.CubeList()
+    # Calculate monthly climatology.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=r".*Collapsing a non-contiguous coordinate.*"
+        )
+        for cube in monthly_dataset:
+            if not cube.coords("month_number"):
+                iris.coord_categorisation.add_month_number(cube, "time")
+            climatology_cubes.append(
+                cube.aggregated_by("month_number", iris.analysis.MEAN)
+            )
+    for cube in climatology_cubes:
+        # This function has the wanted side-effect of realising the data.
+        # Without this, calculations of things like the total temporal mean are
+        # delayed until the cube is needed, which we do not want here as we are
+        # caching the results.
+        homogenise_cube_mask(cube)
+
+    # This return value will be cached by writing it to disk as NetCDF files.
+    return climatology_cubes
 
 
 def join_adjacent_intervals(intervals):
@@ -219,6 +443,40 @@ def get_centres(data):
     return (data[:-1] + data[1:]) / 2.0
 
 
+def lat_lon_match(
+    cube,
+    new_latitudes=get_centres(np.linspace(-90, 90, 721)),
+    new_longitudes=get_centres(np.linspace(-180, 180, 1441)),
+):
+    """Test whether regridding is necessary."""
+    n_dim = len(cube.shape)
+    assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
+
+    # Using getattr allows the input coordinates to be both
+    # iris.coords.DimCoord (with a 'points' attribute) as well as normal
+    # numpy arrays.
+    new_latitudes = iris.coords.DimCoord(
+        getattr(new_latitudes, "points", new_latitudes),
+        standard_name="latitude",
+        units="degrees",
+    )
+    new_longitudes = iris.coords.DimCoord(
+        getattr(new_longitudes, "points", new_longitudes),
+        standard_name="longitude",
+        units="degrees",
+    )
+
+    for (coord_old, coord_new) in (
+        (cube.coord("latitude"), new_latitudes),
+        (cube.coord("longitude"), new_longitudes),
+    ):
+        if tuple(coord_old.points) != tuple(coord_new.points):
+            break
+    else:
+        return True
+    return False
+
+
 def regrid(
     cube,
     area_weighted=False,
@@ -238,41 +496,16 @@ def regrid(
     cached regridders.
 
     """
-    logger.debug("Regridding '{}'.".format(cube.name()))
     n_dim = len(cube.shape)
     assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
 
-    # Using getattr allows the input coordinates to be both
-    # iris.coords.DimCoord (with a 'points' attribute) as well as normal
-    # numpy arrays.
-    new_latitudes = iris.coords.DimCoord(
-        getattr(new_latitudes, "points", new_latitudes),
-        standard_name="latitude",
-        units="degrees",
-    )
-    new_longitudes = iris.coords.DimCoord(
-        getattr(new_longitudes, "points", new_longitudes),
-        standard_name="longitude",
-        units="degrees",
-    )
-
-    matching = False
-    for (coord_old, coord_new) in (
-        (cube.coord("latitude"), new_latitudes),
-        (cube.coord("longitude"), new_longitudes),
-    ):
-        if tuple(coord_old.points) == tuple(coord_new.points):
-            matching = True
-        else:
-            matching = False
-            break
-
-    if matching:
+    # TODO: Check that coordinate system discrepancies are picked up by
+    # this check!!
+    if lat_lon_match(cube, new_latitudes, new_longitudes):
         logger.info("No regridding needed for '{}'.".format(cube.name()))
         return cube
 
-    # TODO: Check that coordinate system discrepancies are picked up by
-    # this check!!
+    logger.debug("Regridding '{}'.".format(cube.name()))
 
     if n_dim == 3:
         # Call the regridding function recursively with time slices of the
@@ -425,7 +658,7 @@ class Dataset(ABC):
             str
 
         """
-        self.variable_names()
+        self.variable_names()  # Implicit sorting of cubes.
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore", message=((r".*guessing contiguous bounds."))
@@ -925,6 +1158,33 @@ class Dataset(ABC):
 
         final_cubelist = interp_cubes.concatenate()
         return final_cubelist
+
+    def get_mean_dataset(self):
+        """Return new `Dataset` containing mean cubes between two dates.
+
+        Note:
+            If cached data is retrieved, returned cubes may contain lazy data.
+
+        """
+        mean_dataset = self.copy()
+        mean_dataset.cubes = get_dataset_mean_cubes(self)
+        return mean_dataset
+
+    def get_monthly_dataset(self, start, end):
+        """Return new `Dataset` containing monthly cubes between two dates.
+
+        Note:
+            If cached data is retrieved, returned cubes may contain lazy data.
+
+        """
+        monthly_dataset = self.copy()
+        monthly_dataset.cubes = get_dataset_monthly_cubes(self, start, end)
+        return monthly_dataset
+
+    def get_climatology_dataset(self, start, end):
+        climatology_dataset = self.copy()
+        climatology_dataset.cubes = get_dataset_climatology_cubes(self, start, end)
+        return climatology_dataset
 
 
 class AvitabileAGB(Dataset):

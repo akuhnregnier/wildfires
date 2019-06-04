@@ -11,11 +11,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from joblib import Memory
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
 
+from joblib import Memory
 from wildfires.analysis.plotting import (
     FigureSaver,
     cube_plotting,
@@ -126,6 +126,7 @@ if __name__ == "__main__":
 
     # TODO: Caching on a per-dataset basis, so as to avoid recalculations of
     # (partially overlapping) subsets.
+    # TODO: Caching of specific retrievals, like monthly data or climatologies.
     monthly_datasets, mean_datasets, climatology_datasets = prepare_selection(selection)
 
     ###################################################################################
@@ -315,6 +316,14 @@ if __name__ == "__main__":
     print(exog_data.columns)
 
     ###################################################################################
+    # End of Data Creation.
+    ###################################################################################
+
+    ###################################################################################
+    # Start of variable analysis!!
+    ###################################################################################
+
+    ###################################################################################
     # VIF analysis.
     ###################################################################################
 
@@ -336,43 +345,6 @@ if __name__ == "__main__":
             index=False, float_format="{:0.1f}".format
         )
     )
-
-    ###################################################################################
-    # GLM.
-    ###################################################################################
-
-    model = sm.GLM(endog_data, exog_data, family=sm.families.Binomial())
-    model_results = model.fit()
-
-    print(model_results.summary())
-    print("R2:", r2_score(y_true=endog_data, y_pred=model_results.fittedvalues))
-
-    mpl.rcParams["figure.figsize"] = (4, 2.7)
-
-    with FigureSaver("hexbin_GLM1"):
-        plt.figure()
-        plt.hexbin(endog_data, model_results.fittedvalues, bins="log")
-        plt.xlabel("real data")
-        plt.ylabel("prediction")
-        plt.colorbar()
-
-    # Data generation.
-
-    # Predicted burned area values.
-    ba_predicted = get_masked_array(model_results.fittedvalues, master_mask)
-
-    # Observed values.
-    ba_data = get_masked_array(endog_data.values, master_mask)
-
-    # Plotting of burned area data & predictions:
-    #  - ba_predicted: predicted burned area
-    #  - ba_data: observed
-    #  - model_name: Name for titles AND filenames
-    model_name = "GLMv1"
-    with TripleFigureSaver(model_name):
-        figs = map_model_output(
-            ba_predicted, ba_data, model_name, normal_coast_linewidth
-        )
 
     mpl.rcParams["figure.figsize"] = (5, 3)
 
@@ -428,6 +400,71 @@ if __name__ == "__main__":
 
         # ax.set_title("Correlation Matrix", pad=40)
         fig.tight_layout()
+
+    ###################################################################################
+    # # Creating backup slides
+    # ## First the datasets that were simply selected
+    # ## Then the datasets after they were modified with NN interpolation and isolated outlier removal
+    ###################################################################################
+
+    mpl.rcParams["figure.figsize"] = (5, 3.8)
+
+    for cube in masked_datasets.cubes:
+        with FigureSaver("backup_" + cube.name().replace(" ", "_")):
+            fig = cube_plotting(
+                cube,
+                log=log_map(cube.name()),
+                coastline_kwargs={"linewidth": normal_coast_linewidth},
+            )
+
+    for cube in filled_datasets.cubes:
+        with FigureSaver("backup_mod_" + cube.name().replace(" ", "_")):
+            fig = cube_plotting(
+                cube,
+                log=log_map(cube.name()),
+                coastline_kwargs={"linewidth": normal_coast_linewidth},
+            )
+
+    ###################################################################################
+    # Model Fitting.
+    ###################################################################################
+
+    ###################################################################################
+    # GLM.
+    ###################################################################################
+
+    model = sm.GLM(endog_data, exog_data, family=sm.families.Binomial())
+    model_results = model.fit()
+
+    print(model_results.summary())
+    print("R2:", r2_score(y_true=endog_data, y_pred=model_results.fittedvalues))
+
+    mpl.rcParams["figure.figsize"] = (4, 2.7)
+
+    with FigureSaver("hexbin_GLM1"):
+        plt.figure()
+        plt.hexbin(endog_data, model_results.fittedvalues, bins="log")
+        plt.xlabel("real data")
+        plt.ylabel("prediction")
+        plt.colorbar()
+
+    # Data generation.
+
+    # Predicted burned area values.
+    ba_predicted = get_masked_array(model_results.fittedvalues, master_mask)
+
+    # Observed values.
+    ba_data = get_masked_array(endog_data.values, master_mask)
+
+    # Plotting of burned area data & predictions:
+    #  - ba_predicted: predicted burned area
+    #  - ba_data: observed
+    #  - model_name: Name for titles AND filenames
+    model_name = "GLMv1"
+    with TripleFigureSaver(model_name):
+        figs = map_model_output(
+            ba_predicted, ba_data, model_name, normal_coast_linewidth
+        )
 
     print(model_results.summary().as_latex())
 
@@ -509,27 +546,3 @@ if __name__ == "__main__":
             index=False, float_format="{:0.3f}".format
         )
     )
-
-    ###################################################################################
-    # # Creating backup slides
-    # ## First the datasets that were simply selected
-    # ## Then the datasets after they were modified with NN interpolation and isolated outlier removal
-    ###################################################################################
-
-    mpl.rcParams["figure.figsize"] = (5, 3.8)
-
-    for cube in masked_datasets.cubes:
-        with FigureSaver("backup_" + cube.name().replace(" ", "_")):
-            fig = cube_plotting(
-                cube,
-                log=log_map(cube.name()),
-                coastline_kwargs={"linewidth": normal_coast_linewidth},
-            )
-
-    for cube in filled_datasets.cubes:
-        with FigureSaver("backup_mod_" + cube.name().replace(" ", "_")):
-            fig = cube_plotting(
-                cube,
-                log=log_map(cube.name()),
-                coastline_kwargs={"linewidth": normal_coast_linewidth},
-            )

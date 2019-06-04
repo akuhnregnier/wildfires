@@ -12,9 +12,9 @@ import numpy as np
 import pytest
 from dateutil.relativedelta import relativedelta
 from iris.time import PartialDateTime
-from joblib import Memory
 
 import wildfires.data.datasets as wildfire_datasets
+from joblib import Memory
 from test_datasets import data_availability
 from wildfires.data.cube_aggregation import Datasets
 from wildfires.data.datasets import get_centres

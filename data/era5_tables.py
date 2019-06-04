@@ -9,8 +9,8 @@ import re
 
 import requests
 from bs4 import BeautifulSoup
-from joblib import Memory
 
+from joblib import Memory
 from wildfires.data.datasets import DATA_DIR, data_is_available
 from wildfires.logging_config import LOGGING
 
