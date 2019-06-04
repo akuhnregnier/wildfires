@@ -68,6 +68,7 @@ iris_memory = Memory(
 
 @wrap_decorator
 def dataset_cache(func):
+    # FIXME:
     return func
     # NOTE: There is a known bug preventing joblib from pickling numpy MaskedArray!
     # NOTE: https://github.com/joblib/joblib/issues/573

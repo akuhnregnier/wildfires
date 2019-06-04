@@ -1226,12 +1226,21 @@ if __name__ == "__main__":
 
     # selection = selection.select_variables(selected_names, strict=True)
 
-    from wildfires.data.datasets import AvitabileThurnerAGB, Copernicus_SWI, iris_memory
+    from wildfires.data.datasets import (
+        AvitabileThurnerAGB,
+        Copernicus_SWI,
+        iris_memory,
+        ERA5_DryDayPeriod,
+        ERA5_CAPEPrecip,
+    )
 
     iris_memory.clear()
-    selection = Datasets() + AvitabileThurnerAGB() + Copernicus_SWI()
-    selection.select_variables(
-        ("AGBtree", "Soil Water Index with T=5", "Soil Water Index with T=20")
+    # selection = Datasets() + AvitabileThurnerAGB() + Copernicus_SWI()
+    # selection.select_variables(
+    #     ("AGBtree", "Soil Water Index with T=5", "Soil Water Index with T=20")
+    # )
+    selection = (
+        Datasets() + AvitabileThurnerAGB() + ERA5_CAPEPrecip() + ERA5_DryDayPeriod()
     )
 
     selection.show("pretty")
