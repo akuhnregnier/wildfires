@@ -4,7 +4,6 @@
 
 """
 import glob
-import inspect
 import logging
 import logging.config
 import operator
@@ -63,12 +62,13 @@ def data_is_available():
 
 register_backend()
 iris_memory = Memory(
-    location=DATA_DIR if data_is_available() else None, backend="iris", verbose=1
+    location=DATA_DIR if data_is_available() else None, backend="iris", verbose=0
 )
 
 
 @wrap_decorator
 def dataset_cache(func):
+    return func
     # NOTE: There is a known bug preventing joblib from pickling numpy MaskedArray!
     # NOTE: https://github.com/joblib/joblib/issues/573
     # NOTE: We will avoid this bug by replacing Dataset instances (which may hold
@@ -104,42 +104,11 @@ def dataset_cache(func):
         # Ignore instances with a __call__ method here which also wouldn't necessarily
         # have a __name__ attribute that could be used for sorting!
         functions = [func]
-        for param_name, param_value in inspect.signature(func).parameters.items():
-            default_value = param_value.default
-            # If the default value is a function, and it is not given in `orig_kwargs`
-            # already. This is guaranteed to work as long as `func` employs a
-            # keyword-only argument for functions like this.
-            if (
-                param_name not in orig_kwargs
-                and default_value is not inspect.Parameter.empty
-                and hasattr(default_value, "__code__")
-            ):
-                functions.append(default_value)
-                orig_kwargs[param_name] = default_value
-
-        functions.extend(
-            f
-            for f in list(orig_args[1:]) + list(orig_kwargs.values())
-            if hasattr(f, "__code__")
-        )
-
-        functions = list(set(functions))
-        functions.sort(key=lambda f: f.__name__)
         func_code = tuple(CodeObj(f.__code__).hashable() for f in functions)
 
-        assert len(func_code) == 2, (
-            "Only 2 functions are currently supported. One is the decorated function, "
-            "the other is the processing function `dataset_function`."
-        )
-
-        @iris_memory.cache(ignore=["original_dataset", "dataset_function"])
+        @iris_memory.cache(ignore=["original_dataset"])
         def accepts_string_dataset(
-            func_code,
-            string_representation,
-            original_dataset,
-            *args,
-            dataset_function=None,
-            **kwargs,
+            func_code, string_representation, original_dataset, *args, **kwargs
         ):
             # NOTE: The reason why this works is that the combination of
             # [original_selection] + args here is fed the original `orig_args`
@@ -149,10 +118,7 @@ def dataset_cache(func):
             # parameter above absorbs the rest. This explicit listing of
             # `original_selection` is necessary, as we need to explicitly ignore
             # `original_selection`, which is the whole point of this decorator.
-            assert dataset_function is not None
-            out = func(
-                original_dataset, *args, dataset_function=dataset_function, **kwargs
-            )
+            out = func(original_dataset, *args, **kwargs)
             return out
 
         return accepts_string_dataset(
@@ -182,7 +148,6 @@ def homogenise_cube_mask(cube):
     return cube
 
 
-@dataset_cache
 def process_dataset(monthly_dataset, min_time, max_time, *args, **kwargs):
     """Modifies `monthly_dataset` in-place, also generating temporal averages.
 
@@ -194,6 +159,8 @@ def process_dataset(monthly_dataset, min_time, max_time, *args, **kwargs):
         tuple of `Dataset`
 
     """
+    # This step does take on the order of seconds, but re-caching here would be a
+    # waste of space.
     # Limit the amount of data that has to be processed.
     monthly_dataset.limit_months(min_time, max_time)
 
@@ -218,13 +185,17 @@ def process_dataset(monthly_dataset, min_time, max_time, *args, **kwargs):
 
 
 @dataset_cache
-def get_dataset_mean_cubes(dataset, *args, **kwargs):
+def get_dataset_mean_cubes(dataset):
     """Return mean cubes."""
     # TODO: Should we copy the cube if it does not require averaging?
-    mean_cubes = iris.cube.CubeList(
-        cube.collapsed("time", iris.analysis.MEAN) if cube.coords("time") else cube
-        for cube in dataset
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=r".*Collapsing a non-contiguous coordinate.*"
+        )
+        mean_cubes = iris.cube.CubeList(
+            cube.collapsed("time", iris.analysis.MEAN) if cube.coords("time") else cube
+            for cube in dataset
+        )
     for cube in mean_cubes:
         # This function has the wanted side-effect of realising the data.
         # Without this, calculations of things like the total temporal mean are
@@ -237,7 +208,7 @@ def get_dataset_mean_cubes(dataset, *args, **kwargs):
 
 
 @dataset_cache
-def get_dataset_monthly_cubes(dataset, start, end, *args, **kwargs):
+def get_dataset_monthly_cubes(dataset, start, end):
     """Return monthly cubes between two dates."""
     monthly_cubes = dataset.get_monthly_data(start, end)
     for cube in monthly_cubes:
@@ -252,9 +223,17 @@ def get_dataset_monthly_cubes(dataset, start, end, *args, **kwargs):
 
 
 @dataset_cache
-def get_dataset_climatology_cubes(dataset, start, end, *args, **kwargs):
+def get_dataset_climatology_cubes(dataset, start, end):
     monthly_dataset = dataset.copy()
-    monthly_dataset.cubes = get_dataset_monthly_cubes(dataset, start, end)
+    # NOTE: Calling get_dataset_monthly_cubes using the slices is important, as this is
+    # how it is called originally, and therefore how it is represented in the cache!!
+    # TODO: Make this behaviour more transparent - perhaps embed this in the
+    # dataset_cache decorator??
+    monthly_dataset.cubes = iris.cube.CubeList(
+        get_dataset_monthly_cubes(dataset[cube_slice], start, end)[0]
+        for cube_slice in dataset.single_cube_slices()
+    )
+    assert len(monthly_dataset) == len(dataset)
     climatology_cubes = iris.cube.CubeList()
     # Calculate monthly climatology.
     with warnings.catch_warnings():
@@ -443,6 +422,19 @@ def get_centres(data):
     return (data[:-1] + data[1:]) / 2.0
 
 
+def lat_lon_dimcoords(latitudes, longitudes):
+    """Make sure latitudes and longitudes are iris DimCoords."""
+    if not isinstance(latitudes, iris.coords.DimCoord):
+        latitudes = iris.coords.DimCoord(
+            latitudes, standard_name="latitude", units="degrees"
+        )
+    if not isinstance(longitudes, iris.coords.DimCoord):
+        longitudes = iris.coords.DimCoord(
+            longitudes, standard_name="longitude", units="degrees"
+        )
+    return latitudes, longitudes
+
+
 def lat_lon_match(
     cube,
     new_latitudes=get_centres(np.linspace(-90, 90, 721)),
@@ -452,19 +444,7 @@ def lat_lon_match(
     n_dim = len(cube.shape)
     assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
 
-    # Using getattr allows the input coordinates to be both
-    # iris.coords.DimCoord (with a 'points' attribute) as well as normal
-    # numpy arrays.
-    new_latitudes = iris.coords.DimCoord(
-        getattr(new_latitudes, "points", new_latitudes),
-        standard_name="latitude",
-        units="degrees",
-    )
-    new_longitudes = iris.coords.DimCoord(
-        getattr(new_longitudes, "points", new_longitudes),
-        standard_name="longitude",
-        units="degrees",
-    )
+    new_latitudes, new_longitudes = lat_lon_dimcoords(new_latitudes, new_longitudes)
 
     for (coord_old, coord_new) in (
         (cube.coord("latitude"), new_latitudes),
@@ -506,6 +486,8 @@ def regrid(
         return cube
 
     logger.debug("Regridding '{}'.".format(cube.name()))
+
+    new_latitudes, new_longitudes = lat_lon_dimcoords(new_latitudes, new_longitudes)
 
     if n_dim == 3:
         # Call the regridding function recursively with time slices of the
@@ -580,6 +562,30 @@ def regrid(
     interpolated_cube = cube.regrid(new_grid, scheme)
 
     return interpolated_cube
+
+
+@dataset_cache
+def regrid_dataset(
+    dataset,
+    area_weighted=False,
+    new_latitudes=get_centres(np.linspace(-90, 90, 721)),
+    new_longitudes=get_centres(np.linspace(-180, 180, 1441)),
+):
+    regridded_cubes = iris.cube.CubeList(
+        [
+            regrid(
+                cube,
+                area_weighted=area_weighted,
+                new_latitudes=new_latitudes,
+                new_longitudes=new_longitudes,
+            )
+            for cube in dataset.cubes
+        ]
+    )
+    return regridded_cubes
+
+
+regrid_dataset.__doc__ = "Dataset wrapper\n" + regrid.__doc__
 
 
 def monthly_constraint(
@@ -901,9 +907,9 @@ class Dataset(ABC):
             # Maybe add a flag to do this.
             logger.info("File exists, not overwriting:'{:}'".format(target_filename))
         else:
-            assert (not repo.untracked_files) and (not repo.is_dirty()), (
-                "All changes must be committed and all files must be " "tracked."
-            )
+            assert (not repo.untracked_files) and (
+                not repo.is_dirty()
+            ), "All changes must be committed and all files must be tracked."
 
             # Note down the commit sha hash so that the code used to
             # generate the cached data can be retrieved easily later on.
@@ -943,9 +949,7 @@ class Dataset(ABC):
             assert (
                 len(set(commit_hashes)) == 1
             ), "Cubes should all stem from the same commit."
-            logger.debug(
-                "File exists, returning cubes from:'{:}'".format(target_filename)
-            )
+            logger.debug("Returning cubes from:'{:}'".format(target_filename))
             return cubes
         else:
             logger.info("File does not exist:'{:}'".format(target_filename))
@@ -965,7 +969,7 @@ class Dataset(ABC):
         if cubes:
             self.cubes = cubes
             logger.info(
-                "File exists, returning cubes from:'{:}' -> Dataset "
+                "Returning cubes from:'{:}' -> Dataset "
                 "timespan {:} -- {:}. Generated using commit {:}".format(
                     self.cache_filename,
                     self.min_time,
@@ -990,17 +994,16 @@ class Dataset(ABC):
         """Replace stored cubes with regridded versions in-place.
 
         """
-        self.cubes = iris.cube.CubeList(
-            [
-                regrid(
-                    cube,
-                    area_weighted=area_weighted,
-                    new_latitudes=new_latitudes,
-                    new_longitudes=new_longitudes,
-                )
-                for cube in self.cubes
-            ]
-        )
+        # The time needed for this check is only on the order of ms.
+        if all(lat_lon_match(cube, new_latitudes, new_longitudes) for cube in self):
+            logger.info("No regridding needed for '{}'.".format(self.name))
+        else:
+            self.cubes = regrid_dataset(
+                self,
+                area_weighted=area_weighted,
+                new_latitudes=new_latitudes,
+                new_longitudes=new_longitudes,
+            )
 
     @abstractmethod
     def get_monthly_data(self, start, end):
@@ -1159,31 +1162,64 @@ class Dataset(ABC):
         final_cubelist = interp_cubes.concatenate()
         return final_cubelist
 
+    def single_cube_slices(self):
+        """Get slices to select new datasets containing each cube one at a time."""
+        slices = []
+        for index in range(len(self)):
+            slices.append(slice(index, index + 1))
+        return slices
+
     def get_mean_dataset(self):
         """Return new `Dataset` containing mean cubes between two dates.
 
         Note:
-            If cached data is retrieved, returned cubes may contain lazy data.
+            Returned cubes may contain lazy data.
 
         """
+        logger.info(f"Getting mean for '{self}'.")
+        mean_cubes = iris.cube.CubeList()
+        for cube_slice in self.single_cube_slices():
+            mean_cubes.extend(get_dataset_mean_cubes(self[cube_slice]))
+
         mean_dataset = self.copy()
-        mean_dataset.cubes = get_dataset_mean_cubes(self)
+        mean_dataset.cubes = mean_cubes
+        logger.debug(f"Finished getting mean for '{self}'.")
         return mean_dataset
 
     def get_monthly_dataset(self, start, end):
         """Return new `Dataset` containing monthly cubes between two dates.
 
         Note:
-            If cached data is retrieved, returned cubes may contain lazy data.
+            Returned cubes may contain lazy data.
 
         """
+        logger.info(f"Getting monthly cubes for '{self}'.")
+        monthly_cubes = iris.cube.CubeList()
+        for cube_slice in self.single_cube_slices():
+            monthly_cubes.extend(
+                get_dataset_monthly_cubes(self[cube_slice], start, end)
+            )
+
         monthly_dataset = self.copy()
-        monthly_dataset.cubes = get_dataset_monthly_cubes(self, start, end)
+        monthly_dataset.cubes = monthly_cubes
+        logger.debug(f"Finished getting monthly cubes for '{self}'.")
         return monthly_dataset
 
     def get_climatology_dataset(self, start, end):
+        """Return new `Dataset` containing monthly climatology cubes between two dates.
+
+        Note:
+            Returned cubes may contain lazy data.
+
+        """
+        logger.info(f"Getting monthly climatology for '{self}'.")
+        climatology_cubes = iris.cube.CubeList()
+        for cube_slice in self.single_cube_slices():
+            climatology_cubes.extend(get_dataset_climatology_cubes(self, start, end))
+
         climatology_dataset = self.copy()
-        climatology_dataset.cubes = get_dataset_climatology_cubes(self, start, end)
+        climatology_dataset.cubes = climatology_cubes
+        logger.debug(f"Finished getting monthly climatology for '{self}'.")
         return climatology_dataset
 
 
@@ -1673,9 +1709,9 @@ class Copernicus_SWI(Dataset):
                 # being overwritten, which should not happen, as we check for
                 # the existence of the file above, loading the data in that
                 # case.
-                assert commit_hash is not None, (
-                    "Data should have been loaded before, " "since the file exists."
-                )
+                assert (
+                    commit_hash is not None
+                ), "Data should have been loaded before, since the file exists."
                 update_hashes(commit_hash)
 
         if selected_monthly_files:

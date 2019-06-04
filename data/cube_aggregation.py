@@ -1172,7 +1172,7 @@ def prepare_selection(selection, *, dataset_function=process_dataset):
     climatology_datasets = Datasets()
     # Use get_ncpus() even even for a ThreadPool since large portions of the code
     # release the GIL.
-    results = ThreadedPool(get_ncpus()).map(
+    results = ThreadedPool(1).map(
         partial(dataset_function, min_time=min_time, max_time=max_time), selection
     )
     for monthly_dataset, mean_dataset, climatology in results:
@@ -1184,46 +1184,56 @@ def prepare_selection(selection, *, dataset_function=process_dataset):
 
 
 if __name__ == "__main__":
+    # LOGGING["handlers"]["console"]["level"] = "DEBUG"
     logging.config.dictConfig(LOGGING)
 
-    selection = get_all_datasets(
-        ignore_names=(
-            "AvitabileAGB",
-            "CRU",
-            "ESA_CCI_Fire",
-            "ESA_CCI_Landcover",
-            "ESA_CCI_Soilmoisture",
-            "ESA_CCI_Soilmoisture_Daily",
-            "GFEDv4s",
-            "GPW_v4_pop_dens",
-            "LIS_OTD_lightning_time_series",
-            "Simard_canopyheight",
-            "Thurner_AGB",
-        )
-    )
-    selected_names = [
-        "AGBtree",
-        # "maximum temperature",
-        # "minimum temperature",
-        "Soil Water Index with T=1",
-        # "ShrubAll",
-        # "TreeAll",
-        # "pftBare",
-        # "pftCrop",
-        # "pftHerb",
-        # "monthly burned area",
-        # "dry_days",
-        # "dry_day_period",
-        # "precip",
-        # "SIF",
-        # "popd",
-        # "Combined Flash Rate Monthly Climatology",
-        # "VODorig",
-        # "Fraction of Absorbed Photosynthetically Active Radiation",
-        # "Leaf Area Index",
-    ]
+    # selection = get_all_datasets(
+    #     ignore_names=(
+    #         "AvitabileAGB",
+    #         "CRU",
+    #         "ESA_CCI_Fire",
+    #         "ESA_CCI_Landcover",
+    #         "ESA_CCI_Soilmoisture",
+    #         "ESA_CCI_Soilmoisture_Daily",
+    #         "GFEDv4s",
+    #         "GPW_v4_pop_dens",
+    #         "LIS_OTD_lightning_time_series",
+    #         "Simard_canopyheight",
+    #         "Thurner_AGB",
+    #     )
+    # )
+    # selected_names = [
+    #     "AGBtree",
+    #     "maximum temperature",
+    #     "minimum temperature",
+    #     "Soil Water Index with T=1",
+    #     "ShrubAll",
+    #     "TreeAll",
+    #     "pftBare",
+    #     "pftCrop",
+    #     "pftHerb",
+    #     "monthly burned area",
+    #     "dry_days",
+    #     "dry_day_period",
+    #     "precip",
+    #     "SIF",
+    #     "popd",
+    #     "Combined Flash Rate Monthly Climatology",
+    #     "VODorig",
+    #     "Fraction of Absorbed Photosynthetically Active Radiation",
+    #     "Leaf Area Index",
+    # ]
 
-    selection = selection.select_variables(selected_names, strict=True)
+    # selection = selection.select_variables(selected_names, strict=True)
+
+    from wildfires.data.datasets import AvitabileThurnerAGB, Copernicus_SWI, iris_memory
+
+    iris_memory.clear()
+    selection = Datasets() + AvitabileThurnerAGB() + Copernicus_SWI()
+    selection.select_variables(
+        ("AGBtree", "Soil Water Index with T=5", "Soil Water Index with T=20")
+    )
+
     selection.show("pretty")
 
     monthly_datasets, mean_datasets, climatology_datasets = prepare_selection(selection)
