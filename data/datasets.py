@@ -68,8 +68,6 @@ iris_memory = Memory(
 
 @wrap_decorator
 def dataset_cache(func):
-    # FIXME:
-    return func
     # NOTE: There is a known bug preventing joblib from pickling numpy MaskedArray!
     # NOTE: https://github.com/joblib/joblib/issues/573
     # NOTE: We will avoid this bug by replacing Dataset instances (which may hold
@@ -149,40 +147,65 @@ def homogenise_cube_mask(cube):
     return cube
 
 
-def process_dataset(monthly_dataset, min_time, max_time, *args, **kwargs):
-    """Modifies `monthly_dataset` in-place, also generating temporal averages.
+def dataset_preprocessing(dataset, min_time, max_time):
+    """Process `Dataset` `dataset` in-place to enforce uniformity."""
+    # This step does take on the order of seconds, but re-caching here would be a
+    # waste of space.
+    # Limit the amount of data that has to be processed.
+    dataset.limit_months(min_time, max_time)
+
+    # Regrid cubes to the same lat-lon grid.
+    # TODO: change lat and lon limits and also the number of points!!
+    # Always work in 0.25 degree steps? From the same starting point?
+    dataset.regrid()
+
+
+def get_monthly_mean_climatology(dataset, min_time, max_time, *args, **kwargs):
+    """Modifies `dataset` in-place, also generating temporal averages.
 
     TODO:
-        Currently `monthly_dataset` is modified by regridding, temporal selection and
+        Currently `dataset` is modified by regridding, temporal selection and
         `get_monthly_data`. Should this be circumvented by copying it?
 
     Returns:
         tuple of `Dataset`
 
     """
-    # This step does take on the order of seconds, but re-caching here would be a
-    # waste of space.
-    # Limit the amount of data that has to be processed.
-    monthly_dataset.limit_months(min_time, max_time)
-
-    # Regrid cubes to the same lat-lon grid.
-    # TODO: change lat and lon limits and also the number of points!!
-    # Always work in 0.25 degree steps? From the same starting point?
-    monthly_dataset.regrid()
+    dataset_preprocessing(dataset, min_time, max_time)
 
     # Generate overall temporal mean. Do this before monthly data is created for all
     # datasets, since this will only increase the computational burden and skew the
     # mean towards newly synthesised months (created using `get_monthly_data`,
     # for static, yearly, or climatological datasets).
-    mean_dataset = monthly_dataset.get_mean_dataset()
+    mean_dataset = dataset.get_mean_dataset()
 
-    climatology = monthly_dataset.get_climatology_dataset(min_time, max_time)
+    climatology_dataset = dataset.get_climatology_dataset(min_time, max_time)
 
     # Get monthly data over the chosen interval for all dataset.
     # TODO: Inplace argument for get_monthly_data methods?
-    monthly_dataset = monthly_dataset.get_monthly_dataset(min_time, max_time)
+    monthly_dataset = dataset.get_monthly_dataset(min_time, max_time)
 
-    return monthly_dataset, mean_dataset, climatology
+    # TODO: See note in `get_mean_climatology_monthly_dataset`.
+    # mean_dataset, climatology_dataset, monthly_dataset = monthly_dataset.get_mean_climatology_monthly_dataset(
+    #     min_time, max_time
+    # )
+
+    return monthly_dataset, mean_dataset, climatology_dataset
+
+
+def get_monthly(dataset, min_time, max_time):
+    dataset_preprocessing(dataset, min_time, max_time)
+    return (dataset.get_monthly_dataset(min_time, max_time),)
+
+
+def get_climatology(dataset, min_time, max_time):
+    dataset_preprocessing(dataset, min_time, max_time)
+    return (dataset.get_climatology_dataset(min_time, max_time),)
+
+
+def get_mean(dataset, min_time, max_time):
+    dataset_preprocessing(dataset, min_time, max_time)
+    return (dataset.get_mean_dataset(),)
 
 
 @dataset_cache
@@ -225,23 +248,38 @@ def get_dataset_monthly_cubes(dataset, start, end):
 
 @dataset_cache
 def get_dataset_climatology_cubes(dataset, start, end):
-    monthly_dataset = dataset.copy()
     # NOTE: Calling get_dataset_monthly_cubes using the slices is important, as this is
     # how it is called originally, and therefore how it is represented in the cache!!
     # TODO: Make this behaviour more transparent - perhaps embed this in the
     # dataset_cache decorator??
-    monthly_dataset.cubes = iris.cube.CubeList(
+    # TODO: Instead of calling get_dataset_monthly_cubes (which fetches the cache,
+    # requiring file loading, which is slow) access a cached in-memory version of the
+    # monthly cubes somehow!
+
+    # TODO: Use pre-computed results if they are available and passed in via an
+    # optional parameter (eg. `optional_dataset`) (NOT the `dataset` parameter, which
+    # should still point to the original, unadulterated dataset without monthly
+    # processing, as that would be the reference point for climatology retrieval from
+    # the cache).
+    # if (
+    #     optional_dataset.min_time == PartialDateTime(start.year, start.month)
+    #     and optional_dataset.max_time == PartialDateTime(end.year, end.month)
+    #     and optional_dataset.frequency == "monthly"
+    # ):
+    #     monthly_cubes = dataset.cubes
+    # else:
+    monthly_cubes = iris.cube.CubeList(
         get_dataset_monthly_cubes(dataset[cube_slice], start, end)[0]
         for cube_slice in dataset.single_cube_slices()
     )
-    assert len(monthly_dataset) == len(dataset)
+
     climatology_cubes = iris.cube.CubeList()
     # Calculate monthly climatology.
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore", message=r".*Collapsing a non-contiguous coordinate.*"
         )
-        for cube in monthly_dataset:
+        for cube in monthly_cubes:
             if not cube.coords("month_number"):
                 iris.coord_categorisation.add_month_number(cube, "time")
             climatology_cubes.append(
@@ -1164,7 +1202,13 @@ class Dataset(ABC):
         return final_cubelist
 
     def single_cube_slices(self):
-        """Get slices to select new datasets containing each cube one at a time."""
+        """Get slices to select new datasets containing each variable one at a time.
+
+        Using these slices in cached method calls caches computations for each
+        variable instead of one specific combination of variables, therefore making
+        the caching much more flexible.
+
+        """
         slices = []
         for index in range(len(self)):
             slices.append(slice(index, index + 1))
@@ -1216,12 +1260,57 @@ class Dataset(ABC):
         logger.info(f"Getting monthly climatology for '{self}'.")
         climatology_cubes = iris.cube.CubeList()
         for cube_slice in self.single_cube_slices():
-            climatology_cubes.extend(get_dataset_climatology_cubes(self, start, end))
+            climatology_cubes.extend(
+                get_dataset_climatology_cubes(self[cube_slice], start, end)
+            )
 
         climatology_dataset = self.copy()
         climatology_dataset.cubes = climatology_cubes
         logger.debug(f"Finished getting monthly climatology for '{self}'.")
         return climatology_dataset
+
+    def get_mean_climatology_monthly_dataset(self, start, end):
+        """Return new `Dataset` instances containing processed data.
+
+        The output will contain the output of the `get_mean_dataset`,
+        `get_climatology_dataset`, and `get_monthly_dataset` functions, except that it
+        is slightly more efficient as fewer cache-retrieval operations need to be
+        carried out.
+
+        """
+        mean_dataset = self.get_mean_dataset()
+
+        logger.info(f"Getting monthly cubes for '{self}'.")
+        monthly_cubes = iris.cube.CubeList()
+        for cube_slice in self.single_cube_slices():
+            monthly_cubes.extend(
+                get_dataset_monthly_cubes(self[cube_slice], start, end)
+            )
+
+        monthly_dataset = self.copy()
+        monthly_dataset.cubes = monthly_cubes
+        logger.debug(f"Finished getting monthly cubes for '{self}'.")
+
+        logger.info(f"Getting monthly climatology for '{self}'.")
+        climatology_cubes = iris.cube.CubeList()
+        # TODO: Implement this `optional_dataset` parameter which would allow passing
+        # in the generated monthly cubes without having the function read it from the
+        # cache.
+        for cube_slice in self.single_cube_slices():
+            climatology_cubes.extend(
+                get_dataset_climatology_cubes(
+                    self[cube_slice],
+                    start,
+                    end,
+                    # TODO:
+                    # optional_dataset=monthly_dataset[cube_slice],
+                )
+            )
+
+        climatology_dataset = self.copy()
+        climatology_dataset.cubes = climatology_cubes
+        logger.debug(f"Finished getting monthly climatology for '{self}'.")
+        return mean_dataset, climatology_dataset, monthly_dataset
 
 
 class AvitabileAGB(Dataset):

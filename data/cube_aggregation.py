@@ -20,7 +20,6 @@ import socket
 from collections import OrderedDict
 from copy import deepcopy
 from functools import partial, reduce, wraps
-from multiprocessing.dummy import Pool as ThreadedPool
 from pprint import pformat, pprint
 from subprocess import CalledProcessError, check_output
 
@@ -29,14 +28,17 @@ import iris.coord_categorisation
 import numpy as np
 
 import wildfires.data.datasets as wildfire_datasets
-from joblib import Memory
+from joblib import Memory, Parallel, delayed
 from wildfires.analysis.processing import fill_cube
 from wildfires.data.datasets import (
     DATA_DIR,
     data_is_available,
     dataset_times,
+    get_climatology,
+    get_mean,
+    get_monthly,
+    get_monthly_mean_climatology,
     homogenise_cube_mask,
-    process_dataset,
 )
 from wildfires.joblib.caching import CodeObj, wrap_decorator
 from wildfires.logging_config import LOGGING
@@ -1151,98 +1153,154 @@ def print_datasets_dates(selection):
     print(times_df)
 
 
-def prepare_selection(selection, *, dataset_function=process_dataset):
+def prepare_selection(selection, *, min_time=None, max_time=None, which="all"):
     """Prepare cubes matching the given selection for analysis.
 
     Calculate 3 different averages at the same time to avoid repeat loading.
 
     Args:
         selection (`Datasets`): Selection specifying the variables to use.
-        dataset_function (function): Function that takes a `Dataset` instance as its
-            argument and processes it, returning three new `Dataset` instances.
+        which (str): Controls which temporal processing is carried out. See return
+            value documentation.
+
+    Returns:
+        If `which` is 'all', returns three `Datasets` (monthly, mean, climatology). If
+        'monthly', 'mean' or 'climatology', return the first, second or third entry
+        respectively.
+
+    Raises:
+        ValueError: If the time selection limits are not defined using the `min_time`
+            and `max_time` parameters or the datasets.
 
     """
-    # TODO: If all datasets don't have start / end dates / frequencies (ie. they are
-    # TODO: all static or monthly climatologies, etc...) then return None for min and
-    # TODO: max times and propagate this accordingly.
-    min_time, max_time, times_df = dataset_times(selection.datasets)
+    if any(given_time is None for given_time in (min_time, max_time)):
+        data_min_time, data_max_time, times_df = dataset_times(selection.datasets)
+        if any(data_time is None for data_time in (data_min_time, data_max_time)):
+            assert all(
+                result is None for result in (data_min_time, data_max_time, times_df)
+            )
+        else:
+            if min_time is None:
+                min_time = data_min_time
+            if max_time is None:
+                max_time = data_max_time
 
-    monthly_datasets = Datasets()
-    mean_datasets = Datasets()
-    climatology_datasets = Datasets()
+    if any(selection_time is None for selection_time in (min_time, max_time)):
+        raise ValueError("Time selection limits are undefined.")
+
+    if which == "all":
+        dataset_function = get_monthly_mean_climatology
+        result_collection = (Datasets(), Datasets(), Datasets())
+    elif which == "mean":
+        dataset_function = get_mean
+        result_collection = (Datasets(),)
+    elif which == "climatology":
+        dataset_function = get_climatology
+        result_collection = (Datasets(),)
+    elif which == "monthly":
+        dataset_function = get_monthly
+        result_collection = (Datasets(),)
+    else:
+        raise ValueError(f"Unknown value for which '{which}'")
+
     # Use get_ncpus() even even for a ThreadPool since large portions of the code
     # release the GIL.
-    results = ThreadedPool(1).map(
-        partial(dataset_function, min_time=min_time, max_time=max_time), selection
+    outputs = Parallel(n_jobs=get_ncpus(), prefer="threads")(
+        delayed(partial(dataset_function, min_time=min_time, max_time=max_time))(
+            dataset
+        )
+        for dataset in selection
     )
-    for monthly_dataset, mean_dataset, climatology in results:
-        monthly_datasets += monthly_dataset
-        mean_datasets += mean_dataset
-        climatology_datasets += climatology
+    for result_datasets, output in zip(result_collection, zip(*outputs)):
+        result_datasets += output
 
-    return monthly_datasets, mean_datasets, climatology_datasets
+    if len(result_collection) == 1:
+        result_collection = result_collection[0]
+    return result_collection
 
 
 if __name__ == "__main__":
     # LOGGING["handlers"]["console"]["level"] = "DEBUG"
     logging.config.dictConfig(LOGGING)
 
-    # selection = get_all_datasets(
-    #     ignore_names=(
-    #         "AvitabileAGB",
-    #         "CRU",
-    #         "ESA_CCI_Fire",
-    #         "ESA_CCI_Landcover",
-    #         "ESA_CCI_Soilmoisture",
-    #         "ESA_CCI_Soilmoisture_Daily",
-    #         "GFEDv4s",
-    #         "GPW_v4_pop_dens",
-    #         "LIS_OTD_lightning_time_series",
-    #         "Simard_canopyheight",
-    #         "Thurner_AGB",
-    #     )
-    # )
-    # selected_names = [
-    #     "AGBtree",
-    #     "maximum temperature",
-    #     "minimum temperature",
-    #     "Soil Water Index with T=1",
-    #     "ShrubAll",
-    #     "TreeAll",
-    #     "pftBare",
-    #     "pftCrop",
-    #     "pftHerb",
-    #     "monthly burned area",
-    #     "dry_days",
-    #     "dry_day_period",
-    #     "precip",
-    #     "SIF",
-    #     "popd",
-    #     "Combined Flash Rate Monthly Climatology",
-    #     "VODorig",
-    #     "Fraction of Absorbed Photosynthetically Active Radiation",
-    #     "Leaf Area Index",
-    # ]
-
-    # selection = selection.select_variables(selected_names, strict=True)
-
-    from wildfires.data.datasets import (
-        AvitabileThurnerAGB,
-        Copernicus_SWI,
-        iris_memory,
-        ERA5_DryDayPeriod,
-        ERA5_CAPEPrecip,
+    selection = get_all_datasets(
+        ignore_names=(
+            "AvitabileAGB",
+            "CRU",
+            "ESA_CCI_Fire",
+            "ESA_CCI_Landcover",
+            "ESA_CCI_Soilmoisture",
+            "ESA_CCI_Soilmoisture_Daily",
+            "GFEDv4s",
+            "GPW_v4_pop_dens",
+            "LIS_OTD_lightning_time_series",
+            "Simard_canopyheight",
+            "Thurner_AGB",
+        )
     )
+    selected_names = [
+        "AGBtree",
+        "maximum temperature",
+        "minimum temperature",
+        "Soil Water Index with T=1",
+        "ShrubAll",
+        "TreeAll",
+        "pftBare",
+        "pftCrop",
+        "pftHerb",
+        "monthly burned area",
+        "dry_days",
+        "dry_day_period",
+        "precip",
+        "SIF",
+        "popd",
+        "Combined Flash Rate Monthly Climatology",
+        "VODorig",
+        "Fraction of Absorbed Photosynthetically Active Radiation",
+        "Leaf Area Index",
+    ]
 
-    iris_memory.clear()
+    selection = selection.select_variables(selected_names, strict=True)
+
+    # from wildfires.data.datasets import (
+    #     AvitabileThurnerAGB,
+    #     Copernicus_SWI,
+    #     iris_memory,
+    #     ERA5_DryDayPeriod,
+    #     ERA5_CAPEPrecip,
+    # )
+
     # selection = Datasets() + AvitabileThurnerAGB() + Copernicus_SWI()
     # selection.select_variables(
     #     ("AGBtree", "Soil Water Index with T=5", "Soil Water Index with T=20")
     # )
-    selection = (
-        Datasets() + AvitabileThurnerAGB() + ERA5_CAPEPrecip() + ERA5_DryDayPeriod()
-    )
+
+    # The `min_time` and `max_time` determined here would be used automatically!
+    min_time, max_time, times_df = dataset_times(selection.datasets)
 
     selection.show("pretty")
 
-    monthly_datasets, mean_datasets, climatology_datasets = prepare_selection(selection)
+    from dateutil.relativedelta import relativedelta
+
+    output_datasets = prepare_selection(
+        selection, min_time=min_time, max_time=min_time + relativedelta(years=+1)
+    )
+
+    monthly_datasets = prepare_selection(
+        selection,
+        min_time=min_time,
+        max_time=min_time + relativedelta(years=+1),
+        which="monthly",
+    )
+    climatology_datasets = prepare_selection(
+        selection,
+        min_time=min_time,
+        max_time=min_time + relativedelta(years=+1),
+        which="climatology",
+    )
+    mean_datasets = prepare_selection(
+        selection,
+        min_time=min_time,
+        max_time=min_time + relativedelta(years=+1),
+        which="mean",
+    )

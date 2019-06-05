@@ -124,9 +124,6 @@ if __name__ == "__main__":
 
     print_dataset_times(selection)
 
-    # TODO: Caching on a per-dataset basis, so as to avoid recalculations of
-    # (partially overlapping) subsets.
-    # TODO: Caching of specific retrievals, like monthly data or climatologies.
     monthly_datasets, mean_datasets, climatology_datasets = prepare_selection(selection)
 
     ###################################################################################
