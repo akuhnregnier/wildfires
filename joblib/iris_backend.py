@@ -123,6 +123,7 @@ class IrisStoreBackend(StoreBackendBase, StoreBackendMixin):
             if not self._item_exists(item_path):
                 self.create_location(item_path)
             filename = os.path.join(item_path, "output.nc")
+            logger.debug(f"Caching '{item}' in '{item_path}'.")
             if verbose > 10:
                 print("Persisting in %s" % item_path)
 
@@ -145,3 +146,22 @@ class IrisStoreBackend(StoreBackendBase, StoreBackendMixin):
         filename = os.path.join(item_path, "output.nc")
 
         return self._item_exists(filename)
+
+
+def compare_metadata(dirs):
+    import json
+
+    contents = []
+    for d in dirs:
+        f = os.path.join(d, "metadata.json")
+        with open(f) as fi:
+            contents.append(json.load(fi))
+
+    strings = [c["input_args"]["string_representation"] for c in contents]
+    for (i, (a, b)) in enumerate(zip(*strings)):
+        if a != b:
+            print("i:", i)
+            n = 30
+            print(strings[0][i - n : i + n])
+            print(strings[1][i - n : i + n])
+            break

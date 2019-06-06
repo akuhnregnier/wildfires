@@ -2,6 +2,21 @@
 # -*- coding: utf-8 -*-
 """Module that simplifies use of various datasets.
 
+TODO:
+    Figure out how to handle the fact that saving a cube for certain kinds of
+    longitude coordinates adds the attribute `circular=True`.
+
+    Since longitudes registered in the [-180, 180] system fail to register as circular
+    using `iris.util._is_circular` but the same coordiantes + 180° do register
+    correctly (if they actually cover all of [0, 360], as expected), does regridding
+    using longitudes in [-180, 180] actually consider the coordinate's circular nature
+    correctly?
+    See also NOTE in `lat_lon_dimcoords`.
+
+    Before caching, regrid() always needs to be called since this also carries out
+    crucial coordinate attribute regularisation, which is essential for consistent
+    caching behaviour! Make this intrinsic to __init__?
+
 """
 import glob
 import logging
@@ -30,6 +45,7 @@ import scipy.ndimage
 from dateutil.relativedelta import relativedelta
 from git import Repo
 from iris.time import PartialDateTime
+from numpy.testing import assert_allclose
 from pyhdf.SD import SD, SDC
 from tqdm import tqdm
 
@@ -67,7 +83,7 @@ iris_memory = Memory(
 
 
 @wrap_decorator
-def dataset_cache(func):
+def dataset_cache(func, iris_memory=iris_memory):
     # NOTE: There is a known bug preventing joblib from pickling numpy MaskedArray!
     # NOTE: https://github.com/joblib/joblib/issues/573
     # NOTE: We will avoid this bug by replacing Dataset instances (which may hold
@@ -211,6 +227,7 @@ def get_mean(dataset, min_time, max_time):
 @dataset_cache
 def get_dataset_mean_cubes(dataset):
     """Return mean cubes."""
+    logger.debug(f"Calculating mean for '{dataset}' with {len(dataset)} variable(s).")
     # TODO: Should we copy the cube if it does not require averaging?
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -234,6 +251,9 @@ def get_dataset_mean_cubes(dataset):
 @dataset_cache
 def get_dataset_monthly_cubes(dataset, start, end):
     """Return monthly cubes between two dates."""
+    logger.debug(
+        f"Calculating monthly cubes for '{dataset}' with {len(dataset)} variable(s)."
+    )
     monthly_cubes = dataset.get_monthly_data(start, end)
     for cube in monthly_cubes:
         # This function has the wanted side-effect of realising the data.
@@ -248,19 +268,22 @@ def get_dataset_monthly_cubes(dataset, start, end):
 
 @dataset_cache
 def get_dataset_climatology_cubes(dataset, start, end):
+    logger.debug(
+        f"Calculating climatology for '{dataset}' with {len(dataset)} variable(s)."
+    )
     # NOTE: Calling get_dataset_monthly_cubes using the slices is important, as this is
     # how it is called originally, and therefore how it is represented in the cache!!
     # TODO: Make this behaviour more transparent - perhaps embed this in the
     # dataset_cache decorator??
-    # TODO: Instead of calling get_dataset_monthly_cubes (which fetches the cache,
-    # requiring file loading, which is slow) access a cached in-memory version of the
-    # monthly cubes somehow!
 
+    # TODO: Instead of calling get_dataset_monthly_cubes (which fetches the cache,
+    # TODO: requiring file loading, which is slow) access a cached in-memory version of the
+    # TODO: monthly cubes somehow!
     # TODO: Use pre-computed results if they are available and passed in via an
-    # optional parameter (eg. `optional_dataset`) (NOT the `dataset` parameter, which
-    # should still point to the original, unadulterated dataset without monthly
-    # processing, as that would be the reference point for climatology retrieval from
-    # the cache).
+    # TODO: optional parameter (eg. `optional_dataset`) (NOT the `dataset` parameter, which
+    # TODO: should still point to the original, unadulterated dataset without monthly
+    # TODO: processing, as that would be the reference point for climatology retrieval from
+    # TODO: the cache).
     # if (
     #     optional_dataset.min_time == PartialDateTime(start.year, start.month)
     #     and optional_dataset.max_time == PartialDateTime(end.year, end.month)
@@ -268,6 +291,7 @@ def get_dataset_climatology_cubes(dataset, start, end):
     # ):
     #     monthly_cubes = dataset.cubes
     # else:
+
     monthly_cubes = iris.cube.CubeList(
         get_dataset_monthly_cubes(dataset[cube_slice], start, end)[0]
         for cube_slice in dataset.single_cube_slices()
@@ -380,7 +404,15 @@ def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180), **kwargs)
         grid_coords = [(new_lat_coord, 0), (new_lon_coord, 1)]
     else:
         grid_coords = [
-            (iris.coords.DimCoord(range(data.shape[0])), 0),
+            (
+                iris.coords.DimCoord(
+                    range(data.shape[0]),
+                    standard_name="time",
+                    var_name="time",
+                    units=cf_units.Unit("days since 1970-01-01", calendar="gregorian"),
+                ),
+                0,
+            ),
             (new_lat_coord, 1),
             (new_lon_coord, 2),
         ]
@@ -461,16 +493,37 @@ def get_centres(data):
     return (data[:-1] + data[1:]) / 2.0
 
 
+def translate_longitudes(lons, sort=True):
+    """Go from [-180, 180] to [0, 360] domain."""
+    transformed = lons % 360
+    if sort:
+        assert len(np.unique(np.diff(transformed))) < 3, (
+            "Expecting at most 2 unique differences, one for the regular interval, "
+            "another for the jump at 0° in case of the [-180, 180] domain."
+        )
+        transformed = np.sort(transformed)
+    return transformed
+
+
 def lat_lon_dimcoords(latitudes, longitudes):
     """Make sure latitudes and longitudes are iris DimCoords."""
     if not isinstance(latitudes, iris.coords.DimCoord):
         latitudes = iris.coords.DimCoord(
-            latitudes, standard_name="latitude", units="degrees"
+            latitudes, standard_name="latitude", units="degrees", var_name="latitude"
         )
     if not isinstance(longitudes, iris.coords.DimCoord):
         longitudes = iris.coords.DimCoord(
-            longitudes, standard_name="longitude", units="degrees"
+            longitudes, standard_name="longitude", units="degrees", var_name="longitude"
         )
+    assert_allclose(longitudes.units.modulus, 360)
+    # NOTE: Execute this step since saving & reloading the cubes containing certain
+    # longitudes appears to add the `circular=True` attribute. So to make caching
+    # consistent without having to reload data on the first iteration, add this
+    # attribute now.
+    longitudes.circular = iris.util._is_circular(
+        translate_longitudes(longitudes.points), 360
+    )
+    logger.debug(f"Longitudes are circular: {longitudes.circular}")
     return latitudes, longitudes
 
 
@@ -610,6 +663,7 @@ def regrid_dataset(
     new_latitudes=get_centres(np.linspace(-90, 90, 721)),
     new_longitudes=get_centres(np.linspace(-180, 180, 1441)),
 ):
+    logger.debug(f"Regridding '{dataset}' with {len(dataset)} variable(s).")
     regridded_cubes = iris.cube.CubeList(
         [
             regrid(
@@ -703,7 +757,6 @@ class Dataset(ABC):
             str
 
         """
-        self.variable_names()  # Implicit sorting of cubes.
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore", message=((r".*guessing contiguous bounds."))
@@ -714,6 +767,15 @@ class Dataset(ABC):
                 # Compute each coordinate's string representation (the coord's __hash__
                 # attribute only returns the output of id()).
                 for coord in cube.coords():
+                    point_diffs = np.diff(coord.points)
+                    unique_diffs = np.unique(point_diffs)
+                    # TODO: More robust comparison of numpy arrays compared to
+                    # just converting them to strings, eg. using rounding!
+                    if len(unique_diffs) != 1:
+                        point_diff_str = str(tuple(point_diffs))
+                    else:
+                        point_diff_str = str(unique_diffs[0])
+
                     cubelist_hash_items += list(
                         map(
                             str,
@@ -731,15 +793,18 @@ class Dataset(ABC):
                                 coord.is_monotonic(),
                                 coord.long_name,
                                 coord.name(),
-                                tuple(coord.points),
+                                np.min(coord.points),
+                                np.max(coord.points),
+                                np.mean(coord.points),
+                                point_diff_str,
                                 coord.shape,
                                 coord.standard_name,
                                 coord.var_name,
                             ),
                         )
                     )
-                cubelist_hash_items += [str(tuple(sorted(cube.attributes.items())))]
                 for key, value in sorted(cube.metadata._asdict().items()):
+                    # This contains the data for the `cube.attributes` property.
                     if key == "attributes":
                         # Get string representation of the attributes dictionary.
                         cubelist_hash_items += [
@@ -753,7 +818,12 @@ class Dataset(ABC):
                             )
                         ]
 
-                    cubelist_hash_items += [str(key) + str(value)]
+                    else:
+                        assert not isinstance(value, dict), (
+                            "Dicts should be handled specially as above to maintain "
+                            "consistent sorting."
+                        )
+                        cubelist_hash_items += [str(key) + str(value)]
         return "\n".join(cubelist_hash_items)
 
     def __check_cubes(self):
@@ -777,6 +847,32 @@ class Dataset(ABC):
         assert len(set(all_names)) == len(
             all_names
         ), "All variable names should be unique."
+
+        for cube in self.__cubes:
+            n_dim = len(cube.shape)
+            coord_names = []
+            if n_dim == 2:
+                coord_names.extend(("latitude", "longitude"))
+            elif n_dim == 3:
+                coord_names.extend(("time", "latitude", "longitude"))
+            else:
+                warnings.warn(f"'{cube}' in '{self}' has {n_dim} axes.")
+
+            for coord_name in coord_names:
+                try:
+                    coord = cube.coord(coord_name)
+                    coord.var_name = coord_name
+                except iris.exceptions.CoordinateNotFoundError:
+                    warnings.warn(
+                        f"{n_dim}-dimensional cube '{cube}' in '{self.name}' did not "
+                        f"have a '{coord_name}' coordinate."
+                    )
+
+            # NOTE: This step is necessary to remove discrepancies between cubes
+            # before and after saving & loading them using iris.save() & iris.load(),
+            # which seems to change key attributes, like 'Conventions', from CF-1.4 to
+            # CF-1.5, for example.
+            cube.attributes["Conventions"] = "CF-1.5"
 
     @property
     def cubes(self):
@@ -842,8 +938,13 @@ class Dataset(ABC):
             end = datetime(raw_end.year, raw_end.month, 1)
             if (start + relativedelta(months=+1)) == end:
                 return "monthly"
-            elif (start + relativedelta(months=+12)) == end:
+            if (start + relativedelta(months=+12)) == end:
                 return "yearly"
+            month_number_coords = self.cubes[0].coords("month_number")
+            if month_number_coords:
+                assert len(month_number_coords) == 1
+                if tuple(month_number_coords[0].points) == tuple(range(1, 13)):
+                    return "climatology"
             return "unknown"
 
         except iris.exceptions.CoordinateNotFoundError:
@@ -1037,12 +1138,13 @@ class Dataset(ABC):
         if all(lat_lon_match(cube, new_latitudes, new_longitudes) for cube in self):
             logger.info("No regridding needed for '{}'.".format(self.name))
         else:
-            self.cubes = regrid_dataset(
-                self,
-                area_weighted=area_weighted,
-                new_latitudes=new_latitudes,
-                new_longitudes=new_longitudes,
-            )
+            for cube_slice in self.single_cube_slices():
+                self.cubes[cube_slice] = regrid_dataset(
+                    self[cube_slice],
+                    area_weighted=area_weighted,
+                    new_latitudes=new_latitudes,
+                    new_longitudes=new_longitudes,
+                )
 
     @abstractmethod
     def get_monthly_data(self, start, end):
@@ -1204,9 +1306,9 @@ class Dataset(ABC):
     def single_cube_slices(self):
         """Get slices to select new datasets containing each variable one at a time.
 
-        Using these slices in cached method calls caches computations for each
-        variable instead of one specific combination of variables, therefore making
-        the caching much more flexible.
+        Using these slices in conjunction with cached method calls caches computations
+        for each variable instead of one specific combination of variables, therefore
+        making the caching much more flexible.
 
         """
         slices = []
@@ -2154,22 +2256,24 @@ class ESA_CCI_Landcover_PFT(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-LC_landcover", "0d25_lc2pft")
-        self.cubes = iris.load(os.path.join(self.dir, "*.nc"))
+        loaded_cubes = iris.load(os.path.join(self.dir, "*.nc"))
 
         time_coord = None
-        for cube in self.cubes:
+        for cube in loaded_cubes:
             if cube.coords()[0].name() == "time":
                 time_coord = cube.coord("time")
                 break
         assert time_coord.standard_name == "time"
 
         # fix peculiar 'z' coordinate, which should be the number of years
-        for cube in self.cubes:
+        for cube in loaded_cubes:
             coord_names = [coord.name() for coord in cube.coords()]
             if "z" in coord_names:
                 assert coord_names[0] == "z"
                 cube.remove_coord("z")
                 cube.add_dim_coord(time_coord, 0)
+
+        self.cubes = loaded_cubes
 
         self.time_unit_str = time_coord.units.name
         self.calendar = time_coord.units.calendar
@@ -2434,7 +2538,7 @@ class GlobFluo_SIF(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "GlobFluo_SIF")
-        self.cubes = iris.cube.CubeList(
+        loaded_cubes = iris.cube.CubeList(
             [iris.load_cube(os.path.join(self.dir, "*.nc"))]
         )
 
@@ -2443,7 +2547,7 @@ class GlobFluo_SIF(Dataset):
         # calendar (needs to start from 1582-10-15, I think).
 
         # Get the original number of days relative to 1582-10-14 00:00:00.
-        days_since_1582_10_14 = self.cubes[0].coords()[0].points
+        days_since_1582_10_14 = loaded_cubes[0].coords()[0].points
         # Define new time unit relative to a supported date.
         new_time_unit = cf_units.Unit(
             "days since 1582-10-16 00:00:00", calendar="gregorian"
@@ -2451,11 +2555,13 @@ class GlobFluo_SIF(Dataset):
         # The corresponding number of days for the new time unit.
         days_since_1582_10_16 = days_since_1582_10_14 - 2
 
-        self.cubes[0].remove_coord("time")
+        loaded_cubes[0].remove_coord("time")
         new_time = iris.coords.DimCoord(
             days_since_1582_10_16, standard_name="time", units=new_time_unit
         )
-        self.cubes[0].add_dim_coord(new_time, 0)
+        loaded_cubes[0].add_dim_coord(new_time, 0)
+
+        self.cubes = loaded_cubes
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
@@ -3053,7 +3159,7 @@ class Liu_VOD(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "Liu_VOD")
-        self.cubes = iris.cube.CubeList(
+        loaded_cubes = iris.cube.CubeList(
             [iris.load_cube(os.path.join(self.dir, "*.nc"))]
         )
 
@@ -3062,7 +3168,7 @@ class Liu_VOD(Dataset):
         # calendar (needs to start from 1582-10-15, I think).
 
         # Get the original number of days relative to 1582-10-14 00:00:00.
-        days_since_1582_10_14 = self.cubes[0].coords()[0].points
+        days_since_1582_10_14 = loaded_cubes[0].coords()[0].points
         # Define new time unit relative to a supported date.
         new_time_unit = cf_units.Unit(
             "days since 1582-10-16 00:00:00", calendar="gregorian"
@@ -3070,11 +3176,12 @@ class Liu_VOD(Dataset):
         # The corresponding number of days for the new time unit.
         days_since_1582_10_16 = days_since_1582_10_14 - 2
 
-        self.cubes[0].remove_coord("time")
+        loaded_cubes[0].remove_coord("time")
         new_time = iris.coords.DimCoord(
             days_since_1582_10_16, standard_name="time", units=new_time_unit
         )
-        self.cubes[0].add_dim_coord(new_time, 0)
+        loaded_cubes[0].add_dim_coord(new_time, 0)
+        self.cubes = loaded_cubes
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)

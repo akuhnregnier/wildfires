@@ -53,3 +53,10 @@ def test_iris_backend():
     s3 = sorted(cube_list2.get(), key=lambda cube: cube.name())
     s4 = sorted(iris.cube.CubeList([cube, cube2]), key=lambda cube: cube.name())
     assert all(np.all(cube1.data == cube2.data) for cube1, cube2 in zip(s3, s4))
+
+
+# TODO: @data_availability
+# TODO: def test_avoid_duplicated_caching():
+# TODO: """Make sure that data is not being cached multiple times erroneously."""
+# TODO: # Could be achieved by parsing through the metadata.json files in the cache
+# directory, or by looking at the debug log files.

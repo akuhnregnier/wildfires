@@ -1223,6 +1223,17 @@ if __name__ == "__main__":
     # LOGGING["handlers"]["console"]["level"] = "DEBUG"
     logging.config.dictConfig(LOGGING)
 
+    # from wildfires.data.datasets import (
+    #     AvitabileThurnerAGB,
+    #     Copernicus_SWI,
+    #     iris_memory,
+    #     ERA5_DryDayPeriod,
+    #     ERA5_CAPEPrecip,
+    #     MOD15A2H_LAI_fPAR,
+    # )
+    # from dateutil.relativedelta import relativedelta
+    # selection = Datasets() + MOD15A2H_LAI_fPAR()
+
     selection = get_all_datasets(
         ignore_names=(
             "AvitabileAGB",
@@ -1233,11 +1244,13 @@ if __name__ == "__main__":
             "ESA_CCI_Soilmoisture_Daily",
             "GFEDv4s",
             "GPW_v4_pop_dens",
+            "GSMaP_dry_day_period",
             "LIS_OTD_lightning_time_series",
             "Simard_canopyheight",
             "Thurner_AGB",
         )
     )
+
     selected_names = [
         "AGBtree",
         "maximum temperature",
@@ -1262,14 +1275,6 @@ if __name__ == "__main__":
 
     selection = selection.select_variables(selected_names, strict=True)
 
-    # from wildfires.data.datasets import (
-    #     AvitabileThurnerAGB,
-    #     Copernicus_SWI,
-    #     iris_memory,
-    #     ERA5_DryDayPeriod,
-    #     ERA5_CAPEPrecip,
-    # )
-
     # selection = Datasets() + AvitabileThurnerAGB() + Copernicus_SWI()
     # selection.select_variables(
     #     ("AGBtree", "Soil Water Index with T=5", "Soil Water Index with T=20")
@@ -1280,27 +1285,18 @@ if __name__ == "__main__":
 
     selection.show("pretty")
 
-    from dateutil.relativedelta import relativedelta
+    max_time = max_time
+    # max_time = min_time + relativedelta(years=+1)
+    output_datasets = prepare_selection(selection, min_time=min_time, max_time=max_time)
 
-    output_datasets = prepare_selection(
-        selection, min_time=min_time, max_time=min_time + relativedelta(years=+1)
-    )
-
+    # The following function calls should (in theory) only retrieve data previously
+    # cached during the execution of the above function call.
     monthly_datasets = prepare_selection(
-        selection,
-        min_time=min_time,
-        max_time=min_time + relativedelta(years=+1),
-        which="monthly",
+        selection, min_time=min_time, max_time=max_time, which="monthly"
     )
     climatology_datasets = prepare_selection(
-        selection,
-        min_time=min_time,
-        max_time=min_time + relativedelta(years=+1),
-        which="climatology",
+        selection, min_time=min_time, max_time=max_time, which="climatology"
     )
     mean_datasets = prepare_selection(
-        selection,
-        min_time=min_time,
-        max_time=min_time + relativedelta(years=+1),
-        which="mean",
+        selection, min_time=min_time, max_time=max_time, which="mean"
     )
