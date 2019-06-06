@@ -2764,6 +2764,38 @@ class Thurner_AGB(Dataset):
         return self.broadcast_static_data(start, end)
 
 
+class VODCA(Dataset):
+    """Global VOD Dataset.
+
+    See: https://zenodo.org/record/2575599#.XO6qXHVKibI
+
+    """
+
+    _pretty = "VODCA"
+
+    def __init__(self):
+        raise NotImplementedError()
+        self.dir = os.path.join(DATA_DIR, "VODCA")
+        daily_files = glob.glob(
+            os.path.join(self.dir, "daily", "**", "*.nc"), recursive=True
+        )
+        monthly_files = glob.glob(
+            os.path.join(self.dir, "monthly", "**", "*.nc"), recursive=True
+        )
+        print(daily_files, monthly_files)
+
+        iris.load(os.path.join(self.dir, "**", "*.nc"))
+        # TODO: Isolate different VOD bands, ignore masks (maybe put in different
+        # `Dataset` instance?)
+        # FIXME
+        # self.cubes = ...
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
 def dataset_times(datasets=None):
     """Compile dataset time span information.
 
