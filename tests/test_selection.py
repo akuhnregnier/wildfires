@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
 from copy import deepcopy
 from datetime import datetime
 
@@ -14,13 +13,9 @@ from dateutil.relativedelta import relativedelta
 from iris.time import PartialDateTime
 
 import wildfires.data.datasets as wildfire_datasets
-from joblib import Memory
 from test_datasets import data_availability
 from wildfires.data.cube_aggregation import Datasets
 from wildfires.data.datasets import get_centres
-
-memory = Memory(location=os.environ.get("TMPDIR", "/tmp"))
-
 
 # FIXME: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
 

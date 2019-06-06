@@ -15,7 +15,6 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
 
-from joblib import Memory
 from wildfires.analysis.plotting import (
     FigureSaver,
     cube_plotting,
@@ -28,15 +27,13 @@ from wildfires.data.cube_aggregation import (
     get_all_datasets,
     prepare_selection,
 )
-from wildfires.data.datasets import DATA_DIR, data_is_available, dataset_times
+from wildfires.data.datasets import dataset_times
 from wildfires.logging_config import LOGGING
 from wildfires.utils import get_masked_array, get_unmasked
 from wildfires.utils import land_mask as get_land_mask
 
 logger = logging.getLogger(__name__)
 logging.config.dictConfig(LOGGING)
-
-memory = Memory(location=DATA_DIR if data_is_available() else None, verbose=1)
 
 
 # FIXME: Earmarked for removal.
