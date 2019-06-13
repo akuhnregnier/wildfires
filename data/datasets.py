@@ -50,6 +50,7 @@ from pyhdf.SD import SD, SDC
 from tqdm import tqdm
 
 from joblib import Memory
+from wildfires.analysis.processing import fill_cube
 from wildfires.joblib.caching import CodeObj, wrap_decorator
 from wildfires.joblib.iris_backend import register_backend
 
@@ -222,6 +223,13 @@ def get_climatology(dataset, min_time, max_time):
 def get_mean(dataset, min_time, max_time):
     dataset_preprocessing(dataset, min_time, max_time)
     return (dataset.get_mean_dataset(),)
+
+
+@dataset_cache
+def fill_dataset(dataset, mask):
+    """Perform processing on all cubes."""
+    logger.debug(f"Filling '{dataset}' with {len(dataset)} variable(s).")
+    return iris.cube.CubeList([fill_cube(cube, mask) for cube in dataset])
 
 
 @dataset_cache

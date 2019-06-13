@@ -29,11 +29,11 @@ import numpy as np
 
 import wildfires.data.datasets as wildfire_datasets
 from joblib import Memory, Parallel, delayed
-from wildfires.analysis.processing import fill_cube
 from wildfires.data.datasets import (
     DATA_DIR,
     data_is_available,
     dataset_times,
+    fill_dataset,
     get_climatology,
     get_mean,
     get_monthly,
@@ -1075,6 +1075,7 @@ class Datasets:
         # Getting the shape does not realise lazy data.
         cube_shape = self.cubes[0].shape
 
+        # Generate a final combined mask.
         if reference_variable is None:
             final_masks = []
         else:
@@ -1096,11 +1097,27 @@ class Datasets:
         else:
             combined_mask = np.zeros(cube_shape, dtype=np.bool_)
 
+        # Process cubes on-by-one, while creating one-variable `Dataset` instances to
+        # maintain flexible caching.
+        # Use the generated mask in the 'filling' process.
+        # TODO: Verify that this does indeed change the cubes in-place as expected!
         prev_shape = cube_shape
-        for cube in self.cubes:
-            assert cube.shape == prev_shape, "All cubes should have the same shape."
-            prev_shape = cube.shape
-            fill_cube(cube, combined_mask)
+        for dataset in self:
+            new_cubes = iris.cube.CubeList()
+            for cube_slice in dataset.single_cube_slices():
+                single_dataset = dataset[cube_slice]
+                assert (
+                    single_dataset.cube.shape == prev_shape
+                ), "All cubes should have the same shape."
+                prev_shape = single_dataset.cube.shape
+                new_cubes.extend(fill_dataset(single_dataset, combined_mask))
+            # TODO: Such an explicit assignment seems necessary to propagate the new cubes,
+            # but the function could be optimised to remove old cubes in the process
+            # to save a bit more memory. Ideally, it would be possible to change cubes
+            # in-place (even while retrieving cached results, which complicates things
+            # further, as the caching-decorator decorated function does not actually
+            # get run)!
+            dataset.cubes = new_cubes
         return self
 
     def show(self, variable_format="all"):
@@ -1202,6 +1219,8 @@ def prepare_selection(selection, *, min_time=None, max_time=None, which="all"):
         result_collection = (Datasets(),)
     else:
         raise ValueError(f"Unknown value for which '{which}'")
+
+    logger.info(f"Preparing selection '{which}' between '{min_time}' and '{max_time}'")
 
     # Use get_ncpus() even even for a ThreadPool since large portions of the code
     # release the GIL.

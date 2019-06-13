@@ -503,10 +503,6 @@ def partial_dependence_plot(
     datasets = np.hstack(datasets)
     results = pd.DataFrame(datasets, columns=features)
 
-    # TODO:
-    if norm_y_ticks:
-        predicted_name = "relative " + predicted_name
-
     valid = ("rows", "columns")
     if prefer not in valid:
         raise ValueError(
@@ -525,6 +521,10 @@ def partial_dependence_plot(
 
     axes = axes.flatten()
 
+    if norm_y_ticks:
+        predicted_name = "relative " + predicted_name
+        results /= results.to_numpy().max()
+
     for (i, (ax, feature)) in enumerate(zip(axes, features)):
         ax.plot(quantile_data[feature], results[feature])
         ax.set_xlabel(feature)
@@ -535,16 +535,21 @@ def partial_dependence_plot(
     for ax in axes[len(features) :]:
         ax.set_axis_off()
 
-    # TODO:
+    # TODO: Make the positioning and the number of labels more uniform.
     # if norm_y_ticks:
     #     y_ticklabels = []
     #     for ax in axes:
-    #         y_tick_values.extend(ax.get_yticks())
-    #     y_tick_values = np.array(y_tick_values)
+    #         y_ticklabels.extend(ax.get_yticks())
+    #     y_tick_values = np.array(y_ticklabels)
     #     min_val = np.min(y_tick_values)
     #     max_val = np.max(y_tick_values - min_val)
+    #     # for ax in axes:
+    #     #     # ax.set_yticks((ax.get_yticks() - min_val) / max_val)
+    #     #     ax.set_yticks([])
     #     for ax in axes:
-    #         ax.set_yticks((ax.get_yticks() - min_val) / max_val)
+    #         ticks = ax.get_yticks().tolist()
+    #         ticks = ["test" for tick in ticks]
+    #         ax.set_yticklabels(ticks)
 
     plt.tight_layout()
 
@@ -556,16 +561,22 @@ if __name__ == "__main__":
 
     logging.config.dictConfig(LOGGING)
 
-    m = 10000
+    m = 2
     n = 20
+
+    np.random.seed(3)
 
     class A:
         def predict(self, X):
+            # Prevent modification from sticking around for the next run!
+            X = X.copy()
             X.iloc[:, 0] *= -1
             return np.sum(X, axis=1)
 
     model = A()
     X = pd.DataFrame(np.random.random((m, n)), columns=list(string.ascii_lowercase)[:n])
-    features = list(string.ascii_lowercase[:9])
+    features = list(string.ascii_lowercase[:4])
 
-    fig, axes = partial_dependence_plot(model, X, features, grid_resolution=100)
+    fig, axes = partial_dependence_plot(
+        model, X, features, grid_resolution=3, norm_y_ticks=True
+    )

@@ -60,3 +60,6 @@ def test_iris_backend():
 # TODO: """Make sure that data is not being cached multiple times erroneously."""
 # TODO: # Could be achieved by parsing through the metadata.json files in the cache
 # directory, or by looking at the debug log files.
+# TODO: Ideally, the location of iris_memory would be changed to a temporary directory
+# for the test, the testing functions run twice, and checked that the number of cached
+# files does not change between the first and the second run!
