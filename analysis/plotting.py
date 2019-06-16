@@ -523,6 +523,8 @@ def partial_dependence_plot(
 
     if norm_y_ticks:
         predicted_name = "relative " + predicted_name
+        # Calculate the normalised ranges.
+        results -= results.to_numpy().min()
         results /= results.to_numpy().max()
 
     for (i, (ax, feature)) in enumerate(zip(axes, features)):
@@ -568,7 +570,7 @@ if __name__ == "__main__":
 
     class A:
         def predict(self, X):
-            # Prevent modification from sticking around for the next run!
+            # Prevent modification from persisting.
             X = X.copy()
             X.iloc[:, 0] *= -1
             return np.sum(X, axis=1)
@@ -578,5 +580,5 @@ if __name__ == "__main__":
     features = list(string.ascii_lowercase[:4])
 
     fig, axes = partial_dependence_plot(
-        model, X, features, grid_resolution=3, norm_y_ticks=True
+        model, X, features, grid_resolution=2, norm_y_ticks=True
     )
