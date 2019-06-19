@@ -426,7 +426,7 @@ def partial_dependence_plot(
     n_cols="auto",
     prefer="columns",
     grid_resolution=100,
-    percentiles=(0.05, 0.95),
+    percentiles=(0.0, 1.0),
     coverage=1,
     random_state=None,
     predicted_name="burned area",
@@ -495,8 +495,7 @@ def partial_dependence_plot(
         calc_X = X_selected.copy()
         for value in series:
             calc_X[feature] = value
-            predictions = model.predict(calc_X)
-            averaged_predictions.append(np.mean(predictions))
+            averaged_predictions.append(np.mean(model.predict(calc_X)))
 
         datasets.append(np.array(averaged_predictions).reshape(-1, 1))
 
@@ -563,11 +562,6 @@ if __name__ == "__main__":
 
     logging.config.dictConfig(LOGGING)
 
-    m = 2
-    n = 20
-
-    np.random.seed(3)
-
     class A:
         def predict(self, X):
             # Prevent modification from persisting.
@@ -575,10 +569,14 @@ if __name__ == "__main__":
             X.iloc[:, 0] *= -1
             return np.sum(X, axis=1)
 
+    test_data = np.array([[1, 1], [2, 2]])
+
     model = A()
-    X = pd.DataFrame(np.random.random((m, n)), columns=list(string.ascii_lowercase)[:n])
-    features = list(string.ascii_lowercase[:4])
+    X = pd.DataFrame(
+        test_data, columns=list(string.ascii_lowercase)[: test_data.shape[1]]
+    )
+    features = list(string.ascii_lowercase[: test_data.shape[1]])
 
     fig, axes = partial_dependence_plot(
-        model, X, features, grid_resolution=2, norm_y_ticks=True
+        model, X, features, grid_resolution=2, norm_y_ticks=False, percentiles=(0, 1)
     )
