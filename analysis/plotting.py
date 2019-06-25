@@ -12,6 +12,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.colors import from_levels_and_colors
 from tqdm import tqdm
 
 from wildfires.analysis.processing import log_modulus
@@ -281,7 +282,7 @@ def cube_plotting(
     coastline_kwargs={},
     dummy_lat_lims=(-90, 90),
     dummy_lon_lims=(-180, 180),
-    vmin_vmax_percentiles=(2.5, 97.5),
+    vmin_vmax_percentiles=(0, 100),
     projection=ccrs.Robinson(),
     animation_output=False,
     ax=None,
@@ -379,14 +380,26 @@ def cube_plotting(
     if mesh is not None:
         mesh.set_array(cube.data.ravel())
     else:
+        cmap, norm = from_levels_and_colors(
+            # np.linspace(np.min(cube.data), np.max(cube.data) * 1.01, 101),
+            # plt.get_cmap("Reds")(np.linspace(0, 1, 100)),
+            [1, 4, 8, 1000],
+            plt.get_cmap("Reds")([0.3, 0.5, 0.8]),
+            extend="neither",
+        )
+
         mesh = ax.pcolormesh(
             gridlons,
             gridlats,
             cube.data,
-            cmap=kwargs.get("cmap", "viridis"),
+            # cmap=kwargs.get("cmap", "viridis"),
+            cmap=cmap,
+            norm=norm,
             # NOTE: This transform here may differ from the projection argument.
             transform=ccrs.PlateCarree(),
             rasterized=rasterized,
+            # TODO: FIXME: Setting vmin/vmax to something close to the data extremes seems
+            # to mess up norm / cmap... - Ignore for now??
             vmin=kwargs.get("vmin", data_vmin),
             vmax=kwargs.get("vmax", data_vmax),
         )
@@ -394,14 +407,15 @@ def cube_plotting(
     ax.coastlines(resolution="110m", **coastline_kwargs)
 
     colorbar_kwargs = {
-        "label": kwargs.get("label", str(cube.units)),
-        "orientation": kwargs.get("orientation", "horizontal"),
-        "fraction": kwargs.get("fraction", 0.15),
-        "pad": kwargs.get("pad", 0.07),
-        "shrink": kwargs.get("shrink", 0.9),
-        "aspect": kwargs.get("aspect", 30),
-        "anchor": kwargs.get("anchor", (0.5, 1.0)),
-        "panchor": kwargs.get("panchor", (0.5, 0.0)),
+        # FIXME:
+        # "label": kwargs.get("label", str(cube.units)),
+        # "orientation": kwargs.get("orientation", "horizontal"),
+        # "fraction": kwargs.get("fraction", 0.15),
+        # "pad": kwargs.get("pad", 0.07),
+        # "shrink": kwargs.get("shrink", 0.9),
+        # "aspect": kwargs.get("aspect", 30),
+        # "anchor": kwargs.get("anchor", (0.5, 1.0)),
+        # "panchor": kwargs.get("panchor", (0.5, 0.0)),
     }
     if new_colorbar:
         fig.colorbar(mesh, **colorbar_kwargs)
@@ -557,10 +571,8 @@ def partial_dependence_plot(
     return fig, axes
 
 
-if __name__ == "__main__":
+def test_pdp():
     import string
-
-    logging.config.dictConfig(LOGGING)
 
     class A:
         def predict(self, X):
@@ -579,4 +591,21 @@ if __name__ == "__main__":
 
     fig, axes = partial_dependence_plot(
         model, X, features, grid_resolution=2, norm_y_ticks=False, percentiles=(0, 1)
+    )
+
+
+if __name__ == "__main__":
+    logging.config.dictConfig(LOGGING)
+
+    plt.close("all")
+
+    cube = dummy_lat_lon_cube((1 + np.arange(12).reshape(4, 3)) ** 1, units="T")
+    # cube = dummy_lat_lon_cube(np.random.random((4, 3)), units="T")
+    cube_plotting(
+        cube,
+        log=False,
+        title="Testing",
+        auto_log_title=True,
+        orientation="vertical",
+        vmax=13,
     )
