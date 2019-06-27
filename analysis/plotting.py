@@ -15,7 +15,6 @@ import pandas as pd
 from matplotlib.colors import from_levels_and_colors
 from tqdm import tqdm
 
-from wildfires.analysis.processing import log_modulus
 from wildfires.data.datasets import dummy_lat_lon_cube
 from wildfires.logging_config import LOGGING
 
@@ -176,22 +175,24 @@ class FigureSaver:
         fig.savefig(filepath, **self.options)
 
 
-def get_cubes_vmin_vmax(cubes, vmin_vmax_percentiles=(2.5, 97.5)):
+def get_cubes_vmin_vmax(cubes, vmin_vmax_percentiles=(0.0, 100.0)):
     """Get vmin and vmax from a list of cubes given two percentiles.
 
     Args:
         cubes (iris.cube.CubeList): List of cubes.
         vmin_vmax_percentiles (tuple or None): The two percentiles, used to set the minimum
             and maximum values on the colorbar. If `None`, use the minimum and maximum
-            of the data (equivalent to percentiles of (0, 100)). Explicitly passed-in
-            `vmin` and `vmax` parameters take precedence.
-
+            of the data (equivalent to percentiles of (0, 100)).
     Returns:
-        tuple of float: (vmin, vmax).
+        tuple: tuple of floats (vmin, vmax) if `vmin_vmax_percentiles` is not (0, 100) in which case
+            (None, None) will be returned.
 
     """
-    if vmin_vmax_percentiles is None:
-        vmin_vmax_percentiles = (0, 100)
+    if vmin_vmax_percentiles is None or np.all(
+        np.isclose(np.array(vmin_vmax_percentiles), np.array([0, 100]))
+    ):
+        return None, None
+
     limits = []
     for cube in cubes:
         if isinstance(cube.data, np.ma.core.MaskedArray):
@@ -206,7 +207,19 @@ def get_cubes_vmin_vmax(cubes, vmin_vmax_percentiles=(2.5, 97.5)):
 
         limits.append(np.percentile(valid_data, vmin_vmax_percentiles))
 
-    return min(limit[0] for limit in limits), max(limit[1] for limit in limits)
+    output = []
+
+    if np.isclose(vmin_vmax_percentiles[0], 0):
+        output.append(None)
+    else:
+        output.append(min(limit[0] for limit in limits))
+
+    if np.isclose(vmin_vmax_percentiles[1], 100):
+        output.append(None)
+    else:
+        output.append(max(limit[1] for limit in limits))
+
+    return output
 
 
 def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
@@ -260,15 +273,12 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     # https://blogs.sas.com/content/iml/2014/07/14/log-transformation-of-pos-neg.html
     # Use log-modulus transformation
 
-    # TODO: Improve upon the log-modulus!
     perc_diffs = (ba_data - ba_predicted) / ba_data
-    log_mod_diffs = log_modulus(perc_diffs)
 
     fig = cube_plotting(
-        log_mod_diffs,
+        perc_diffs,
         cmap="viridis",
-        label=r"$\mathrm{sign}(x) \times \ln(|x| + 1)$",
-        title="({}) log-modulus (Observed - Predicted)".format(model_name),
+        title="({}) Perc. Diff. (Observed - Predicted)".format(model_name),
         coastline_kwargs={"linewidth": coast_linewidth},
     )
     figs.append(fig)
@@ -291,11 +301,12 @@ def cube_plotting(
     title_text=None,
     auto_log_title=False,
     transform_vmin_vmax=False,
+    log_auto_bins=True,
     **kwargs,
 ):
     """Pretty plotting.
 
-    For temperature, use
+    Eg. for temperature, use
     cmap='Reds'
     label=r"T ($\degree$C)"
 
@@ -319,14 +330,13 @@ def cube_plotting(
             creating a new one.
         new_colorbar (bool): If True, create a new colorbar. Turn off for animation.
         title_text (matplotlib.text.Text): Title text.
-        auto_log_title (bool): If `auto_log_title`, prepend "log " to `title` if
-            `log`.
         transform_vmin_vmax (bool): If `transform_vmin_vmax` and `log`, apply the log
             function used to transform the data to `vmin` and `vmax` (in `kwargs`)
             as well.
         possible kwargs:
             title: str or None of False. If None or False, no title will be plotted.
-            cmap: Example: 'viridis', 'Reds', 'Reds_r', etc...
+            cmap: Example: 'viridis', 'Reds', 'Reds_r', etc... Can also be a
+                `matplotlib.colors.Colormap` instance.
             vmin: Minimum value for colorbar.
             vmax: Maximum value for colorbar.
             colorbar_kwargs: Dictionary with any number of the following keys and
@@ -339,6 +349,7 @@ def cube_plotting(
                     - aspect
                     - anchor
                     - panchor
+                    - format
 
     """
     if not isinstance(cube, iris.cube.Cube):
@@ -347,29 +358,6 @@ def cube_plotting(
         )
 
     cube = cube.copy()
-
-    if log:
-        if not cube.long_name:
-            cube.long_name = cube.name()
-        future_name = "log " + cube.long_name
-        cube = iris.analysis.maths.log(cube)
-        cube.long_name = future_name
-        if transform_vmin_vmax:
-            for limit in ("vmin", "vmax"):
-                if limit in kwargs:
-                    if np.isclose(kwargs[limit], 0) or kwargs[limit] < 0:
-                        kwargs[limit] = None
-                    else:
-                        kwargs[limit] = np.log(kwargs[limit])
-
-    for coord_name in ["latitude", "longitude"]:
-        if not cube.coord(coord_name).has_bounds():
-            cube.coord(coord_name).guess_bounds()
-
-    gridlons = cube.coord("longitude").contiguous_bounds()
-    gridlats = cube.coord("latitude").contiguous_bounds()
-
-    data_vmin, data_vmax = get_cubes_vmin_vmax([cube], vmin_vmax_percentiles)
 
     if ax is None:
         fig = plt.figure()
@@ -380,13 +368,96 @@ def cube_plotting(
     if mesh is not None:
         mesh.set_array(cube.data.ravel())
     else:
+        for coord_name in ["latitude", "longitude"]:
+            if not cube.coord(coord_name).has_bounds():
+                cube.coord(coord_name).guess_bounds()
+
+        gridlons = cube.coord("longitude").contiguous_bounds()
+        gridlats = cube.coord("latitude").contiguous_bounds()
+
+        data_vmin, data_vmax = get_cubes_vmin_vmax([cube], vmin_vmax_percentiles)
+
+        vmin = kwargs.get("vmin", data_vmin)
+        vmax = kwargs.get("vmax", data_vmax)
+
+        n_bins = kwargs.get("nbins", 10)
+
+        if log:
+            boundaries = []
+
+            pos_range = None
+            neg_range = None
+
+            mask = cube.data > 0
+            if np.any(mask):
+                sel_data = cube.data[mask]
+                pos_range = [
+                    math.floor(math.log10(np.min(sel_data))),
+                    math.ceil(math.log10(np.max(sel_data))),
+                ]
+
+            mask = cube.data < 0
+            if np.any(mask):
+                sel_data = cube.data[mask]
+                neg_range = [
+                    math.floor(math.log10(-np.min(sel_data))),
+                    math.ceil(math.log10(-np.max(sel_data))),
+                ]
+
+            neg_bins = 0
+            pos_bins = 0
+
+            if log_auto_bins:
+                if neg_range:
+                    neg_bins = np.ptp(neg_range) + 1
+                if pos_range:
+                    pos_bins = np.ptp(pos_range) + 1
+            else:
+                if pos_range and neg_range:
+                    ratio = np.ptp(pos_range) / (np.ptp(pos_range) + np.ptp(neg_range))
+                    neg_bins = math.floor((n_bins + 1) * (1 - ratio))
+                    pos_bins = math.ceil((n_bins + 1) * ratio)
+                elif pos_range:
+                    pos_bins = n_bins + 1
+                elif neg_range:
+                    neg_bins = n_bins + 1
+
+            if not neg_bins and not pos_bins:
+                raise ValueError("No data found.")
+
+            if neg_bins > 0:
+                boundaries.extend(-np.logspace(neg_range[0], neg_range[1], neg_bins))
+
+            if neg_bins > 0 and pos_bins > 0 or np.any(np.isclose(cube.data, 0)):
+                boundaries.append(0)
+                pos_bins -= 1
+
+            if pos_bins > 0:
+                boundaries.extend(np.logspace(pos_range[0], pos_range[1], pos_bins))
+
+        else:
+            boundaries = np.linspace(np.min(cube.data), np.max(cube.data), n_bins + 1)
+
+        if vmin is None and vmax is None:
+            extend = "neither"
+            n_colors = len(boundaries) - 1
+
+        print(n_colors)
+
+        # from ipdb import set_trace
+
+        # set_trace()
+
         cmap, norm = from_levels_and_colors(
-            # np.linspace(np.min(cube.data), np.max(cube.data) * 1.01, 101),
-            # plt.get_cmap("Reds")(np.linspace(0, 1, 100)),
-            [1, 4, 8, 1000],
-            plt.get_cmap("Reds")([0.3, 0.5, 0.8]),
-            extend="neither",
+            boundaries,
+            plt.get_cmap(kwargs.get("cmap", "viridis"))(np.linspace(0, 1, n_colors)),
+            extend=extend,
         )
+
+        # This forces data points 'exactly' (very close) to the upper limit of the last
+        # bin to be recognised as part of that bin, as opposed to out of bounds.
+        if data_vmin is None and data_vmax is None:
+            norm.clip = True
 
         mesh = ax.pcolormesh(
             gridlons,
@@ -400,28 +471,31 @@ def cube_plotting(
             rasterized=rasterized,
             # TODO: FIXME: Setting vmin/vmax to something close to the data extremes seems
             # to mess up norm / cmap... - Ignore for now??
-            vmin=kwargs.get("vmin", data_vmin),
-            vmax=kwargs.get("vmax", data_vmax),
+            vmin=vmin,
+            vmax=vmax,
         )
 
     ax.coastlines(resolution="110m", **coastline_kwargs)
 
     colorbar_kwargs = {
-        # FIXME:
-        # "label": kwargs.get("label", str(cube.units)),
-        # "orientation": kwargs.get("orientation", "horizontal"),
-        # "fraction": kwargs.get("fraction", 0.15),
-        # "pad": kwargs.get("pad", 0.07),
-        # "shrink": kwargs.get("shrink", 0.9),
-        # "aspect": kwargs.get("aspect", 30),
-        # "anchor": kwargs.get("anchor", (0.5, 1.0)),
-        # "panchor": kwargs.get("panchor", (0.5, 0.0)),
+        "label": kwargs.get("label", str(cube.units)),
+        "orientation": kwargs.get("orientation", "vertical"),
+        "fraction": kwargs.get("fraction", 0.15),
+        "pad": kwargs.get("pad", 0.07),
+        "shrink": kwargs.get("shrink", 0.9)
+        if kwargs.get("orientation", "vertical") == "horizontal"
+        else kwargs.get("shrink", 0.7),
+        "aspect": kwargs.get("aspect", 30),
+        "anchor": kwargs.get("anchor", (0.5, 1.0)),
+        "panchor": kwargs.get("panchor", (0.5, 0.0)),
+        "format": "%.1e" if log else None,
     }
+    # TODO: https://matplotlib.org/3.1.0/gallery/axes_grid1/simple_colorbar.html
+    # TODO: Use this to attach the colorbar to the axes, not the figure. Errors were
+    # encountered due to cartopy geoaxes.
     if new_colorbar:
         fig.colorbar(mesh, **colorbar_kwargs)
     title = kwargs.get("title", cube.name())
-    if log and auto_log_title and kwargs.get("title"):
-        title = "log " + title
     if title:
         if isinstance(title, mpl.text.Text):
             title_text.set_text(title)
@@ -592,20 +666,25 @@ def test_pdp():
     fig, axes = partial_dependence_plot(
         model, X, features, grid_resolution=2, norm_y_ticks=False, percentiles=(0, 1)
     )
+    plt.show()
+
+
+def test_plotting():
+    cube = dummy_lat_lon_cube(((-4 + np.arange(12).reshape(4, 3))) ** 1, units="T")
+    cube_plotting(
+        cube,
+        log=True,
+        title="Testing",
+        orientation="horizontal",
+        nbins=11,
+        log_auto_bins=True,
+        cmap="brewer_RdYlBu_11",
+        vmin=None,
+        vmax=None,
+    )
+    plt.show()
 
 
 if __name__ == "__main__":
     logging.config.dictConfig(LOGGING)
-
-    plt.close("all")
-
-    cube = dummy_lat_lon_cube((1 + np.arange(12).reshape(4, 3)) ** 1, units="T")
-    # cube = dummy_lat_lon_cube(np.random.random((4, 3)), units="T")
-    cube_plotting(
-        cube,
-        log=False,
-        title="Testing",
-        auto_log_title=True,
-        orientation="vertical",
-        vmax=13,
-    )
+    test_plotting()
