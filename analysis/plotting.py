@@ -380,6 +380,9 @@ def cube_plotting(
         vmin = kwargs.get("vmin", data_vmin)
         vmax = kwargs.get("vmax", data_vmax)
 
+        if vmin is not None and vmax is not None and vmin > vmax:
+            raise ValueError(f"vmin ({vmin}) must not be larger than vmax ({vmax}).")
+
         n_bins = kwargs.get("nbins", 10)
 
         if log:
@@ -400,53 +403,173 @@ def cube_plotting(
             if np.any(mask):
                 sel_data = cube.data[mask]
                 neg_range = [
-                    math.floor(math.log10(-np.min(sel_data))),
-                    math.ceil(math.log10(-np.max(sel_data))),
+                    math.ceil(math.log10(np.max(np.abs(sel_data)))),
+                    math.floor(math.log10(np.min(np.abs(sel_data)))),
                 ]
 
             neg_bins = 0
             pos_bins = 0
 
+            if not log_auto_bins:
+                # If there is both positive and negative data.
+                if pos_range and neg_range:
+                    ratio = (np.ptp(pos_range) + 1) / (
+                        np.ptp(pos_range) + np.ptp(neg_range) + 2
+                    )
+                    neg_bins = math.floor((n_bins + 1) * (1 - ratio))
+                    pos_bins = math.ceil((n_bins + 1) * ratio)
+                    # TODO: Best way to handle vmin/vmax? Trim values adjacent to 0 instead?
+                    if vmin is not None:
+                        if vmin < 0:
+                            neg_bins -= 1
+                            neg_range[0] = math.log10(-vmin)
+                        else:
+                            neg_bins = 0
+                            neg_range = None
+
+                            pos_bins -= 1
+                            pos_range[0] = math.log10(vmin)
+                    if vmax is not None:
+                        if vmax >= 0:
+                            pos_bins -= 1
+                            pos_range[1] = math.log10(vmax)
+                        else:
+                            pos_bins = 0
+                            pos_range = None
+
+                            neg_bins -= 1
+                            neg_range[1] = math.log10(-vmax)
+
+                # If there is only positive data.
+                elif pos_range:
+                    pos_bins = n_bins + 1
+                    # TODO: Best way to handle vmin/vmax? Trim values adjacent to 0 instead?
+                    if vmin is not None:
+                        pos_bins -= 1
+                        if vmin < 0:
+                            pos_bins -= 1
+                            neg_bins = 1
+                            neg_range[0] = math.log10(-vmin)
+                            neg_range[1] = neg_range[0]
+                        else:
+                            pos_range[0] = math.log10(vmin)
+                    if vmax is not None:
+                        if vmax >= 0:
+                            pos_bins -= 1
+                            pos_range[1] = math.log10(vmax)
+                        else:
+                            pos_bins = 0
+                            pos_range = None
+
+                            neg_bins = 1
+                            neg_range[1] = math.log10(-vmax)
+                            neg_range[0] = neg_range[1]
+
+                # If there is only negative data.
+                elif neg_range:
+                    neg_bins = n_bins + 1
+                    # TODO: Best way to handle vmin/vmax? Trim values adjacent to 0 instead?
+                    if vmin is not None:
+                        if vmin < 0:
+                            neg_bins -= 1
+                            neg_range[0] = math.log10(-vmin)
+                        else:
+                            neg_bins = 0
+                            neg_range = None
+
+                            pos_bins = 1
+                            pos_range[0] = math.log10(vmin)
+                            pos_range[1] = pos_range[0]
+                    if vmax is not None:
+                        neg_bins -= 1
+                        neg_range[1] = vmax
+                        if vmax >= 0:
+                            neg_bins -= 1
+                            pos_bins = 1
+                            pos_range[1] = math.log10(vmax)
+                            pos_range[0] = pos_range[1]
+                        else:
+                            neg_range[1] = math.log10(-vmax)
+
             if log_auto_bins:
+                if vmin is not None:
+                    boundaries.append(vmin)
+                    if vmin < 0:
+                        neg_range[0] = math.floor(math.log10(-vmin) - 1)
+                    else:
+                        neg_range = None
+
+                        pos_range[0] = math.ceil(math.log10(vmin))
+
+                if vmax is not None:
+                    boundaries.append(vmax)
+                    if vmax >= 0:
+                        pos_range[1] = math.floor(math.log10(vmax))
+                    else:
+                        pos_range = None
+
+                        neg_range[1] = math.ceil(math.log10(-vmax))
+
                 if neg_range:
                     neg_bins = np.ptp(neg_range) + 1
                 if pos_range:
                     pos_bins = np.ptp(pos_range) + 1
+
+                if neg_bins > 0:
+                    boundaries.extend(
+                        -np.logspace(neg_range[0], neg_range[1], neg_bins)
+                    )
+
+                if neg_bins > 0 and pos_bins > 0 or np.any(np.isclose(cube.data, 0)):
+                    boundaries.append(0)
+
+                if pos_bins > 0:
+                    boundaries.extend(np.logspace(pos_range[0], pos_range[1], pos_bins))
+
+                boundaries = list(set(boundaries))
+                boundaries.sort()
             else:
-                if pos_range and neg_range:
-                    ratio = np.ptp(pos_range) / (np.ptp(pos_range) + np.ptp(neg_range))
-                    neg_bins = math.floor((n_bins + 1) * (1 - ratio))
-                    pos_bins = math.ceil((n_bins + 1) * ratio)
-                elif pos_range:
-                    pos_bins = n_bins + 1
-                elif neg_range:
-                    neg_bins = n_bins + 1
+                if neg_bins > 0:
+                    boundaries.extend(
+                        -np.logspace(neg_range[0], neg_range[1], neg_bins)
+                    )
+
+                if neg_bins > 0 and pos_bins > 0 or np.any(np.isclose(cube.data, 0)):
+                    boundaries.append(0)
+                    pos_bins -= 1
+
+                if pos_bins > 0:
+                    boundaries.extend(np.logspace(pos_range[0], pos_range[1], pos_bins))
 
             if not neg_bins and not pos_bins:
                 raise ValueError("No data found.")
 
-            if neg_bins > 0:
-                boundaries.extend(-np.logspace(neg_range[0], neg_range[1], neg_bins))
-
-            if neg_bins > 0 and pos_bins > 0 or np.any(np.isclose(cube.data, 0)):
-                boundaries.append(0)
-                pos_bins -= 1
-
-            if pos_bins > 0:
-                boundaries.extend(np.logspace(pos_range[0], pos_range[1], pos_bins))
-
         else:
-            boundaries = np.linspace(np.min(cube.data), np.max(cube.data), n_bins + 1)
+            data_min = np.min(cube.data)
+            data_max = np.max(cube.data)
+            lin_min = data_min if vmin is None else vmin
+            lin_max = data_max if vmax is None else vmax
+
+            boundaries = np.linspace(lin_min, lin_max, n_bins + 1)
 
         if vmin is None and vmax is None:
             extend = "neither"
             n_colors = len(boundaries) - 1
+        if vmin is not None and vmax is None:
+            extend = "min"
+            n_colors = len(boundaries)
+        if vmax is not None and vmin is None:
+            extend = "max"
+            n_colors = len(boundaries)
+        if vmin is not None and vmax is not None:
+            extend = "both"
+            n_colors = len(boundaries) + 1
 
-        print(n_colors)
-
-        # from ipdb import set_trace
-
-        # set_trace()
+        if n_colors > plt.get_cmap(kwargs.get("cmap", "viridis")).N:
+            logger.warning(
+                f"Expected at most {plt.get_cmap(kwargs.get('cmap', 'viridis')).N} "
+                f"colors, but got {n_colors}."
+            )
 
         cmap, norm = from_levels_and_colors(
             boundaries,
@@ -456,7 +579,7 @@ def cube_plotting(
 
         # This forces data points 'exactly' (very close) to the upper limit of the last
         # bin to be recognised as part of that bin, as opposed to out of bounds.
-        if data_vmin is None and data_vmax is None:
+        if vmin is None and vmax is None:
             norm.clip = True
 
         mesh = ax.pcolormesh(
@@ -670,21 +793,26 @@ def test_pdp():
 
 
 def test_plotting():
-    cube = dummy_lat_lon_cube(((-4 + np.arange(12).reshape(4, 3))) ** 1, units="T")
+    np.random.seed(1)
+    cube = dummy_lat_lon_cube(
+        ((-4 + np.arange(12).reshape(4, 3))) ** 5 + np.random.random((4, 3)), units="T"
+    )
     cube_plotting(
         cube,
         log=True,
         title="Testing",
         orientation="horizontal",
-        nbins=11,
+        nbins=9,
         log_auto_bins=True,
         cmap="brewer_RdYlBu_11",
-        vmin=None,
-        vmax=None,
+        # vmin=None,
+        vmin=-500,
+        vmax=50,
     )
     plt.show()
 
 
 if __name__ == "__main__":
     logging.config.dictConfig(LOGGING)
+    # plt.close('all')
     test_plotting()
