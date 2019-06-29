@@ -7,7 +7,7 @@ TODO:
     longitude coordinates adds the attribute `circular=True`.
 
     Since longitudes registered in the [-180, 180] system fail to register as circular
-    using `iris.util._is_circular` but the same coordiantes + 180° do register
+    using `iris.util._is_circular` but the same coordinates + 180° do register
     correctly (if they actually cover all of [0, 360], as expected), does regridding
     using longitudes in [-180, 180] actually consider the coordinate's circular nature
     correctly?
@@ -715,6 +715,8 @@ class Dataset(ABC):
     time_unit_str = "days since 1970-01-01 00:00:00"
     time_unit = cf_units.Unit(time_unit_str, calendar="gregorian")
 
+    # Override the `pretty_variable_names` dictionary in each class where bespoke
+    # pretty variable names are desired. Keys are the raw variables names.
     pretty_variable_names = dict()
     _pretty = None
 

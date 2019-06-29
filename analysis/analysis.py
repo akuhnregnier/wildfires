@@ -31,6 +31,7 @@ from wildfires.data.datasets import dataset_times
 from wildfires.logging_config import LOGGING
 from wildfires.utils import get_masked_array, get_unmasked
 from wildfires.utils import land_mask as get_land_mask
+from wildfires.utils import match_shape
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,9 @@ def data_processing(
         print_dataset_times(selection, latex=False)
 
     raw_datasets = prepare_selection(selection, which=which)
+    # XXX: This realises data, which is only acceptable since (if) other code accesses
+    # the cubes' `data` attribute below, realising the data anyway.
+    raw_datasets.homogenise_masks()
 
     # Get land mask.
     # TODO: Check that this works consistently, then it can be removed.
@@ -172,7 +176,10 @@ def data_processing(
 
     masks_to_apply = (lat_mask, land_mask)
     for cube in masked_datasets.cubes:
-        cube.data.mask |= reduce(np.logical_or, masks_to_apply)
+        cube.data.mask |= reduce(
+            np.logical_or,
+            map(partial(match_shape, target_shape=cube.shape), masks_to_apply),
+        )
 
     # Filling/processing/cleaning datasets.
 

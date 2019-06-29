@@ -239,19 +239,19 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     figsize = (4, 2.7)
     mpl.rcParams["figure.figsize"] = figsize
 
-    log_vmin = min((np.min(np.log(ba_predicted)), np.min(np.log(ba_data))))
-    log_vmax = max((np.max(np.log(ba_predicted)), np.max(np.log(ba_data))))
+    vmin = min((np.min(ba_predicted), np.min(ba_data)))
+    vmax = max((np.max(ba_predicted), np.max(ba_data)))
 
     # Plotting predicted.
     fig = cube_plotting(
         ba_predicted,
         cmap="Reds",
-        label="ln(Fraction)",
+        label="Fraction",
         title="Predicted Mean Burned Area ({})".format(model_name),
         log=True,
         coastline_kwargs={"linewidth": coast_linewidth},
-        vmin=log_vmin,
-        vmax=log_vmax,
+        vmin=vmin,
+        vmax=vmax,
     )
     figs.append(fig)
 
@@ -259,12 +259,12 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     fig = cube_plotting(
         ba_data,
         cmap="Reds",
-        label="ln(Fraction)",
+        label="Fraction",
         title="Mean observed burned area (GFEDv4)",
         log=True,
         coastline_kwargs={"linewidth": coast_linewidth},
-        vmin=log_vmin,
-        vmax=log_vmax,
+        vmin=vmin,
+        vmax=vmax,
     )
     figs.append(fig)
 
@@ -280,6 +280,7 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
         cmap="viridis",
         title="({}) Perc. Diff. (Observed - Predicted)".format(model_name),
         coastline_kwargs={"linewidth": coast_linewidth},
+        log=True,
     )
     figs.append(fig)
     return figs
@@ -299,7 +300,6 @@ def cube_plotting(
     mesh=None,
     new_colorbar=True,
     title_text=None,
-    auto_log_title=False,
     transform_vmin_vmax=False,
     log_auto_bins=True,
     **kwargs,
@@ -313,11 +313,11 @@ def cube_plotting(
     Args:
         cube: Cube to plot.
         log: True to log.
-        rasterized: Rasterize pcolormesh (but not the text)
+        rasterized: Rasterize pcolormesh (but not the text).
         dummy_lat_lims: Tuple passed to dummy_lat_lon_cube function in case the input
-            argument is not a cube
+            argument is not a cube.
         dummy_lon_lims: Tuple passed to dummy_lat_lon_cube function in case the input
-            argument is not a cube
+            argument is not a cube.
         vmin_vmax_percentiles (tuple or None): The two percentiles, used to set the minimum
             and maximum values on the colorbar. If `None`, use the minimum and maximum
             of the data (equivalent to percentiles of (0, 100)). Explicitly passed-in
@@ -325,7 +325,7 @@ def cube_plotting(
         projection: A projection as defined in `cartopy.crs`.
         animation_output (bool): Output additional variables required to create an
             animation.
-        ax (matplotlib axis):
+        ax (matplotlib axis): Axis to plot onto.
         mesh (matplotlib.collections.QuadMesh): If given, update the mesh instead of
             creating a new one.
         new_colorbar (bool): If True, create a new colorbar. Turn off for animation.
@@ -495,20 +495,35 @@ def cube_plotting(
                 if vmin is not None:
                     boundaries.append(vmin)
                     if vmin < 0:
-                        neg_range[0] = math.floor(math.log10(-vmin) - 1)
+                        lim = math.floor(math.log10(-vmin) - 1)
+                        if neg_range is None:
+                            neg_range = [lim, lim]
+                        else:
+                            neg_range[0] = lim
                     else:
                         neg_range = None
 
-                        pos_range[0] = math.ceil(math.log10(vmin))
+                        lim = math.ceil(math.log10(vmin))
+                        if pos_range is None:
+                            pos_range = [lim, lim]
+                        else:
+                            pos_range[0] = lim
 
                 if vmax is not None:
                     boundaries.append(vmax)
                     if vmax >= 0:
-                        pos_range[1] = math.floor(math.log10(vmax))
+                        lim = math.floor(math.log10(vmax))
+                        if pos_range is None:
+                            pos_range = [lim, lim]
+                        else:
+                            pos_range[1] = lim
                     else:
                         pos_range = None
-
-                        neg_range[1] = math.ceil(math.log10(-vmax))
+                        lim = math.ceil(math.log10(-vmax))
+                        if neg_range is None:
+                            neg_range = [lim, lim]
+                        else:
+                            neg_range[1] = lim
 
                 if neg_range:
                     neg_bins = np.ptp(neg_range) + 1
@@ -726,7 +741,7 @@ def partial_dependence_plot(
         n_cols = int(math.ceil(np.sqrt(len(features))))
 
     fig, axes = plt.subplots(
-        nrows=int(math.ceil(len(features)) / n_cols), ncols=n_cols, squeeze=False
+        nrows=math.ceil(len(features) / n_cols), ncols=n_cols, squeeze=False
     )
 
     axes = axes.flatten()
@@ -778,7 +793,7 @@ def test_pdp():
             X.iloc[:, 0] *= -1
             return np.sum(X, axis=1)
 
-    test_data = np.array([[1, 1], [2, 2]])
+    test_data = np.zeros((2, 18)) + np.array([[1], [2]])
 
     model = A()
     X = pd.DataFrame(
@@ -812,7 +827,12 @@ def test_plotting():
     plt.show()
 
 
+def test_map_model_output():
+    data = np.random.normal(size=(100, 50))
+    data2 = np.random.normal(size=(100, 50))
+    map_model_output(data, data2, "testing", 1.0)
+
+
 if __name__ == "__main__":
     logging.config.dictConfig(LOGGING)
-    # plt.close('all')
-    test_plotting()
+    test_map_model_output()

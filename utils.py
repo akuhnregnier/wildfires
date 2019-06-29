@@ -278,7 +278,6 @@ def match_shape(array, target_shape):
         ...     )
         True
 
-
     """
     if array.shape != target_shape:
         # Remove singular first dimension.
@@ -287,16 +286,14 @@ def match_shape(array, target_shape):
                 array = array[0]
         if array.shape == target_shape[1:]:
             logger.debug(
-                "Adding time dimension ({}) to broadcast land_mask.".format(
-                    target_shape[0]
-                )
+                "Adding time dimension ({}) to broadcast array.".format(target_shape[0])
             )
-            new_mask = np.zeros(target_shape, dtype=np.bool_)
-            new_mask += array.reshape(1, *array.shape)
-            array = new_mask
+            new_array = np.zeros(target_shape, dtype=np.bool_)
+            new_array += array.reshape(1, *array.shape)
+            array = new_array
         else:
             raise ValueError(
-                "land_mask dimensions '{}' do not match cube dimensions '{}'".format(
+                "Array dimensions '{}' do not match cube dimensions '{}'.".format(
                     array.shape, target_shape
                 )
             )

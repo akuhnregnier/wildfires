@@ -1120,6 +1120,11 @@ class Datasets:
             dataset.cubes = new_cubes
         return self
 
+    def homogenise_masks(self):
+        for dataset in self.datasets:
+            for i in range(len(dataset.cubes)):
+                dataset.cubes[i] = homogenise_cube_mask(dataset.cubes[i])
+
     def show(self, variable_format="all"):
         """Print out a representation of the selection."""
         pprint(self.get(dataset_name="all", variable_format=variable_format))
@@ -1173,15 +1178,14 @@ def print_datasets_dates(selection):
 def prepare_selection(selection, *, min_time=None, max_time=None, which="all"):
     """Prepare cubes matching the given selection for analysis.
 
-    Calculate 3 different averages at the same time to avoid repeat loading.
-
     Args:
         selection (`Datasets`): Selection specifying the variables to use.
         which (str): Controls which temporal processing is carried out. See return
             value documentation.
 
     Returns:
-        If `which` is 'all', returns three `Datasets` (monthly, mean, climatology). If
+        If `which` is 'all', returns three `Datasets` (monthly, mean, climatology)
+        which are calculated (and cached) at the same time to avoid repeat loading. If
         'monthly', 'mean' or 'climatology', return the first, second or third entry
         respectively.
 
