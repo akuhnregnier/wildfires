@@ -286,6 +286,230 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     return figs
 
 
+def get_bin_edges(
+    data=None,
+    vmin=None,
+    vmax=None,
+    n_bins=11,
+    log=True,
+    min_edge_type="manual",
+    min_edge=None,
+):
+    """Get bin edges.
+
+    Args:
+        data (numpy.ndarray): Data array to determine limits.
+        vmin (float): Minimum bin edge.
+        vmax (float): Maximum bin edge.
+        n_bins (int or str): If "auto" (only applies when `log=True`), determine bin
+            edges using the data (see `min_edge`).
+        log (bool): If `log`, bin edges are computed in log space (base 10).
+        min_edge_type (str): If "manual", the supplied `min_edge` will be used for the
+            minimum exponent (for both positive and negative edges), and `vmin` and
+            `vmax` for the upper limits. If "auto", determine `min_edge` from the
+            data. If "symmetric", determine `min_edge` from the data, but use the same
+            value for the positive and negative edges. If either `vmin` or `vmax` is
+            very close to (or equal to) 0, `min_edge` is also required as the starting
+            point of the bin edges (see examples).
+        min_edge (float or None): If None, the minimum (absolute) data value will be
+            used. Otherwise the supplied float will be used to set the minimum
+            exponent of the log bins.
+
+    Returns:
+        list: The bin edges.
+
+    TODO:
+        Make sure the n_bins parameter is respected, which is not true at the moment
+        for cases where vmin or vmax are close to 0, or when an additional 0 is
+        inserted otherwise.
+
+    Examples:
+        >>> get_bin_edges(vmin=0, vmax=100, n_bins=2, log=False)
+        [0.0, 50.0, 100.0]
+        >>> get_bin_edges(vmin=1, vmax=100, n_bins=2, log=True, min_edge=1)
+        [1.0, 10.0, 100.0]
+        >>> get_bin_edges(vmin=-100, vmax=100, n_bins="auto", log=True, min_edge=1,
+        ...               min_edge_type="manual")
+        [-100.0, -10.0, -1.0, 0.0, 1.0, 10.0, 100.0]
+        >>> get_bin_edges(vmin=-100, vmax=1000, n_bins="auto", log=True, min_edge=1,
+        ...               min_edge_type="manual")
+        [-100.0, -10.0, -1.0, 0.0, 1.0, 10.0, 100.0, 1000.0]
+        >>> get_bin_edges(vmin=0, vmax=100, n_bins=2, log=True, min_edge=1)
+        [0.0, 1.0, 10.0, 100.0]
+
+    """
+    input_args = locals()
+    if not log:
+        assert type(n_bins) == int
+        if any(vlim is None for vlim in (vmin, vmax)) and data is None:
+            raise ValueError("Need data for vmin/vmax that are None.")
+
+    if vmin is not None and vmax is not None and vmin > vmax:
+        raise ValueError(f"vmin ({vmin}) must not be larger than vmax ({vmax}).")
+
+    if log and vmin is not None and vmax is not None and data is None:
+        assert (
+            min_edge is not None
+        ), "When not supplying data, `min_edge` needs to be given."
+        assert (
+            min_edge_type == "manual"
+        ), "When not supplying data, `min_edge_type` needs to be 'manual'."
+        # Get bin edges without relying on data at all.
+        input_args["data"] = np.array([1])
+        return get_bin_edges(**input_args)
+
+    min_bin = vmin if vmin is not None else np.min(data)
+    max_bin = vmax if vmax is not None else np.max(data)
+
+    n_close_lim = sum(np.isclose(lim_bin, 0) for lim_bin in (min_bin, max_bin))
+    assert n_close_lim <= 1, "At most one limit should be close to 0."
+
+    min_force = True if vmin is not None else False
+    max_force = True if vmax is not None else False
+
+    if not log:
+        assert (
+            type(n_bins) == int
+        ), f"Bin number must be an integer if `log=False`. Got {repr(n_bins)} instead."
+        return list(np.linspace(min_bin, max_bin, n_bins + 1))
+
+    # Only the case with log=True remains here.
+    # Positive and negative data are handled the same way (after taking the absolute
+    # value) and the resulting bins are then stitched together if needed.
+
+    zero_mask = ~np.isclose(data, 0)
+    split_data = (data[(data > 0) & zero_mask], np.abs(data[(data < 0) & zero_mask]))
+    multipliers = (1, -1)
+
+    if min_bin >= 0:
+        split_data = split_data[:1]
+        multipliers = (1,)
+    if max_bin <= 0:
+        split_data = split_data[1:]
+        multipliers = (-1,)
+
+    if n_close_lim == 1:
+        assert (
+            len(split_data) == 1
+        ), "There should be only 1 split dataset if one of the limits is 0."
+
+    limits_list = []
+    force_bins_list = []
+
+    if min_edge_type == "manual":
+        assert min_edge is not None, "Need valid `min_edge` for 'manual' edge type."
+
+    if min_edge is not None:
+        if min_edge_type != "manual":
+            raise ValueError(
+                "Value for `min_edge` supplied even though `min_edge_type` was set to "
+                f"'{min_edge_type}'."
+            )
+        min_edge_type = "manual"
+
+    if min_edge_type in ("symmetric", "auto"):
+        if min_edge is not None:
+            raise ValueError(
+                "Value for `min_edge` supplied even though "
+                f"`min_edge_type` was set to '{min_edge_type}'."
+            )
+        if min_edge_type == "symmetric":
+            min_edge_type = "manual"
+            min_edge = np.min(np.abs(data))
+        else:
+            # If edge type is auto, data is needed to infer the bounds.
+            if not all(map(np.any, split_data)):
+                raise ValueError(
+                    f"Insufficient data for `min_edge_type` '{min_edge_type}'."
+                )
+
+    for s_data, multiplier in zip(split_data, multipliers):
+        # Get the relevant limits for the data in both the positive and negative case.
+        # Do this by checking the sign and magnitude of the predefined limits, and
+        # using max/min of the selected data if necessary.
+        limits = []
+        force_bins = []
+        for s_bin, func, force in zip(
+            (min_bin, max_bin)[::multiplier],
+            (np.min, np.max),
+            (min_force, max_force)[::multiplier],
+        ):
+            force_bin = False
+            # If vmin/vmax are applicable.
+            if multiplier * s_bin >= 0:
+                limits.append(multiplier * s_bin)
+                if force:
+                    force_bin = True
+            # Purely data-informed - relies on respective data being available.
+            elif min_edge_type == "manual":
+                limits.append(min_edge)
+            elif min_edge_type == "auto":
+                limits.append(func(s_data))
+            else:
+                raise ValueError(f"Unknown `min_edge_type` '{min_edge_type}'.")
+
+            force_bins.append(force_bin)
+
+        limits_list.append(limits)
+        force_bins_list.append(force_bins)
+
+    log_limits_list = []
+    for limits in limits_list:
+        log_limits = []
+        if np.isclose(limits[0], 0):
+            assert min_edge is not None
+            to_process = min_edge
+        else:
+            to_process = limits[0]
+        log_limits.append(math.floor(np.log10(to_process)))
+        log_limits.append(math.ceil(np.log10(limits[1])))
+        log_limits_list.append(log_limits)
+
+    boundaries = []
+    if n_bins != "auto":
+        if len(split_data) == 2:
+            denom = sum([np.ptp(log_limits) + 1 for log_limits in log_limits_list])
+            ratio = (np.ptp(log_limits_list[0]) + 1) / (denom)
+            split_bins = (
+                math.ceil((n_bins + 1) * ratio),
+                math.floor((n_bins + 1) * (1 - ratio)),
+            )
+        else:
+            split_bins = (n_bins + 1,)
+
+        for multiplier, limits, bin_number in zip(multipliers, limits_list, split_bins):
+            if np.isclose(limits[0], 0):
+                limits[0] = min_edge
+                boundaries.append(0)
+            boundaries.extend(multiplier * np.geomspace(*limits, bin_number))
+    else:
+        for multiplier, force_bins, limits, log_limits in zip(
+            multipliers, force_bins_list, limits_list, log_limits_list
+        ):
+            # Forced bins are kept as explicit limits. If the bin is not forced, the
+            # value derived from the log limits is used.
+            boundaries.extend(
+                multiplier * limit
+                for forced, limit in zip(force_bins, limits)
+                if forced
+            )
+
+            force_exponent_mod = np.array([1, -1])
+            force_exponent_mod[~np.array(force_bins, dtype=np.bool_)] = 0
+            log_limits = tuple(np.array(log_limits) + force_exponent_mod)
+            limit_diff = log_limits[1] - log_limits[0]
+            if limit_diff > 0 or np.isclose(limit_diff, 0):
+                boundaries.extend(
+                    multiplier * np.logspace(*log_limits, np.ptp(log_limits) + 1)
+                )
+
+    # TODO: Remove something to make up for this?
+    if len(split_data) == 2:
+        boundaries.append(0)
+
+    return sorted(float(edge) for edge in boundaries)
+
+
 def cube_plotting(
     cube,
     log=False,
@@ -301,6 +525,7 @@ def cube_plotting(
     new_colorbar=True,
     title_text=None,
     transform_vmin_vmax=False,
+    nbins=10,
     log_auto_bins=True,
     **kwargs,
 ):
@@ -333,6 +558,8 @@ def cube_plotting(
         transform_vmin_vmax (bool): If `transform_vmin_vmax` and `log`, apply the log
             function used to transform the data to `vmin` and `vmax` (in `kwargs`)
             as well.
+        nbins (int): Number of bins. Does not apply if `log` and `log_auto_bins`.
+        log_auto_bins (bool): Make log bins stick to integers.
         possible kwargs:
             title: str or None of False. If None or False, no title will be plotted.
             cmap: Example: 'viridis', 'Reds', 'Reds_r', etc... Can also be a
@@ -380,192 +607,14 @@ def cube_plotting(
         vmin = kwargs.get("vmin", data_vmin)
         vmax = kwargs.get("vmax", data_vmax)
 
-        if vmin is not None and vmax is not None and vmin > vmax:
-            raise ValueError(f"vmin ({vmin}) must not be larger than vmax ({vmax}).")
-
-        n_bins = kwargs.get("nbins", 10)
-
-        if log:
-            boundaries = []
-
-            pos_range = None
-            neg_range = None
-
-            mask = cube.data > 0
-            if np.any(mask):
-                sel_data = cube.data[mask]
-                pos_range = [
-                    math.floor(math.log10(np.min(sel_data))),
-                    math.ceil(math.log10(np.max(sel_data))),
-                ]
-
-            mask = cube.data < 0
-            if np.any(mask):
-                sel_data = cube.data[mask]
-                neg_range = [
-                    math.ceil(math.log10(np.max(np.abs(sel_data)))),
-                    math.floor(math.log10(np.min(np.abs(sel_data)))),
-                ]
-
-            neg_bins = 0
-            pos_bins = 0
-
-            if not log_auto_bins:
-                # If there is both positive and negative data.
-                if pos_range and neg_range:
-                    ratio = (np.ptp(pos_range) + 1) / (
-                        np.ptp(pos_range) + np.ptp(neg_range) + 2
-                    )
-                    neg_bins = math.floor((n_bins + 1) * (1 - ratio))
-                    pos_bins = math.ceil((n_bins + 1) * ratio)
-                    # TODO: Best way to handle vmin/vmax? Trim values adjacent to 0 instead?
-                    if vmin is not None:
-                        if vmin < 0:
-                            neg_bins -= 1
-                            neg_range[0] = math.log10(-vmin)
-                        else:
-                            neg_bins = 0
-                            neg_range = None
-
-                            pos_bins -= 1
-                            pos_range[0] = math.log10(vmin)
-                    if vmax is not None:
-                        if vmax >= 0:
-                            pos_bins -= 1
-                            pos_range[1] = math.log10(vmax)
-                        else:
-                            pos_bins = 0
-                            pos_range = None
-
-                            neg_bins -= 1
-                            neg_range[1] = math.log10(-vmax)
-
-                # If there is only positive data.
-                elif pos_range:
-                    pos_bins = n_bins + 1
-                    # TODO: Best way to handle vmin/vmax? Trim values adjacent to 0 instead?
-                    if vmin is not None:
-                        pos_bins -= 1
-                        if vmin < 0:
-                            pos_bins -= 1
-                            neg_bins = 1
-                            neg_range[0] = math.log10(-vmin)
-                            neg_range[1] = neg_range[0]
-                        else:
-                            pos_range[0] = math.log10(vmin)
-                    if vmax is not None:
-                        if vmax >= 0:
-                            pos_bins -= 1
-                            pos_range[1] = math.log10(vmax)
-                        else:
-                            pos_bins = 0
-                            pos_range = None
-
-                            neg_bins = 1
-                            neg_range[1] = math.log10(-vmax)
-                            neg_range[0] = neg_range[1]
-
-                # If there is only negative data.
-                elif neg_range:
-                    neg_bins = n_bins + 1
-                    # TODO: Best way to handle vmin/vmax? Trim values adjacent to 0 instead?
-                    if vmin is not None:
-                        if vmin < 0:
-                            neg_bins -= 1
-                            neg_range[0] = math.log10(-vmin)
-                        else:
-                            neg_bins = 0
-                            neg_range = None
-
-                            pos_bins = 1
-                            pos_range[0] = math.log10(vmin)
-                            pos_range[1] = pos_range[0]
-                    if vmax is not None:
-                        neg_bins -= 1
-                        neg_range[1] = vmax
-                        if vmax >= 0:
-                            neg_bins -= 1
-                            pos_bins = 1
-                            pos_range[1] = math.log10(vmax)
-                            pos_range[0] = pos_range[1]
-                        else:
-                            neg_range[1] = math.log10(-vmax)
-
-            if log_auto_bins:
-                if vmin is not None:
-                    boundaries.append(vmin)
-                    if vmin < 0:
-                        lim = math.floor(math.log10(-vmin) - 1)
-                        if neg_range is None:
-                            neg_range = [lim, lim]
-                        else:
-                            neg_range[0] = lim
-                    else:
-                        neg_range = None
-
-                        lim = math.ceil(math.log10(vmin))
-                        if pos_range is None:
-                            pos_range = [lim, lim]
-                        else:
-                            pos_range[0] = lim
-
-                if vmax is not None:
-                    boundaries.append(vmax)
-                    if vmax >= 0:
-                        lim = math.floor(math.log10(vmax))
-                        if pos_range is None:
-                            pos_range = [lim, lim]
-                        else:
-                            pos_range[1] = lim
-                    else:
-                        pos_range = None
-                        lim = math.ceil(math.log10(-vmax))
-                        if neg_range is None:
-                            neg_range = [lim, lim]
-                        else:
-                            neg_range[1] = lim
-
-                if neg_range:
-                    neg_bins = np.ptp(neg_range) + 1
-                if pos_range:
-                    pos_bins = np.ptp(pos_range) + 1
-
-                if neg_bins > 0:
-                    boundaries.extend(
-                        -np.logspace(neg_range[0], neg_range[1], neg_bins)
-                    )
-
-                if neg_bins > 0 and pos_bins > 0 or np.any(np.isclose(cube.data, 0)):
-                    boundaries.append(0)
-
-                if pos_bins > 0:
-                    boundaries.extend(np.logspace(pos_range[0], pos_range[1], pos_bins))
-
-                boundaries = list(set(boundaries))
-                boundaries.sort()
-            else:
-                if neg_bins > 0:
-                    boundaries.extend(
-                        -np.logspace(neg_range[0], neg_range[1], neg_bins)
-                    )
-
-                if neg_bins > 0 and pos_bins > 0 or np.any(np.isclose(cube.data, 0)):
-                    boundaries.append(0)
-                    pos_bins -= 1
-
-                if pos_bins > 0:
-                    boundaries.extend(np.logspace(pos_range[0], pos_range[1], pos_bins))
-
-            if not neg_bins and not pos_bins:
-                raise ValueError("No data found.")
-
-        else:
-            data_min = np.min(cube.data)
-            data_max = np.max(cube.data)
-            lin_min = data_min if vmin is None else vmin
-            lin_max = data_max if vmax is None else vmax
-
-            boundaries = np.linspace(lin_min, lin_max, n_bins + 1)
+        boundaries = get_bin_edges(
+            cube.data,
+            vmin,
+            vmax,
+            "auto" if log and log_auto_bins else nbins,
+            log,
+            "symmetric",
+        )
 
         if vmin is None and vmax is None:
             extend = "neither"
@@ -783,7 +832,7 @@ def partial_dependence_plot(
     return fig, axes
 
 
-def test_pdp():
+def sample_pdp():
     import string
 
     class A:
@@ -807,7 +856,7 @@ def test_pdp():
     plt.show()
 
 
-def test_plotting():
+def sample_plotting():
     np.random.seed(1)
     cube = dummy_lat_lon_cube(
         ((-4 + np.arange(12).reshape(4, 3))) ** 5 + np.random.random((4, 3)), units="T"
@@ -827,7 +876,7 @@ def test_plotting():
     plt.show()
 
 
-def test_map_model_output():
+def sample_map_model_output():
     data = np.random.normal(size=(100, 50))
     data2 = np.random.normal(size=(100, 50))
     map_model_output(data, data2, "testing", 1.0)
@@ -835,4 +884,3 @@ def test_map_model_output():
 
 if __name__ == "__main__":
     logging.config.dictConfig(LOGGING)
-    test_map_model_output()
