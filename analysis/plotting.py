@@ -463,12 +463,14 @@ def get_bin_edges(
     log_limits_list = []
     for limits in limits_list:
         log_limits = []
+
         if np.isclose(limits[0], 0):
             assert min_edge is not None
             to_process = min_edge
         else:
             to_process = limits[0]
         log_limits.append(math.floor(np.log10(to_process)))
+
         log_limits.append(math.ceil(np.log10(limits[1])))
         log_limits_list.append(log_limits)
 
