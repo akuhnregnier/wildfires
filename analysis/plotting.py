@@ -423,6 +423,13 @@ def get_bin_edges(
                     f"Insufficient data for `min_edge_type` '{min_edge_type}'."
                 )
 
+    fallback_min_edge = 1e-7
+    if min_edge < 1e-8:
+        logger.warning(
+            f"Low `min_edge` ('{min_edge}') replaced with '{fallback_min_edge}'."
+        )
+        min_edge = 1e-7
+
     for s_data, multiplier in zip(split_data, multipliers):
         # Get the relevant limits for the data in both the positive and negative case.
         # Do this by checking the sign and magnitude of the predefined limits, and
