@@ -166,7 +166,8 @@ def contains(
             checked.
         search_items: Item(s) to look for.
         exact (bool): If True, only accept exact matches for strings,
-            ie. replace `item` with `^item$` before using `re.search`.
+            ie. replace `item` with `^item$` before using `re.search`. Additionally,
+            `item` is replaced with `re.escape(item)`.
         str_only (bool): If True, only compare strings and ignore other items in
             `entry`.
         single_item_type (type)
@@ -182,8 +183,8 @@ def contains(
                 stored_item = getattr(stored_items, stored_items._fields[i])
             # If they are both strings, use regular expressions.
             if all(isinstance(obj, str) for obj in (search_item, stored_item)):
-                if exact:
-                    search_item = "^" + search_item + "$"
+                if exact and i == 0:
+                    search_item = "^" + re.escape(search_item) + "$"
                 if re.search(search_item, stored_item):
                     return True
             elif not str_only:

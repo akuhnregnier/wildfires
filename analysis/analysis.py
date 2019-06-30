@@ -24,10 +24,11 @@ from wildfires.analysis.plotting import (
 from wildfires.analysis.processing import log_map, map_name, vif
 from wildfires.data.cube_aggregation import (
     IGNORED_DATASETS,
+    Datasets,
     get_all_datasets,
     prepare_selection,
 )
-from wildfires.data.datasets import dataset_times
+from wildfires.data.datasets import *
 from wildfires.logging_config import LOGGING
 from wildfires.utils import get_masked_array, get_unmasked
 from wildfires.utils import land_mask as get_land_mask
@@ -136,6 +137,7 @@ def data_processing(
     selection,
     target_variable="monthly burned area",
     which="monthly",
+    lat_mask=False,
     transformations=None,
     deletions=None,
     log_var_names=None,
@@ -174,7 +176,11 @@ def data_processing(
     # Make a deep copy so that the original cubes are preserved.
     masked_datasets = raw_datasets.copy(deep=True)
 
-    masks_to_apply = (lat_mask, land_mask)
+    if lat_mask:
+        masks_to_apply = (lat_mask, land_mask)
+    else:
+        masks_to_apply = (land_mask,)
+
     for cube in masked_datasets.cubes:
         cube.data.mask |= reduce(
             np.logical_or,
@@ -197,7 +203,7 @@ def data_processing(
     logger.info(f"Masking {np.sum(invalid_mask)} invalid values for LIS/OTD.")
     lightning_cube.data.mask |= invalid_mask
 
-    filled_datasets = masked_datasets.copy(deep=True).fill(land_mask, lat_mask)
+    filled_datasets = masked_datasets.copy(deep=True).fill(*masks_to_apply)
 
     # Creating exog and endog pandas containers.
     burned_area_cube = filled_datasets.select_variables(
@@ -410,29 +416,47 @@ if __name__ == "__main__":
     sqrt_var_names = ["Combined Flash Rate Monthly Climatology", "popd"]
 
     # Dataset selection.
-    selection = get_all_datasets(ignore_names=IGNORED_DATASETS)
-    selection.remove_datasets("GSMaP Dry Day Period")
+    # selection = get_all_datasets(ignore_names=IGNORED_DATASETS)
+    # selection.remove_datasets("GSMaP Dry Day Period")
+    selection = Datasets(
+        (
+            AvitabileThurnerAGB(),
+            CHELSA(),
+            Copernicus_SWI(),
+            ERA5_CAPEPrecip(),
+            ERA5_DryDayPeriod(),
+            ESA_CCI_Landcover_PFT(),
+            GFEDv4(),
+            GlobFluo_SIF(),
+            HYDE(),
+            LIS_OTD_lightning_climatology(),
+            Liu_VOD(),
+            MOD15A2H_LAI_fPAR(),
+            VODCA(),
+        )
+    )
+
     selection = selection.select_variables(
         [
             "AGBtree",
             "maximum temperature",
             "minimum temperature",
             "Soil Water Index with T=1",
+            "Product of CAPE and Precipitation",
+            "dry_day_period",
             "ShrubAll",
             "TreeAll",
             "pftBare",
             "pftCrop",
             "pftHerb",
             "monthly burned area",
-            "dry_days",
-            "dry_day_period",
-            "precip",
             "SIF",
             "popd",
             "Combined Flash Rate Monthly Climatology",
-            "VODorig",
             "Fraction of Absorbed Photosynthetically Active Radiation",
             "Leaf Area Index",
+            "Vegetation optical depth Ku-band (18.7 GHz - 19.35 GHz)",
+            "Vegetation optical depth X-band (10.65 GHz - 10.7 GHz)",
         ]
     )
     (
