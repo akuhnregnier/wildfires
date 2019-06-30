@@ -715,10 +715,10 @@ class Dataset(ABC):
     time_unit_str = "days since 1970-01-01 00:00:00"
     time_unit = cf_units.Unit(time_unit_str, calendar="gregorian")
 
+    _pretty = None
     # Override the `pretty_variable_names` dictionary in each class where bespoke
     # pretty variable names are desired. Keys are the raw variables names.
     pretty_variable_names = dict()
-    _pretty = None
 
     def __str__(self):
         return "{} ({}, {}, {})".format(
@@ -1490,6 +1490,10 @@ class CHELSA(Dataset):
     """
 
     _pretty = "CHELSA"
+    pretty_variable_names = {
+        "maximum temperature": "max temp",
+        "minimum temperature": "min temp",
+    }
 
     def __init__(self, process_slice=slice(None)):
         """Initialise the cubes.
@@ -1707,6 +1711,7 @@ class Copernicus_SWI(Dataset):
     """
 
     _pretty = "Copernicus SWI"
+    pretty_variable_names = {"Soil Water Index with T=1": "SWI(1)"}
 
     def __init__(self, process_slice=slice(None)):
         """Initialise the cubes.
@@ -2003,6 +2008,7 @@ class ERA5_TotalPrecipitation(Dataset):
 
 class ERA5_DryDayPeriod(Dataset):
     _pretty = "ERA5 Dry Day Period"
+    pretty_variable_names = {"dry_day_period": "Dry Day Period"}
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ERA5", "tp_daily")
@@ -2178,7 +2184,7 @@ class ESA_CCI_Fire(Dataset):
 
 
 class ESA_CCI_Landcover(Dataset):
-    _pretty = "ESA CCI Landcover"
+    _pretty = "ESA Landcover"
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-LC_landcover", "0d25_landcover")
@@ -2262,7 +2268,7 @@ class ESA_CCI_Landcover(Dataset):
 
 
 class ESA_CCI_Landcover_PFT(Dataset):
-    _pretty = "ESA CCI Land Cover PFT"
+    _pretty = "ESA Landcover"
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-LC_landcover", "0d25_lc2pft")
@@ -2795,6 +2801,7 @@ class GSMaP_dry_day_period(Dataset):
 
 class GSMaP_precipitation(Dataset):
     _pretty = "GSMaP Precipitation"
+    pretty_variable_names = {"dry_days": "Dry Days", "precip": "Precipitation"}
 
     def __init__(self, times="00Z-23Z"):
         self.dir = os.path.join(
@@ -2978,7 +2985,10 @@ class HYDE(Dataset):
 
 
 class LIS_OTD_lightning_climatology(Dataset):
-    _pretty = "LIS/OTD Climatology"
+    _pretty = "LIS/OTD"
+    pretty_variable_names = {
+        "Combined Flash Rate Monthly Climatology": "Lightning Climatology"
+    }
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "LIS_OTD_lightning_climatology")
@@ -3166,6 +3176,7 @@ class LIS_OTD_lightning_time_series(Dataset):
 
 class Liu_VOD(Dataset):
     _pretty = "Liu VOD"
+    pretty_variable_names = {"VODorig": "VOD"}
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "Liu_VOD")
@@ -3201,6 +3212,10 @@ class Liu_VOD(Dataset):
 
 class MOD15A2H_LAI_fPAR(Dataset):
     _pretty = "MOD15A2H"
+    pretty_variable_names = {
+        "Fraction of Absorbed Photosynthetically Active Radiation": "FAPAR",
+        "Leaf Area Index": "LAI",
+    }
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "MOD15A2H_LAI-fPAR")
