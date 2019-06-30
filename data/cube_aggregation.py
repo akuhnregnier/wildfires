@@ -11,13 +11,9 @@ TODO: Selection.remove_datasets or Selection.select_datasets).
 """
 import functools
 import inspect
-import json
 import logging
 import logging.config
-import os
-import platform
 import re
-import socket
 import warnings
 from collections import OrderedDict
 from copy import deepcopy
@@ -25,18 +21,17 @@ from functools import partial, wraps
 from inspect import iscode
 from multiprocessing.dummy import Pool as ThreadedPool
 from pprint import pformat, pprint
-from subprocess import CalledProcessError, check_output
 
 import iris
 import iris.coord_categorisation
 import numpy as np
-from joblib import Memory
 
 import wildfires.data.datasets as wildfire_datasets
+from joblib import Memory
 from wildfires.analysis.processing import fill_cube
 from wildfires.data.datasets import DATA_DIR, data_is_available, dataset_times
 from wildfires.logging_config import LOGGING
-from wildfires.utils import match_shape
+from wildfires.utils import get_ncpus, match_shape
 
 logger = logging.getLogger(__name__)
 memory = Memory(location=DATA_DIR if data_is_available() else None, verbose=1)
@@ -62,70 +57,6 @@ def homogenise_cube_mask(cube):
                 )
     cube.data = np.ma.MaskedArray(array, mask=np.zeros_like(array, dtype=np.bool_))
     return cube
-
-
-def get_qstat_ncpus():
-    """Get ncpus from qstat job details.
-
-    Only relevant if we are currently running on a node with a hostname matching one
-    of the running jobs.
-
-    """
-    try:
-        raw_output = check_output(("qstat", "-f", "-F", "json")).decode()
-        # Filter out invalid json (unescaped double quotes).
-        filtered_lines = [line for line in raw_output.split("\n") if '"""' not in line]
-        filtered_output = "\n".join(filtered_lines)
-        out = json.loads(filtered_output)
-    except FileNotFoundError:
-        logger.warning("Not running on hpc.")
-        return None
-    except CalledProcessError:
-        logger.exception("Call to qstat failed.")
-        return None
-    if out:
-        current_hostname = platform.node()
-        if not current_hostname:
-            current_hostname = socket.gethostname()
-        if not current_hostname:
-            logger.error("Hostname could not be determined.")
-            return None
-
-        # Loop through each job.
-        jobs = out["Jobs"]
-        for job_name, job in jobs.items():
-            if not job["job_state"] == "R":
-                logger.info(
-                    "Ignoring job '{}' as it is not running.".format(job["Job_Name"])
-                )
-                continue
-            # If we are on the same machine.
-            if re.search(current_hostname, job["exec_host"]):
-                # Other keys include 'mem' (eg. '32gb'), 'mpiprocs'
-                # and 'walltime' (eg. '08:00:00').
-                resources = job["Resource_List"]
-                ncpus = resources["ncpus"]
-                logger.info(
-                    "Getting ncpus: {} from job '{}'.".format(ncpus, job["Job_Name"])
-                )
-                return int(ncpus)
-    return None
-
-
-def get_ncpus(default=1):
-    # The NCPUS environment variable is not always set up correctly, so check for
-    # batch jobs matching the current hostname first.
-    ncpus = get_qstat_ncpus()
-    if ncpus:
-        return ncpus
-    ncpus = os.environ.get("NCPUS")
-    if ncpus:
-        logger.info("Read ncpus: {} from NCPUS environment variable.".format(ncpus))
-        return int(ncpus)
-    logger.warning(
-        "Could not read NCPUS environment variable. Using default: {}.".format(default)
-    )
-    return default
 
 
 def contains(

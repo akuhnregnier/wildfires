@@ -32,6 +32,8 @@ from iris.time import PartialDateTime
 from pyhdf.SD import SD, SDC
 from tqdm import tqdm
 
+from joblib import Parallel, delayed
+
 logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.expanduser("~"), "FIREDATA")
@@ -2764,6 +2766,31 @@ class Thurner_AGB(Dataset):
         return self.broadcast_static_data(start, end)
 
 
+def monthly_average_in_dir(directory):
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=((r".*'vod' invalid units 'unitless'.*"))
+        )
+        warnings.filterwarnings(
+            "ignore", message=((r".*'calendar' is not a permitted attribute.*"))
+        )
+        raw_cubes = iris.load(os.path.join(directory, "*.nc"))
+        raw_cubes = iris.cube.CubeList(
+            [
+                cube
+                for cube in raw_cubes
+                if "vegetation optical depth" in cube.name().lower()
+            ]
+        )
+        raw_cubes = raw_cubes.concatenate()
+        assert len(raw_cubes) == 1
+        raw_cube = raw_cubes[0]
+        iris.coord_categorisation.add_month_number(raw_cube, "time")
+        iris.coord_categorisation.add_year(raw_cube, "time")
+
+    return raw_cube.aggregated_by(["month_number", "year"], iris.analysis.MEAN)
+
+
 class VODCA(Dataset):
     """Global VOD Dataset.
 
@@ -2774,21 +2801,38 @@ class VODCA(Dataset):
     _pretty = "VODCA"
 
     def __init__(self):
-        raise NotImplementedError()
         self.dir = os.path.join(DATA_DIR, "VODCA")
-        daily_files = glob.glob(
-            os.path.join(self.dir, "daily", "**", "*.nc"), recursive=True
-        )
-        monthly_files = glob.glob(
-            os.path.join(self.dir, "monthly", "**", "*.nc"), recursive=True
-        )
-        print(daily_files, monthly_files)
 
-        iris.load(os.path.join(self.dir, "**", "*.nc"))
+        self.cubes = self.read_cache()
+        # Exit __init__ if we have loaded the data.
+        if self.cubes:
+            return
+
+        daily_dirs = glob.glob(os.path.join(self.dir, "daily", "*", "*"))
+        # Calculate monthly averages using the daily data.
+        assert all(len(os.path.split(dir_name)[1]) == 4 for dir_name in daily_dirs)
+        # mean_cubes = iris.cube.CubeList()
+        # for yearly_directory in tqdm(daily_dirs):
+        #     mean_cubes.append(monthly_average_in_dir(yearly_directory))
+
+        mean_cubes = iris.cube.CubeList(
+            # TODO: Check if using multi-processing here instead of using multiple
+            # threads has the potential to speed up the averaging.
+            # Parallel(n_jobs=get_ncpus(), prefer="threads")(
+            Parallel(n_jobs=1, prefer="threads")(
+                delayed(monthly_average_in_dir)(directory)
+                for directory in tqdm(daily_dirs)
+            )
+        )
+
+        mean_cubes = mean_cubes.concatenate()
+
         # TODO: Isolate different VOD bands, ignore masks (maybe put in different
         # `Dataset` instance?)
-        # FIXME
-        # self.cubes = ...
+
+        self.cubes = mean_cubes
+
+        self.write_cache()
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
@@ -2902,3 +2946,7 @@ def dataset_times(datasets=None):
         )
 
     return min_time, max_time, times_df
+
+
+if __name__ == "__main__":
+    a = VODCA()
