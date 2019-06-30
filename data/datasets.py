@@ -3315,36 +3315,26 @@ class VODCA(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "VODCA")
 
-
-        print('loading')
-        if os.path.isfile(os.path.join(DATA_DIR, 'cache', 'VODCA_temp_cache.nc')):
-            mean_cubes = iris.load(os.path.join(DATA_DIR, 'cache', 'VODCA_temp_cache.nc'))
-
-        # FIXME: Temporary
-        else:
-            self.cubes = self.read_cache()
-            # Exit __init__ if we have loaded the data.
-            if self.cubes:
-                return
+        self.cubes = self.read_cache()
+        # Exit __init__ if we have loaded the data.
+        if self.cubes:
             return
-            daily_dirs = glob.glob(os.path.join(self.dir, "daily", "*", "*"))
-            # Calculate monthly averages using the daily data.
-            assert all(len(os.path.split(dir_name)[1]) == 4 for dir_name in daily_dirs)
-            # mean_cubes = iris.cube.CubeList()
-            # for yearly_directory in tqdm(daily_dirs):
-            #     mean_cubes.append(monthly_average_in_dir(yearly_directory))
 
-            mean_cubes = iris.cube.CubeList(
-                # TODO: Check if using multi-processing here instead of using multiple
-                # threads has the potential to speed up the averaging.
-                # Parallel(n_jobs=get_ncpus(), prefer="threads")(
-                Parallel(n_jobs=1, prefer="threads")(
-                    delayed(monthly_average_in_dir)(directory)
-                    for directory in tqdm(daily_dirs)
-                )
+        daily_dirs = glob.glob(os.path.join(self.dir, "daily", "*", "*"))
+        # Calculate monthly averages using the daily data.
+        assert all(len(os.path.split(dir_name)[1]) == 4 for dir_name in daily_dirs)
+
+        mean_cubes = iris.cube.CubeList(
+            # TODO: Check if using multi-processing here instead of using multiple
+            # threads has the potential to speed up the averaging.
+            # Parallel(n_jobs=get_ncpus(), prefer="threads")(
+            Parallel(n_jobs=1, prefer="threads")(
+                delayed(monthly_average_in_dir)(directory)
+                for directory in tqdm(daily_dirs)
             )
+        )
 
-            mean_cubes = mean_cubes.concatenate()
+        mean_cubes = mean_cubes.concatenate()
 
         for cube in mean_cubes:
             # Add the band name to the cube name to prevent all variables (cubes)
