@@ -1442,6 +1442,7 @@ class AvitabileAGB(Dataset):
 
 class AvitabileThurnerAGB(Dataset):
     _pretty = "Avitabile Thurner AGB"
+    pretty_variable_names = {"AGBtree": "AGB Tree"}
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "AvitabileThurner-merged_AGB")
@@ -1491,8 +1492,10 @@ class CHELSA(Dataset):
 
     _pretty = "CHELSA"
     pretty_variable_names = {
-        "maximum temperature": "max temp",
-        "minimum temperature": "min temp",
+        "maximum temperature": "Max Temp",
+        "minimum temperature": "Min Temp",
+        "mean temperature": "Mean Temp",
+        "monthly precipitation": "Precipitation",
     }
 
     def __init__(self, process_slice=slice(None)):
@@ -1993,6 +1996,7 @@ class CRU(Dataset):
 
 class ERA5_TotalPrecipitation(Dataset):
     _pretty = "ERA5 Total Precipitation"
+    pretty_variable_names = {"Total precipitation": "Precipitation"}
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ERA5", "tp")
@@ -2142,6 +2146,7 @@ class ERA5_DryDayPeriod(Dataset):
 
 class ERA5_CAPEPrecip(Dataset):
     _pretty = "ERA5 Cape x Precip"
+    pretty_variable_names = {"Product of CAPE and Precipitation": "CAPE x Precip"}
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ERA5", "CAPE_P")
@@ -2652,6 +2657,7 @@ class GSMaP_dry_day_period(Dataset):
     """
 
     _pretty = "GSMaP Dry Day Period"
+    pretty_variable_names = {"dry_day_period": "Dry Day Period"}
 
     def __init__(self, times="00Z-23Z"):
         self.dir = os.path.join(
@@ -3311,6 +3317,10 @@ class VODCA(Dataset):
     """
 
     _pretty = "VODCA"
+    pretty_variable_names = {
+        "Vegetation optical depth Ku-band (18.7 GHz - 19.35 GHz)": "VOD Ku-band",
+        "Vegetation optical depth X-band (10.65 GHz - 10.7 GHz)": "VOD X-band",
+    }
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "VODCA")
