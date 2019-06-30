@@ -3,8 +3,14 @@
 """Collection of code to be used throughout the project.
 
 """
+import json
 import logging
+import logging.config
 import os
+import platform
+import re
+import socket
+from subprocess import CalledProcessError, check_output
 from time import time
 
 import fiona
@@ -12,8 +18,6 @@ import numpy as np
 from affine import Affine
 from rasterio import features
 from tqdm import tqdm
-
-from wildfires.data.datasets import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +129,8 @@ def land_mask(n_lon=1440):
         ...     assert mask.shape == (720, 1440)
 
     """
+    from wildfires.data.datasets import DATA_DIR
+
     assert n_lon % 2 == 0, (
         "The number of longitude points has to be an even number for the number of "
         "latitude points to be an integer."
@@ -375,3 +381,67 @@ def get_masked_array(data, mask=False, dtype=np.float64):
         array_data = array_data.reshape(shape)
         return np.ma.MaskedArray(array_data, mask=mask)
     return np.ma.MaskedArray(data, mask=mask, dtype=dtype)
+
+
+def get_qstat_ncpus():
+    """Get ncpus from qstat job details.
+
+    Only relevant if we are currently running on a node with a hostname matching one
+    of the running jobs.
+
+    """
+    try:
+        raw_output = check_output(("qstat", "-f", "-F", "json")).decode()
+        # Filter out invalid json (unescaped double quotes).
+        filtered_lines = [line for line in raw_output.split("\n") if '"""' not in line]
+        filtered_output = "\n".join(filtered_lines)
+        out = json.loads(filtered_output)
+    except FileNotFoundError:
+        logger.warning("Not running on hpc.")
+        return None
+    except CalledProcessError:
+        logger.exception("Call to qstat failed.")
+        return None
+    if out:
+        current_hostname = platform.node()
+        if not current_hostname:
+            current_hostname = socket.gethostname()
+        if not current_hostname:
+            logger.error("Hostname could not be determined.")
+            return None
+
+        # Loop through each job.
+        jobs = out["Jobs"]
+        for job_name, job in jobs.items():
+            if not job["job_state"] == "R":
+                logger.info(
+                    "Ignoring job '{}' as it is not running.".format(job["Job_Name"])
+                )
+                continue
+            # If we are on the same machine.
+            if re.search(current_hostname, job["exec_host"]):
+                # Other keys include 'mem' (eg. '32gb'), 'mpiprocs'
+                # and 'walltime' (eg. '08:00:00').
+                resources = job["Resource_List"]
+                ncpus = resources["ncpus"]
+                logger.info(
+                    "Getting ncpus: {} from job '{}'.".format(ncpus, job["Job_Name"])
+                )
+                return int(ncpus)
+    return None
+
+
+def get_ncpus(default=1):
+    # The NCPUS environment variable is not always set up correctly, so check for
+    # batch jobs matching the current hostname first.
+    ncpus = get_qstat_ncpus()
+    if ncpus:
+        return ncpus
+    ncpus = os.environ.get("NCPUS")
+    if ncpus:
+        logger.info("Read ncpus: {} from NCPUS environment variable.".format(ncpus))
+        return int(ncpus)
+    logger.warning(
+        "Could not read NCPUS environment variable. Using default: {}.".format(default)
+    )
+    return default
