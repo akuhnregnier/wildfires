@@ -3,302 +3,576 @@
 """Data analysis."""
 import logging
 import logging.config
-from pprint import pprint
+import math
+from functools import partial, reduce
 
-import iris
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import r2_score
+from sklearn.model_selection import train_test_split
 
-from wildfires.data.datasets import data_map_plot
+from wildfires.analysis.plotting import (
+    FigureSaver,
+    cube_plotting,
+    map_model_output,
+    partial_dependence_plot,
+)
+from wildfires.analysis.processing import log_map, map_name, vif
+from wildfires.data.cube_aggregation import (
+    IGNORED_DATASETS,
+    Datasets,
+    get_all_datasets,
+    prepare_selection,
+)
+from wildfires.data.datasets import *
 from wildfires.logging_config import LOGGING
-
-# FIXME: Account for lack of load_dataset_cubes!!!
+from wildfires.utils import get_masked_array, get_unmasked
+from wildfires.utils import land_mask as get_land_mask
+from wildfires.utils import match_shape
 
 logger = logging.getLogger(__name__)
 
 
-def combine_masks(data, invalid_values=(0,)):
-    """Create a mask that shows where data is invalid.
+def print_vifs(exog_data, thres=6):
+    vifs = vif(exog_data)
+    print(vifs.to_string(index=False, float_format="{:0.1f}".format))
 
-    NOTE: Calls data.data, so lazy data is realised here!
+    vifs.loc[
+        vifs["Name"] == "Fraction of Absorbed Photosynthetically Active Radiation",
+        "Name",
+    ] = "FAPAR"
+    print(
+        vifs.loc[vifs["VIF"] < thres].to_latex(
+            index=False, float_format="{:0.1f}".format
+        )
+    )
+    print(
+        vifs.loc[vifs["VIF"] >= thres].to_latex(
+            index=False, float_format="{:0.1f}".format
+        )
+    )
 
-    True - invalid data
-    False - valid data
 
-    Returns a boolean array with the same shape as the input data.
+def print_importances(regr):
+    """Print RF importances.
+
+    Args:
+        regr (RandomForestRegressor):
 
     """
-    if hasattr(data, "mask"):
-        mask = data.mask
-        data_arr = data.data
+    importances = regr.feature_importances_
+    std = np.std([tree.feature_importances_ for tree in regr.estimators_], axis=0)
+    forest_names = list(map(map_name, exog_data.columns.values))
+    importances_df = pd.DataFrame(
+        {
+            "Name": forest_names,
+            "Importance": importances,
+            "Importance STD": std,
+            "Ratio": np.array(std) / np.array(importances),
+        }
+    )
+    print(
+        importances_df.sort_values("Importance", ascending=False).to_latex(
+            index=False, float_format="{:0.3f}".format
+        )
+    )
+
+
+def plot_histograms(datasets):
+    """Plot histograms of datasets."""
+    # TODO: Allow plotting of only a subset of datasets.
+    n_plots = len(datasets.cubes)
+    n_cols = int(math.ceil(np.sqrt(n_plots)))
+
+    fig, axes = plt.subplots(
+        nrows=int(math.ceil(n_plots / n_cols)), ncols=n_cols, squeeze=False
+    )
+    axes = axes.flatten()
+    for (i, (ax, feature)) in enumerate(zip(axes, range(n_plots))):
+        ax.hist(get_unmasked(datasets.cubes[feature].data), density=True, bins=70)
+        ax.set_xlabel(datasets.pretty_variable_names[feature])
+        ax.set_yscale("log")
+
+    for ax in axes[n_plots:]:
+        ax.set_axis_off()
+
+    plt.tight_layout()
+
+
+def TripleFigureSaver(model_name, *args, **kwargs):
+    """Plotting of burned area data & predictions:
+        - ba_predicted: predicted burned area
+        - ba_data: observed
+        - model_name: Name for titles AND filenames
+
+    """
+    return FigureSaver(
+        filename=(
+            "predicted_burned_area_" + model_name,
+            "mean_observed_burned_area_" + model_name,
+            "difference_burned_area_" + model_name,
+        ),
+        *args,
+        **kwargs,
+    )
+
+
+def print_dataset_times(datasets, latex=False):
+    """Print information about the dataset times to stdout."""
+    times_df = dataset_times(datasets.datasets)[2]
+    if times_df is not None:
+        if latex:
+            print(times_df.to_latex(index=False))
+        else:
+            print(times_df.to_string(index=False))
     else:
-        mask = np.zeros_like(data, dtype=bool)
-        data_arr = data
+        print("No time information found.")
 
-    for invalid_value in invalid_values:
-        mask |= np.isclose(data_arr, invalid_value)
 
-    return mask
+def data_processing(
+    selection,
+    target_variable="monthly burned area",
+    which="monthly",
+    use_lat_mask=False,
+    transformations=None,
+    deletions=None,
+    log_var_names=None,
+    sqrt_var_names=None,
+    verbose=True,
+):
+    """Create datasets for further analysis and model fitting."""
+    if verbose:
+        selection.show("pretty")
+        print_dataset_times(selection, latex=False)
+
+    raw_datasets = prepare_selection(selection, which=which)
+    # XXX: This realises data, which is only acceptable since (if) other code accesses
+    # the cubes' `data` attribute below, realising the data anyway.
+    raw_datasets.homogenise_masks()
+
+    # Get land mask.
+    # TODO: Check that this works consistently, then it can be removed.
+    assert 1440 == raw_datasets.cubes[0].coord("longitude").points.shape[0]
+    land_mask = ~get_land_mask(
+        n_lon=raw_datasets.cubes[0].coord("longitude").points.shape[0]
+    )
+
+    # Define a latitude mask which ignores data beyond 60 degrees, as GSMaP data does
+    # not extend to those latitudes.
+    # TODO: Instead of `mean_datasets` use a more generic name to take into account
+    # different `which` arguments for `prepare_selection()`.
+    lats = raw_datasets.cubes[0].coord("latitude").points
+    lons = raw_datasets.cubes[0].coord("longitude").points
+
+    latitude_grid = np.meshgrid(lats, lons, indexing="ij")[0]
+    lat_mask = np.abs(latitude_grid) > 60
+
+    # Apply masks.
+
+    # Make a deep copy so that the original cubes are preserved.
+    masked_datasets = raw_datasets.copy(deep=True)
+
+    if use_lat_mask:
+        masks_to_apply = (lat_mask, land_mask)
+    else:
+        masks_to_apply = (land_mask,)
+
+    for cube in masked_datasets.cubes:
+        cube.data.mask |= reduce(
+            np.logical_or,
+            map(partial(match_shape, target_shape=cube.shape), masks_to_apply),
+        )
+
+    # Filling/processing/cleaning datasets.
+
+    # TODO: Make this kind of processing internal to each Dataset.
+    if "SIF" in list(masked_datasets.raw_variable_names) + list(
+        masked_datasets.pretty_variable_names
+    ):
+        logger.info("Extra processing for 'SIF'.")
+        sif_cube = masked_datasets.select_variables("SIF", inplace=False).cube
+        invalid_mask = np.logical_or(sif_cube.data.data > 20, sif_cube.data.data < 0)
+        logger.info(f"Masking {np.sum(invalid_mask)} invalid values for SIF.")
+        sif_cube.data.mask |= invalid_mask
+
+    # TODO: Make this kind of processing internal to each Dataset.
+    if "Combined Flash Rate Monthly Climatology" in list(
+        masked_datasets.raw_variable_names
+    ) + list(masked_datasets.pretty_variable_names):
+        logger.info("Extra processing for 'Combined Flash Rate Monthly Climatology'.")
+        lightning_cube = masked_datasets.select_variables(
+            "Combined Flash Rate Monthly Climatology", inplace=False
+        ).cube
+        invalid_mask = lightning_cube.data.data < 0
+        logger.info(f"Masking {np.sum(invalid_mask)} invalid values for LIS/OTD.")
+        lightning_cube.data.mask |= invalid_mask
+
+    filled_datasets = masked_datasets.copy(deep=True).fill(*masks_to_apply)
+
+    # Creating exog and endog pandas containers.
+    burned_area_cube = filled_datasets.select_variables(
+        target_variable, inplace=False
+    ).cube
+    endog_data = pd.Series(get_unmasked(burned_area_cube.data))
+    master_mask = burned_area_cube.data.mask
+
+    exog_datasets = filled_datasets.remove_variables(target_variable, inplace=False)
+    data = []
+    for cube in exog_datasets.cubes:
+        data.append(get_unmasked(cube.data).reshape(-1, 1))
+
+    exog_data = pd.DataFrame(
+        np.hstack(data), columns=exog_datasets.pretty_variable_names
+    )
+
+    if transformations is not None:
+        for new_var, processing_func in transformations.items():
+            exog_data[new_var] = processing_func(exog_data)
+    if deletions is not None:
+        for delete_var in deletions:
+            del exog_data[delete_var]
+
+    if verbose:
+        print("Names before:")
+        print(exog_data.columns)
+
+    # Carry out log transformation for select variables.
+    if log_var_names is not None:
+        for name in log_var_names:
+            mod_data = exog_data[name] + 0.01
+            assert np.all(mod_data >= (0.01 - 1e-8)), "{:}".format(name)
+            exog_data["log " + name] = np.log(mod_data)
+            del exog_data[name]
+
+    # Carry out square root transformation
+    if sqrt_var_names is not None:
+        for name in sqrt_var_names:
+            assert np.all(exog_data[name] >= 0), "{:}".format(name)
+            exog_data["sqrt " + name] = np.sqrt(exog_data[name])
+            del exog_data[name]
+
+    if verbose:
+        print("Names after:")
+        print(exog_data.columns)
+
+    return (
+        endog_data,
+        exog_data,
+        master_mask,
+        filled_datasets,
+        masked_datasets,
+        land_mask,
+    )
+
+
+def corr_plot(exog_data):
+    columns = list(map(map_name, exog_data.columns))
+
+    def trim(string, n=10, cont_str="..."):
+        if len(string) > n:
+            string = string[: n - len(cont_str)]
+            string += cont_str
+        return string
+
+    # https://stackoverflow.com/questions/55289921/matplotlib-matshow-xtick-labels-on-top-and-bottom/55289968
+    n = len(columns)
+    fig, ax = plt.subplots()
+
+    corr_arr = np.ma.MaskedArray(exog_data.corr().values)
+    corr_arr.mask = np.zeros_like(corr_arr)
+    # Ignore diagnals, since they will all be 1 anyway!
+    np.fill_diagonal(corr_arr.mask, True)
+
+    im = ax.matshow(corr_arr, interpolation="none")
+
+    fig.colorbar(im, pad=0.04, shrink=0.95)
+
+    ax.set_xticks(np.arange(n))
+    ax.set_xticklabels(map(partial(trim, n=10), columns))
+    ax.set_yticks(np.arange(n))
+    ax.set_yticklabels(columns)
+
+    # Set ticks on top of axes on
+    ax.tick_params(axis="x", bottom=False, top=True, labelbottom=False, labeltop=True)
+    # Rotate and align bottom ticklabels
+    # plt.setp([tick.label1 for tick in ax.xaxis.get_major_ticks()], rotation=45,
+    #          ha="right", va="center", rotation_mode="anchor")
+    # Rotate and align top ticklabels
+    plt.setp(
+        [tick.label2 for tick in ax.xaxis.get_major_ticks()],
+        rotation=45,
+        ha="left",
+        va="center",
+        rotation_mode="anchor",
+    )
+
+    # For some reason the code below does not work and produces overlapping top labels.
+    # Maybe needed to set the rotation_mode, ha, and va parameters from above?
+    # plt.xticks(range(len(columns)), map(get_trim_func(), columns), rotation=45)
+    # plt.yticks(range(len(columns)), columns)
+    # plt.colorbar(pad=0.2)
+
+    # ax.set_title("Correlation Matrix", pad=40)
+    fig.tight_layout()
+
+
+def GLM(endog_data, exog_data):
+    model = sm.GLM(endog_data, exog_data, family=sm.families.Binomial())
+    model_results = model.fit()
+
+    print(model_results.summary())
+    print("R2:", r2_score(y_true=endog_data, y_pred=model_results.fittedvalues))
+
+    mpl.rcParams["figure.figsize"] = (4, 2.7)
+
+    with FigureSaver("hexbin_GLM1"):
+        plt.figure()
+        plt.hexbin(endog_data, model_results.fittedvalues, bins="log")
+        plt.xlabel("real data")
+        plt.ylabel("prediction")
+        plt.colorbar()
+
+    # Data generation.
+
+    # Predicted burned area values.
+    ba_predicted = get_masked_array(model_results.fittedvalues, master_mask)
+
+    # Observed values.
+    ba_data = get_masked_array(endog_data.values, master_mask)
+
+    # Plotting of burned area data & predictions:
+    #  - ba_predicted: predicted burned area
+    #  - ba_data: observed
+    #  - model_name: Name for titles AND filenames
+    model_name = "GLMv1"
+    with TripleFigureSaver(model_name):
+        figs = map_model_output(
+            ba_predicted, ba_data, model_name, normal_coast_linewidth
+        )
+
+    print(model_results.summary().as_latex())
+    return model_results
+
+
+def RF(endog_data, exog_data):
+    regr = RandomForestRegressor(n_estimators=100, random_state=1)
+    X_train, X_test, y_train, y_test = train_test_split(
+        exog_data, endog_data, random_state=1, shuffle=True, test_size=0.3
+    )
+    regr.fit(X_train, y_train)
+    print("R2 train:", regr.score(X_train, y_train))
+    print("R2 test:", regr.score(X_test, y_test))
+
+    ba_predicted = get_masked_array(regr.predict(exog_data), master_mask)
+
+    ba_data = get_masked_array(endog_data, master_mask)
+
+    model_name = "RFv1"
+    with TripleFigureSaver(model_name):
+        figs = map_model_output(
+            ba_predicted, ba_data, model_name, normal_coast_linewidth
+        )
+
+    mpl.rcParams["figure.figsize"] = (20, 12)
+    mpl.rcParams["font.size"] = 18
+
+    with FigureSaver("pdp_RFv1"):
+        fig, axes = partial_dependence_plot(
+            regr,
+            X_test,
+            X_test.columns,
+            n_cols=4,
+            grid_resolution=70,
+            coverage=0.05,
+            predicted_name="burned area",
+        )
+        plt.subplots_adjust(wspace=0.16)
+        _ = list(ax.axes.get_yaxis().set_ticks([]) for ax in axes)
+
+    return regr
 
 
 if __name__ == "__main__":
+    # General setup.
     logging.config.dictConfig(LOGGING)
-    # TODO: Use iris cube long_name attribute to enter descriptive name
-    # which will be used throughout data analysis and plotting (eg. for
-    # selecting DataFrame columns).
 
-    logger.info("Loading cubes")
-    cubes = load_dataset_cubes()
+    FigureSaver.directory = "~/tmp/to_send"
+    FigureSaver.debug = True
 
-    logger.info("Selecting cubes")
+    # TODO: Plotting setup in a more rigorous manner.
+    normal_coast_linewidth = 0.5
+    mpl.rcParams["font.size"] = 9.0
+    verbose = True
 
-    selected_names = [
-        "AGBtree",
-        # 'mean temperature',
-        # 'monthly precipitation',
-        "maximum temperature",
-        "minimum temperature",
-        # 'Quality Flag with T=1',
-        # 'Soil Water Index with T=60',
-        # 'Soil Water Index with T=5',
-        # 'Quality Flag with T=60',
-        # 'Soil Water Index with T=20',
-        # 'Soil Water Index with T=40',
-        # 'Quality Flag with T=20',
-        # 'Surface State Flag',
-        "Soil Water Index with T=1",
-        # 'Quality Flag with T=100',
-        # 'Soil Water Index with T=15',
-        # 'Quality Flag with T=10',
-        # 'Soil Water Index with T=10',
-        # 'Quality Flag with T=40',
-        # 'Quality Flag with T=15',
-        # 'Quality Flag with T=5',
-        "Soil Water Index with T=100",
-        "ShrubAll",
-        "TreeAll",
-        "pftBare",
-        "pftCrop",
-        "pftHerb",
-        "pftNoLand",
-        # 'pftShrubBD',
-        # 'pftShrubBE',
-        # 'pftShrubNE',
-        # 'pftTreeBD',
-        # 'pftTreeBE',
-        # 'pftTreeND',
-        # 'pftTreeNE',
-        "monthly burned area",
-        "dry_days",
-        "precip",
-        "SIF",
-        # 'cropland',
-        # 'ir_norice',
-        # 'rf_norice',
-        "popd",
-        # 'conv_rangeland',
-        # 'rangeland',
-        # 'tot_rainfed',
-        # 'pasture',
-        # 'rurc',
-        # 'rf_rice',
-        # 'tot_rice',
-        # 'uopp',
-        # 'popc',
-        # 'ir_rice',
-        # 'urbc',
-        # 'grazing',
-        # 'tot_irri',
-        "Combined Flash Rate Time Series",
-        "VODorig",
-        # 'Standard Deviation of LAI',
-        "Fraction of Absorbed Photosynthetically Active Radiation",
-        "Leaf Area Index",
-        # 'Standard Deviation of fPAR',
-        # 'Simard_Pinto_3DGlobalVeg_L3C',
-        # 'biomass_totalag',
-        # 'biomass_branches',
-        # 'biomass_foliage',
-        # 'biomass_roots',
-        # 'biomass_stem'
-    ]
+    target_variable = "monthly burned area"
 
-    def selection_func(cube):
-        return cube.name() in selected_names
+    # Creation of new variables.
+    transformations = {
+        "Temperature Range": lambda exog_data: (
+            exog_data["Max Temp"] - exog_data["Min Temp"]
+        )
+    }
+    # Variables to be deleted after the aforementioned transformations.
+    deletions = ("Min Temp",)
 
-    cubes = cubes.extract(iris.Constraint(cube_func=selection_func))
+    # Carry out transformations, replacing old variables in the process.
+    log_var_names = ["Temperature Range", "Dry Days", "Dry Day Period"]
+    sqrt_var_names = ["Lightning Climatology", "popd"]
 
-    pprint([cube.name() for cube in cubes])
-
-    logger.info("Aggregating masks")
-    # Use masking to extract only the relevant data.
-
-    # Accumulate the masks for each dataset into a global mask.
-    global_mask = np.zeros(cubes[0].shape, dtype=bool)
-    for cube in cubes:
-        # TODO: Find out the invalid values for the datasets that do not
-        # have masks (if a mask hasn't been created before)!
-        if hasattr(cube.data, "mask"):
-            global_mask |= cube.data.mask
-            global_mask |= np.isinf(cube.data.data)
-            global_mask |= np.isnan(cube.data.data)
-        else:
-            global_mask |= np.isinf(cube.data)
-            global_mask |= np.isnan(cube.data)
-
-    logger.info("Using mask to select datasets")
-    # Use this mask to select each dataset
-
-    selected_datasets = []
-    for cube in cubes:
-        selected_data = cube.data[~global_mask]
-        if hasattr(selected_data, "mask"):
-            assert not np.any(selected_data.mask)
-            selected_datasets.append((cube.name(), selected_data.data))
-        else:
-            selected_datasets.append((cube.name(), selected_data))
-
-    dataset_names = [s[0] for s in selected_datasets]
-
-    exog_name_map = {
-        "diurnal temperature range": "diurnal temp range",
-        "near-surface temperature minimum": "near-surface temp min",
-        "near-surface temperature": "near-surface temp",
-        "near-surface temperature maximum": "near-surface temp max",
-        "wet day frequency": "wet day freq",
-        "Volumetric Soil Moisture Monthly Mean": "soil moisture",
-        "SIF": "SIF",
-        "VODorig": "VOD",
-        "Combined Flash Rate Monthly Climatology": "lightning rate",
+    # Dataset selection.
+    # selection = get_all_datasets(ignore_names=IGNORED_DATASETS)
+    # selection.remove_datasets("GSMaP Dry Day Period")
+    selection = Datasets(
         (
-            "Population Density, v4.10 (2000, 2005, 2010, 2015, 2020)"
-            ": 30 arc-minutes"
-        ): "pop dens",
-    }
-
-    inclusion_names = {
-        "near-surface temperature maximum",
-        "Volumetric Soil Moisture Monthly Mean",
-        "SIF",
-        "VODorig",
-        "diurnal temperature range",
-        "wet day frequency",
-        "Combined Flash Rate Monthly Climatology",
-        "Population Density, v4.10 (2000, 2005, 2010, 2015, 2020): 30 arc-minutes",
-    }
-
-    burned_area_name = "monthly burned area"
-
-    exog_names = [
-        exog_name_map.get(s[0], s[0])
-        for s in selected_datasets
-        if s[0] != burned_area_name
-    ]
-    raw_exog_data = np.hstack(
-        [s[1].reshape(-1, 1) for s in selected_datasets if s[0] != burned_area_name]
+            AvitabileThurnerAGB(),
+            CHELSA(),
+            Copernicus_SWI(),
+            ERA5_CAPEPrecip(),
+            ERA5_DryDayPeriod(),
+            ESA_CCI_Landcover_PFT(),
+            GFEDv4(),
+            GlobFluo_SIF(),
+            HYDE(),
+            LIS_OTD_lightning_climatology(),
+            Liu_VOD(),
+            MOD15A2H_LAI_fPAR(),
+            VODCA(),
+        )
     )
 
-    endog_name = selected_datasets[dataset_names.index(burned_area_name)][0]
-    endog_data = selected_datasets[dataset_names.index(burned_area_name)][1]
-
-    # lim = int(5e3)
-    lim = None
-    endog_data = endog_data[:lim]
-    raw_exog_data = raw_exog_data[:lim]
-
-    endog_data = pd.Series(endog_data, name="burned area")
-    exog_data = pd.DataFrame(raw_exog_data, columns=exog_names)
-
-    exog_data["temperature range"] = (
-        exog_data["maximum temperature"] - exog_data["minimum temperature"]
+    selection = selection.select_variables(
+        [
+            "AGBtree",
+            "maximum temperature",
+            "minimum temperature",
+            "Soil Water Index with T=1",
+            "Product of CAPE and Precipitation",
+            "dry_day_period",
+            "ShrubAll",
+            "TreeAll",
+            "pftBare",
+            "pftCrop",
+            "pftHerb",
+            "monthly burned area",
+            "SIF",
+            "popd",
+            "Combined Flash Rate Monthly Climatology",
+            "Fraction of Absorbed Photosynthetically Active Radiation",
+            "Leaf Area Index",
+            "Vegetation optical depth Ku-band (18.7 GHz - 19.35 GHz)",
+            "Vegetation optical depth X-band (10.65 GHz - 10.7 GHz)",
+        ]
     )
-    del exog_data["minimum temperature"]
-
-    # Carry out log transformation for select variables.
-    log_var_names = [
-        "temperature range",
-        # There are problems with negative surface
-        # temperatures here!
-        # 'near-surface temp max',
-        "dry_days",
-    ]
-
-    for name in log_var_names:
-        mod_data = exog_data[name] + 0.01
-        assert np.all(mod_data >= (0.01 - 1e-8))
-        exog_data["log " + name] = np.log(mod_data)
-        del exog_data[name]
-
-    # Carry out square root transformation
-    sqrt_var_names = ["Combined Flash Rate Time Series", "popd"]
-    for name in sqrt_var_names:
-        assert np.all(exog_data[name] >= 0)
-        exog_data["sqrt " + name] = np.sqrt(exog_data[name])
-        del exog_data[name]
-
-    """
-    # Available links for Gaussian:
-    [statsmodels.genmod.families.links.log,
-     statsmodels.genmod.families.links.identity,
-     statsmodels.genmod.families.links.inverse_power]
-
-    """
-
-    logger.info("Fitting model")
-
-    model = sm.GLM(
+    (
         endog_data,
         exog_data,
-        # family=sm.families.Gaussian(links.log)
-        family=sm.families.Binomial(),
+        master_mask,
+        filled_datasets,
+        masked_datasets,
+        land_mask,
+    ) = data_processing(
+        selection,
+        which="mean",
+        transformations=transformations,
+        deletions=deletions,
+        log_var_names=log_var_names,
+        sqrt_var_names=sqrt_var_names,
     )
 
-    model_results = model.fit()
-    print(model_results.summary())
+    # Plotting land mask.
+    with FigureSaver("land_mask"):
+        mpl.rcParams["figure.figsize"] = (8, 5)
+        fig = cube_plotting(land_mask.astype("int64"), title="Land Mask", cmap="Reds_r")
 
-    # fig = plt.figure(figsize=(9, 15))
-    # sm.graphics.plot_partregress_grid(model_results, fig=fig)
-    # plt.tight_layout()
-    # plt.savefig('partregress.png')
+    # Plot histograms.
+    mpl.rcParams["figure.figsize"] = (20, 12)
+    plot_histograms(masked_datasets)
 
-    plt.figure(figsize=(12, 9))
-    plt.hexbin(endog_data, model_results.fittedvalues, bins="log")
-    plt.xlabel("real data")
-    plt.ylabel("prediction")
-    plt.savefig("real_vs_prediction.png")
+    # Plotting masked burned area and AGB.
+    cube = masked_datasets.select_variables("monthly burned area", inplace=False).cube
+    with FigureSaver(cube.name().replace(" ", "_")):
+        mpl.rcParams["figure.figsize"] = (5, 3.8)
+        fig = cube_plotting(
+            cube,
+            cmap="Reds",
+            log=True,
+            label="ln(Fraction)",
+            title="Log Mean Burned Area (GFEDv4)",
+            coastline_kwargs={"linewidth": normal_coast_linewidth},
+        )
 
-    ba_predicted = np.zeros_like(global_mask, dtype=np.float64)
-    ba_predicted[~global_mask] = model_results.fittedvalues
-    ba_predicted = np.ma.MaskedArray(ba_predicted, mask=global_mask)
-    data_map_plot(
-        np.ma.mean(ba_predicted, axis=0),
-        name="Predicted Mean Burned Area",
-        filename="predicted_mean.png",
-    )
+    cube = masked_datasets.select_variables("AGBtree", inplace=False).cube
+    with FigureSaver(cube.name().replace(" ", "_")):
+        mpl.rcParams["figure.figsize"] = (4, 2.7)
+        fig = cube_plotting(
+            cube,
+            cmap="viridis",
+            log=True,
+            label=r"kg m$^{-2}$",
+            title="AGBtree",
+            coastline_kwargs={"linewidth": normal_coast_linewidth},
+        )
 
-    ba_data = np.zeros_like(global_mask, dtype=np.float64)
-    ba_data[~global_mask] = endog_data.values
-    ba_data = np.ma.MaskedArray(ba_data, mask=global_mask)
-    data_map_plot(
-        np.ma.mean(ba_data, axis=0),
-        name="Mean observed burned area (GFEDv4)",
-        filename="observed_mean_ba.png",
-    )
+    # Plotting of filled/processed Mask and AGB.
+    with FigureSaver("land_mask2"):
+        mpl.rcParams["figure.figsize"] = (8, 5)
+        fig = cube_plotting(
+            filled_datasets.select_variables(
+                "monthly burned area", strict=True, inplace=False
+            ).cube.data.mask.astype("int64"),
+            title="Land Mask",
+            cmap="Reds_r",
+        )
 
-    data_map_plot(
-        np.mean(global_mask, axis=0),
-        name="Mean available data mask",
-        filename="mean_avail_mask.png",
-    )
-    data_map_plot(
-        np.max(global_mask, axis=0),
-        name="Min available data mask",
-        filename="min_avail_mask.png",
-    )
-    data_map_plot(
-        np.min(global_mask, axis=0),
-        name="Max available data mask",
-        filename="max_avail_mask.png",
-    )
+    cube = filled_datasets.select_variables("AGBtree", inplace=False).cube
+    with FigureSaver(cube.name().replace(" ", "_") + "_interpolated"):
+        mpl.rcParams["figure.figsize"] = (4, 2.7)
+        cube_plotting(
+            cube,
+            cmap="viridis",
+            log=True,
+            label=r"kg m$^{-2}$",
+            title="AGBtree (interpolated)",
+            coastline_kwargs={"linewidth": normal_coast_linewidth},
+        )
+
+    # Start of variable analysis!!
+
+    print_vifs(exog_data, thres=6)
+
+    with FigureSaver("correlation"):
+        mpl.rcParams["figure.figsize"] = (5, 3)
+        corr_plot(exog_data)
+
+    # Creating backup slides.
+
+    # First the original datasets.
+    mpl.rcParams["figure.figsize"] = (5, 3.8)
+
+    for cube in masked_datasets.cubes:
+        with FigureSaver("backup_" + cube.name().replace(" ", "_")):
+            fig = cube_plotting(
+                cube,
+                log=log_map(cube.name()),
+                coastline_kwargs={"linewidth": normal_coast_linewidth},
+            )
+
+    # Then the datasets after they were processed.
+    for cube in filled_datasets.cubes:
+        with FigureSaver("backup_mod_" + cube.name().replace(" ", "_")):
+            fig = cube_plotting(
+                cube,
+                log=log_map(cube.name()),
+                coastline_kwargs={"linewidth": normal_coast_linewidth},
+            )
+
+    # Model Fitting.
+    model_results = GLM(endog_data, exog_data)
+    regr = RF(endog_data, exog_data)
+
+    if verbose:
+        print_importances(regr)

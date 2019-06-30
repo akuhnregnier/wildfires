@@ -1590,7 +1590,7 @@ def retrieval_processing(
             downloaded again. Note that only the time coordinate and
             variables are compared against for the existing files.
 
-    Todo:
+    TODO:
         Soft time-out which would not cause an abrupt exit of the program
         (using an Exception) but would allow a graceful exit.
 

@@ -21,6 +21,7 @@ name_map = {
     "log temperature range": "log temp range",
     "log dry_day_period": "log dry period",
     "sqrt Combined Flash Rate Time Series": "sqrt Lightning",
+    "sqrt Combined Flash Rate Monthly Climatology": "sqrt Lightning",
 }
 
 

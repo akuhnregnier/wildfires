@@ -3,8 +3,14 @@
 """Collection of code to be used throughout the project.
 
 """
+import json
 import logging
+import logging.config
 import os
+import platform
+import re
+import socket
+from subprocess import CalledProcessError, check_output
 from time import time
 
 import fiona
@@ -12,8 +18,6 @@ import numpy as np
 from affine import Affine
 from rasterio import features
 from tqdm import tqdm
-
-from wildfires.data.datasets import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +41,14 @@ class TqdmContext(tqdm):
     def update_to(self, total=None):
         if total is not None:
             self.total = total
-        self.update(iteration - self.n)
+        self.update()
 
 
 class Time:
     def __init__(self, name=""):
         self.name = name
 
-    def __enter__(self, name=""):
+    def __enter__(self):
         self.start = time()
 
     def __exit__(self, type, value, traceback):
@@ -115,15 +119,18 @@ def land_mask(n_lon=1440):
 
     Examples:
         >>> import numpy as np
-        >>> mask = land_mask(n_lon=1440)
-        >>> mask.dtype == np.bool_
+        >>> from wildfires.data.datasets import data_is_available
+        >>> print(True)
         True
-        >>> mask.sum()
-        343928
-        >>> mask.shape
-        (720, 1440)
+        >>> if data_is_available():
+        ...     mask = land_mask(n_lon=1440)
+        ...     assert mask.dtype == np.bool_
+        ...     assert mask.sum() == 343928
+        ...     assert mask.shape == (720, 1440)
 
     """
+    from wildfires.data.datasets import DATA_DIR
+
     assert n_lon % 2 == 0, (
         "The number of longitude points has to be an even number for the number of "
         "latitude points to be an integer."
@@ -277,7 +284,6 @@ def match_shape(array, target_shape):
         ...     )
         True
 
-
     """
     if array.shape != target_shape:
         # Remove singular first dimension.
@@ -286,17 +292,156 @@ def match_shape(array, target_shape):
                 array = array[0]
         if array.shape == target_shape[1:]:
             logger.debug(
-                "Adding time dimension ({}) to broadcast land_mask.".format(
-                    target_shape[0]
-                )
+                "Adding time dimension ({}) to broadcast array.".format(target_shape[0])
             )
-            new_mask = np.zeros(target_shape, dtype=np.bool_)
-            new_mask += array.reshape(1, *array.shape)
-            array = new_mask
+            new_array = np.zeros(target_shape, dtype=np.bool_)
+            new_array += array.reshape(1, *array.shape)
+            array = new_array
         else:
             raise ValueError(
-                "land_mask dimensions '{}' do not match cube dimensions '{}'".format(
+                "Array dimensions '{}' do not match cube dimensions '{}'.".format(
                     array.shape, target_shape
                 )
             )
     return array
+
+
+def get_unmasked(array, strict=True):
+    """Get the flattened unmasked elements from a masked array.
+
+    Args:
+        array (numpy.ma.core.MaskedArray or numpy.ndarray): If `strict` (default),
+            only accept masked arrays.
+        strict (bool): See above.
+
+    Raises:
+        TypeError: If `strict` and `array` is of type `numpy.ndarray`. Regardless of
+            `strict`, types other than `numpy.ma.core.MaskedArray` and `numpy.ndarray`
+            will also raise a TypeError.
+
+    Returns:
+        numpy.ndarray: Flattened, unmasked data.
+
+    """
+    accepted_types = [np.ma.core.MaskedArray]
+    if not strict:
+        accepted_types.append(np.ndarray)
+
+    if not isinstance(array, tuple(accepted_types)):
+        raise TypeError(f"The input array had an invalid type '{type(array)}'.")
+
+    if not strict and isinstance(array, np.ndarray):
+        return array.ravel()
+
+    if isinstance(array.mask, np.ndarray):
+        return array.data[~array.mask].ravel()
+    elif array.mask:
+        np.array([])
+    else:
+        return array.ravel()
+
+
+def get_masked_array(data, mask=False, dtype=np.float64):
+    """Get a masked array from data and an optional mask.
+
+    Args:
+        data (iterable):
+        mask (numpy.ndarray or bool):
+        dtype (numpy dtype):
+
+    Returns:
+        numpy.ma.core.MaskedArray
+
+    Examples:
+        >>> import numpy as np
+        >>> print(get_masked_array([1, 2], [True, False, False], np.int64))
+        [-- 1 2]
+        >>> print(get_masked_array([0, 1, 2], [True, False, False], np.int64))
+        [-- 1 2]
+        >>> print(get_masked_array([0, 1, 2], dtype=np.int64))
+        [0 1 2]
+        >>> a = np.arange(20).reshape(5, 4)
+        >>> b = np.arange(7*4).reshape(7, 4)
+        >>> mask = np.zeros((7, 4), dtype=np.bool_)
+        >>> mask[np.logical_or(b < 4, b > 23)] = True
+        >>> stacked = np.vstack((np.zeros((1, 4)), a, np.zeros((1, 4))))
+        >>> ma = np.ma.MaskedArray(stacked, mask=mask)
+        >>> np.all(ma == get_masked_array(a, mask, np.int64))
+        True
+
+    """
+    data = np.asarray(data)
+    mask = np.asarray(mask, dtype=np.bool_)
+    # Make sure mask is an array and not just a single value, and that the data and
+    # mask sizes differ.
+    if mask.shape and data.size != mask.size:
+        shape = mask.shape
+        array_data = np.zeros(shape, dtype=dtype).ravel()
+        array_data[~mask.ravel()] = data.ravel()
+        array_data = array_data.reshape(shape)
+        return np.ma.MaskedArray(array_data, mask=mask)
+    return np.ma.MaskedArray(data, mask=mask, dtype=dtype)
+
+
+def get_qstat_ncpus():
+    """Get ncpus from qstat job details.
+
+    Only relevant if we are currently running on a node with a hostname matching one
+    of the running jobs.
+
+    """
+    try:
+        raw_output = check_output(("qstat", "-f", "-F", "json")).decode()
+        # Filter out invalid json (unescaped double quotes).
+        filtered_lines = [line for line in raw_output.split("\n") if '"""' not in line]
+        filtered_output = "\n".join(filtered_lines)
+        out = json.loads(filtered_output)
+    except FileNotFoundError:
+        logger.warning("Not running on hpc.")
+        return None
+    except CalledProcessError:
+        logger.exception("Call to qstat failed.")
+        return None
+    if out:
+        current_hostname = platform.node()
+        if not current_hostname:
+            current_hostname = socket.gethostname()
+        if not current_hostname:
+            logger.error("Hostname could not be determined.")
+            return None
+
+        # Loop through each job.
+        jobs = out["Jobs"]
+        for job_name, job in jobs.items():
+            if not job["job_state"] == "R":
+                logger.info(
+                    "Ignoring job '{}' as it is not running.".format(job["Job_Name"])
+                )
+                continue
+            # If we are on the same machine.
+            if re.search(current_hostname, job["exec_host"]):
+                # Other keys include 'mem' (eg. '32gb'), 'mpiprocs'
+                # and 'walltime' (eg. '08:00:00').
+                resources = job["Resource_List"]
+                ncpus = resources["ncpus"]
+                logger.info(
+                    "Getting ncpus: {} from job '{}'.".format(ncpus, job["Job_Name"])
+                )
+                return int(ncpus)
+    return None
+
+
+def get_ncpus(default=1):
+    # The NCPUS environment variable is not always set up correctly, so check for
+    # batch jobs matching the current hostname first.
+    ncpus = get_qstat_ncpus()
+    if ncpus:
+        return ncpus
+    ncpus = os.environ.get("NCPUS")
+    if ncpus:
+        logger.info("Read ncpus: {} from NCPUS environment variable.".format(ncpus))
+        return int(ncpus)
+    logger.warning(
+        "Could not read NCPUS environment variable. Using default: {}.".format(default)
+    )
+    return default
