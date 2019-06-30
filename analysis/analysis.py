@@ -137,7 +137,7 @@ def data_processing(
     selection,
     target_variable="monthly burned area",
     which="monthly",
-    lat_mask=False,
+    use_lat_mask=False,
     transformations=None,
     deletions=None,
     log_var_names=None,
@@ -176,7 +176,7 @@ def data_processing(
     # Make a deep copy so that the original cubes are preserved.
     masked_datasets = raw_datasets.copy(deep=True)
 
-    if lat_mask:
+    if use_lat_mask:
         masks_to_apply = (lat_mask, land_mask)
     else:
         masks_to_apply = (land_mask,)
@@ -190,18 +190,26 @@ def data_processing(
     # Filling/processing/cleaning datasets.
 
     # TODO: Make this kind of processing internal to each Dataset.
-    sif_cube = masked_datasets.select_variables("SIF", inplace=False).cube
-    invalid_mask = np.logical_or(sif_cube.data.data > 20, sif_cube.data.data < 0)
-    logger.info(f"Masking {np.sum(invalid_mask)} invalid values for SIF.")
-    sif_cube.data.mask |= invalid_mask
+    if "SIF" in list(masked_datasets.raw_variable_names) + list(
+        masked_datasets.pretty_variable_names
+    ):
+        logger.info("Extra processing for 'SIF'.")
+        sif_cube = masked_datasets.select_variables("SIF", inplace=False).cube
+        invalid_mask = np.logical_or(sif_cube.data.data > 20, sif_cube.data.data < 0)
+        logger.info(f"Masking {np.sum(invalid_mask)} invalid values for SIF.")
+        sif_cube.data.mask |= invalid_mask
 
     # TODO: Make this kind of processing internal to each Dataset.
-    lightning_cube = masked_datasets.select_variables(
-        "Combined Flash Rate Monthly Climatology", inplace=False
-    ).cube
-    invalid_mask = lightning_cube.data.data < 0
-    logger.info(f"Masking {np.sum(invalid_mask)} invalid values for LIS/OTD.")
-    lightning_cube.data.mask |= invalid_mask
+    if "Combined Flash Rate Monthly Climatology" in list(
+        masked_datasets.raw_variable_names
+    ) + list(masked_datasets.pretty_variable_names):
+        logger.info("Extra processing for 'Combined Flash Rate Monthly Climatology'.")
+        lightning_cube = masked_datasets.select_variables(
+            "Combined Flash Rate Monthly Climatology", inplace=False
+        ).cube
+        invalid_mask = lightning_cube.data.data < 0
+        logger.info(f"Masking {np.sum(invalid_mask)} invalid values for LIS/OTD.")
+        lightning_cube.data.mask |= invalid_mask
 
     filled_datasets = masked_datasets.copy(deep=True).fill(*masks_to_apply)
 
@@ -404,16 +412,16 @@ if __name__ == "__main__":
 
     # Creation of new variables.
     transformations = {
-        "temperature range": lambda exog_data: (
-            exog_data["maximum temperature"] - exog_data["minimum temperature"]
+        "Temperature Range": lambda exog_data: (
+            exog_data["Max Temp"] - exog_data["Min Temp"]
         )
     }
     # Variables to be deleted after the aforementioned transformations.
-    deletions = ("minimum temperature",)
+    deletions = ("Min Temp",)
 
     # Carry out transformations, replacing old variables in the process.
-    log_var_names = ["temperature range", "dry_days", "dry_day_period"]
-    sqrt_var_names = ["Combined Flash Rate Monthly Climatology", "popd"]
+    log_var_names = ["Temperature Range", "Dry Days", "Dry Day Period"]
+    sqrt_var_names = ["Lightning Climatology", "popd"]
 
     # Dataset selection.
     # selection = get_all_datasets(ignore_names=IGNORED_DATASETS)

@@ -605,6 +605,17 @@ def regrid(
                     new_longitudes=new_longitudes,
                 )
             )
+
+        coord_names = [coord.name() for coord in regridded_cubes[0].coords()]
+        if (
+            "time" in coord_names
+            and "year" in coord_names
+            and "month_number" in coord_names
+        ):
+            for regridded_cube in regridded_cubes:
+                regridded_cube.remove_coord("year")
+                regridded_cube.remove_coord("month_number")
+
         return regridded_cubes.merge_cube()
 
     assert n_dim == 2, "Need [lat, lon] dimensions for core algorithm."
@@ -866,7 +877,9 @@ class Dataset(ABC):
             elif n_dim == 3:
                 coord_names.extend(("time", "latitude", "longitude"))
             else:
-                warnings.warn(f"'{cube}' in '{self}' has {n_dim} axes.")
+                warnings.warn(
+                    f"\n{cube}\nin '{type(self)}' at '{id(self)}' has {n_dim} axes."
+                )
 
             for coord_name in coord_names:
                 try:
@@ -963,14 +976,14 @@ class Dataset(ABC):
     @property
     def min_time(self):
         try:
-            return self.cubes[0].coord("time").cell(0).point
+            return max(cube.coord("time").cell(0).point for cube in self.cubes)
         except iris.exceptions.CoordinateNotFoundError:
             return "static"
 
     @property
     def max_time(self):
         try:
-            return self.cubes[0].coord("time").cell(-1).point
+            return min(cube.coord("time").cell(-1).point for cube in self.cubes)
         except iris.exceptions.CoordinateNotFoundError:
             return "static"
 
