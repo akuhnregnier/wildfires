@@ -252,6 +252,7 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
         coastline_kwargs={"linewidth": coast_linewidth},
         vmin=vmin,
         vmax=vmax,
+        min_edge=vmin,
     )
     figs.append(fig)
 
@@ -265,6 +266,7 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
         coastline_kwargs={"linewidth": coast_linewidth},
         vmin=vmin,
         vmax=vmax,
+        min_edge=vmin,
     )
     figs.append(fig)
 
@@ -536,6 +538,8 @@ def cube_plotting(
     transform_vmin_vmax=False,
     nbins=10,
     log_auto_bins=True,
+    min_edge=None,
+    average_first_coord=True,
     **kwargs,
 ):
     """Pretty plotting.
@@ -569,6 +573,9 @@ def cube_plotting(
             as well.
         nbins (int): Number of bins. Does not apply if `log` and `log_auto_bins`.
         log_auto_bins (bool): Make log bins stick to integers.
+        min_edge (float or None): Minimum log bin exponent. See `get_bin_edges`.
+        average_first_coord (bool): Average out first coordinate if there are 3
+            dimensions.
         possible kwargs:
             title: str or None of False. If None or False, no title will be plotted.
             cmap: Example: 'viridis', 'Reds', 'Reds_r', etc... Can also be a
@@ -594,6 +601,8 @@ def cube_plotting(
         )
 
     cube = cube.copy()
+    if average_first_coord and len(cube.shape) == 3:
+        cube = cube.collapsed(cube.coords()[0], iris.analysis.MEAN)
 
     if ax is None:
         fig = plt.figure()
@@ -622,7 +631,8 @@ def cube_plotting(
             vmax,
             "auto" if log and log_auto_bins else nbins,
             log,
-            "symmetric",
+            "symmetric" if min_edge is None else "manual",
+            min_edge=min_edge,
         )
 
         if vmin is None and vmax is None:

@@ -325,7 +325,7 @@ def GLM(endog_data, exog_data):
     model_results = model.fit()
 
     print(model_results.summary())
-    print("R2:", r2_score(y_true=endog_data, y_pred=model_results.fittedvalues))
+    print("GLMv1 R2:", r2_score(y_true=endog_data, y_pred=model_results.fittedvalues))
 
     mpl.rcParams["figure.figsize"] = (4, 2.7)
 
@@ -364,8 +364,8 @@ def RF(endog_data, exog_data):
         exog_data, endog_data, random_state=1, shuffle=True, test_size=0.3
     )
     regr.fit(X_train, y_train)
-    print("R2 train:", regr.score(X_train, y_train))
-    print("R2 test:", regr.score(X_test, y_test))
+    print("RFv1 R2 train:", regr.score(X_train, y_train))
+    print("RFv1 R2 test:", regr.score(X_test, y_test))
 
     ba_predicted = get_masked_array(regr.predict(exog_data), master_mask)
 
@@ -386,8 +386,8 @@ def RF(endog_data, exog_data):
             X_test,
             X_test.columns,
             n_cols=4,
-            grid_resolution=70,
-            coverage=0.05,
+            grid_resolution=50,
+            coverage=0.3,
             predicted_name="burned area",
         )
         plt.subplots_adjust(wspace=0.16)
@@ -400,28 +400,33 @@ if __name__ == "__main__":
     # General setup.
     logging.config.dictConfig(LOGGING)
 
-    FigureSaver.directory = "~/tmp/to_send"
+    FigureSaver.directory = os.path.expanduser(
+        os.path.join("~", "tmp", "to_send", "test")
+    )
+    os.makedirs(FigureSaver.directory, exist_ok=True)
     FigureSaver.debug = True
 
     # TODO: Plotting setup in a more rigorous manner.
     normal_coast_linewidth = 0.5
     mpl.rcParams["font.size"] = 9.0
     verbose = True
+    np.random.seed(1)
 
     target_variable = "monthly burned area"
 
     # Creation of new variables.
     transformations = {
-        "Temperature Range": lambda exog_data: (
-            exog_data["Max Temp"] - exog_data["Min Temp"]
-        )
+        "Temp Range": lambda exog_data: (exog_data["Max Temp"] - exog_data["Min Temp"])
     }
     # Variables to be deleted after the aforementioned transformations.
     deletions = ("Min Temp",)
 
     # Carry out transformations, replacing old variables in the process.
-    log_var_names = ["Temperature Range", "Dry Days", "Dry Day Period"]
-    sqrt_var_names = ["Lightning Climatology", "popd"]
+    log_var_names = ["Temp Range", "Dry Day Period"]
+    sqrt_var_names = [
+        # "Lightning Climatology",
+        "popd"
+    ]
 
     # Dataset selection.
     # selection = get_all_datasets(ignore_names=IGNORED_DATASETS)
@@ -437,8 +442,7 @@ if __name__ == "__main__":
             GFEDv4(),
             GlobFluo_SIF(),
             HYDE(),
-            LIS_OTD_lightning_climatology(),
-            Liu_VOD(),
+            # LIS_OTD_lightning_climatology(),
             MOD15A2H_LAI_fPAR(),
             VODCA(),
         )
@@ -454,16 +458,16 @@ if __name__ == "__main__":
             "dry_day_period",
             "ShrubAll",
             "TreeAll",
-            "pftBare",
+            # "pftBare",
             "pftCrop",
             "pftHerb",
             "monthly burned area",
             "SIF",
             "popd",
-            "Combined Flash Rate Monthly Climatology",
+            # "Combined Flash Rate Monthly Climatology",
             "Fraction of Absorbed Photosynthetically Active Radiation",
-            "Leaf Area Index",
-            "Vegetation optical depth Ku-band (18.7 GHz - 19.35 GHz)",
+            # "Leaf Area Index",
+            # "Vegetation optical depth Ku-band (18.7 GHz - 19.35 GHz)",
             "Vegetation optical depth X-band (10.65 GHz - 10.7 GHz)",
         ]
     )
@@ -476,7 +480,7 @@ if __name__ == "__main__":
         land_mask,
     ) = data_processing(
         selection,
-        which="mean",
+        which="climatology",
         transformations=transformations,
         deletions=deletions,
         log_var_names=log_var_names,
