@@ -245,7 +245,7 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     # Plotting predicted.
     fig = cube_plotting(
         ba_predicted,
-        cmap="Reds",
+        cmap="brewer_RdYlBu_11_r",
         label="Fraction",
         title="Predicted Mean Burned Area ({})".format(model_name),
         log=True,
@@ -253,13 +253,14 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
         vmin=vmin,
         vmax=vmax,
         min_edge=vmin,
+        extend="neither",
     )
     figs.append(fig)
 
     # Plotting observed.
     fig = cube_plotting(
         ba_data,
-        cmap="Reds",
+        cmap="brewer_RdYlBu_11_r",
         label="Fraction",
         title="Mean observed burned area (GFEDv4)",
         log=True,
@@ -267,19 +268,20 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
         vmin=vmin,
         vmax=vmax,
         min_edge=vmin,
+        extend="neither",
     )
     figs.append(fig)
 
     # Plotting differences.
 
     # https://blogs.sas.com/content/iml/2014/07/14/log-transformation-of-pos-neg.html
-    # Use log-modulus transformation
+    # (Do not!) use log-modulus transformation
 
     perc_diffs = (ba_data - ba_predicted) / ba_data
 
     fig = cube_plotting(
         perc_diffs,
-        cmap="viridis",
+        cmap="brewer_RdYlBu_11_r",
         title="({}) Perc. Diff. (Observed - Predicted)".format(model_name),
         coastline_kwargs={"linewidth": coast_linewidth},
         log=True,
@@ -539,6 +541,7 @@ def cube_plotting(
     nbins=10,
     log_auto_bins=True,
     min_edge=None,
+    extend=None,
     average_first_coord=True,
     **kwargs,
 ):
@@ -574,6 +577,10 @@ def cube_plotting(
         nbins (int): Number of bins. Does not apply if `log` and `log_auto_bins`.
         log_auto_bins (bool): Make log bins stick to integers.
         min_edge (float or None): Minimum log bin exponent. See `get_bin_edges`.
+        extend (None or str): If None, determined based on given vmin/vmax. If vmin is
+            given, for example, `extend='min'`. If vmax is given, for example,
+            `extend='max'`. If both vmin & vmax are given, `extend='both'`. This value
+            can be set manually to one of the aforementioned options.
         average_first_coord (bool): Average out first coordinate if there are 3
             dimensions.
         possible kwargs:
@@ -635,34 +642,64 @@ def cube_plotting(
             min_edge=min_edge,
         )
 
-        if vmin is None and vmax is None:
-            extend = "neither"
-            n_colors = len(boundaries) - 1
-        if vmin is not None and vmax is None:
-            extend = "min"
-            n_colors = len(boundaries)
-        if vmax is not None and vmin is None:
-            extend = "max"
-            n_colors = len(boundaries)
-        if vmin is not None and vmax is not None:
-            extend = "both"
-            n_colors = len(boundaries) + 1
+        if extend is None:
+            if vmin is None and vmax is None:
+                extend = "neither"
+            if vmin is not None and vmax is None:
+                extend = "min"
+            if vmax is not None and vmin is None:
+                extend = "max"
+            if vmin is not None and vmax is not None:
+                extend = "both"
 
-        if n_colors > plt.get_cmap(kwargs.get("cmap", "viridis")).N:
+        if extend == "neither":
+            n_colors = len(boundaries) - 1
+        elif extend == "min":
+            n_colors = len(boundaries)
+        elif extend == "max":
+            n_colors = len(boundaries)
+        elif extend == "both":
+            n_colors = len(boundaries) + 1
+        else:
+            raise ValueError(f"Unknown value for `extend` {repr(extend)}.")
+
+        cmap_sample_lims = [0, 1]
+        try:
+            orig_cmap = plt.get_cmap(kwargs.get("cmap", "viridis"))
+        except ValueError:
+            raw_cmap = kwargs.get("cmap", "viridis")
+            logger.warning(f"Exception while trying to access cmap '{raw_cmap}'.")
+            if isinstance(raw_cmap, str) and "_r" in raw_cmap:
+                # Try to reverse the colormap manually, in case a reversed colormap
+                # was requested using the '_r' suffix, but this is not available.
+                raw_cmap = raw_cmap[:-2]
+                orig_cmap = plt.get_cmap(raw_cmap)
+
+                # Flip limits to achieve reversal effect.
+                cmap_sample_lims = [1, 0]
+                logger.warning(f"Manually reversing cmap '{raw_cmap}'.")
+            else:
+                raise
+
+        if n_colors > orig_cmap.N:
             logger.warning(
-                f"Expected at most {plt.get_cmap(kwargs.get('cmap', 'viridis')).N} "
-                f"colors, but got {n_colors}."
+                f"Expected at most {orig_cmap.N} " f"colors, but got {n_colors}."
             )
+            if n_colors <= 20:
+                orig_cmap = plt.get_cmap("tab20")
+            else:
+                orig_cmap = plt.get_cmap("viridis")
+            logger.warning(f"Reverting colormap to {orig_cmap.name}.")
 
         cmap, norm = from_levels_and_colors(
             boundaries,
-            plt.get_cmap(kwargs.get("cmap", "viridis"))(np.linspace(0, 1, n_colors)),
+            orig_cmap(np.linspace(*cmap_sample_lims, n_colors)),
             extend=extend,
         )
 
         # This forces data points 'exactly' (very close) to the upper limit of the last
         # bin to be recognised as part of that bin, as opposed to out of bounds.
-        if vmin is None and vmax is None:
+        if extend == "neither":
             norm.clip = True
 
         mesh = ax.pcolormesh(
