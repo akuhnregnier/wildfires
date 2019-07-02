@@ -30,9 +30,9 @@ from wildfires.data.cube_aggregation import (
 )
 from wildfires.data.datasets import *
 from wildfires.logging_config import LOGGING
-from wildfires.utils import get_masked_array, get_unmasked
+from wildfires.utils import get_masked_array, get_ncpus, get_unmasked
 from wildfires.utils import land_mask as get_land_mask
-from wildfires.utils import match_shape
+from wildfires.utils import match_shape, polygon_mask
 
 logger = logging.getLogger(__name__)
 
@@ -163,13 +163,9 @@ def data_processing(
 
     # Define a latitude mask which ignores data beyond 60 degrees, as GSMaP data does
     # not extend to those latitudes.
-    # TODO: Instead of `mean_datasets` use a more generic name to take into account
-    # different `which` arguments for `prepare_selection()`.
-    lats = raw_datasets.cubes[0].coord("latitude").points
-    lons = raw_datasets.cubes[0].coord("longitude").points
-
-    latitude_grid = np.meshgrid(lats, lons, indexing="ij")[0]
-    lat_mask = np.abs(latitude_grid) > 60
+    lat_mask = ~polygon_mask(
+        [(180, -60), (-180, -60), (-180, 60), (180, 60), (180, -60)]
+    )
 
     # Apply masks.
 
@@ -320,16 +316,22 @@ def corr_plot(exog_data):
     fig.tight_layout()
 
 
-def GLM(endog_data, exog_data):
+def GLM(endog_data, exog_data, model_name="GLMv1"):
+    results = {}
+
     model = sm.GLM(endog_data, exog_data, family=sm.families.Binomial())
     model_results = model.fit()
 
-    print(model_results.summary())
-    print("R2:", r2_score(y_true=endog_data, y_pred=model_results.fittedvalues))
+    results["model_results"] = model_results
+
+    logger.info(model_results.summary())
+
+    results["R2_train"] = r2_score(y_true=endog_data, y_pred=model_results.fittedvalues)
+    logger.info(f"{model_name} R2: {results['R2_train']}")
 
     mpl.rcParams["figure.figsize"] = (4, 2.7)
 
-    with FigureSaver("hexbin_GLM1"):
+    with FigureSaver(f"hexbin_{model_name}"):
         plt.figure()
         plt.hexbin(endog_data, model_results.fittedvalues, bins="log")
         plt.xlabel("real data")
@@ -348,30 +350,41 @@ def GLM(endog_data, exog_data):
     #  - ba_predicted: predicted burned area
     #  - ba_data: observed
     #  - model_name: Name for titles AND filenames
-    model_name = "GLMv1"
     with TripleFigureSaver(model_name):
         figs = map_model_output(
             ba_predicted, ba_data, model_name, normal_coast_linewidth
         )
 
     print(model_results.summary().as_latex())
-    return model_results
+    return results
 
 
-def RF(endog_data, exog_data):
-    regr = RandomForestRegressor(n_estimators=100, random_state=1)
+def RF(endog_data, exog_data, model_name="RFv1"):
+    results = {}
+
+    regr = RandomForestRegressor(
+        n_estimators=100,
+        random_state=1,
+        n_jobs=get_ncpus(),
+        bootstrap=True,
+        max_depth=15,
+    )
+    results["regr"] = regr
     X_train, X_test, y_train, y_test = train_test_split(
         exog_data, endog_data, random_state=1, shuffle=True, test_size=0.3
     )
     regr.fit(X_train, y_train)
-    print("R2 train:", regr.score(X_train, y_train))
-    print("R2 test:", regr.score(X_test, y_test))
+
+    results["R2_train"] = regr.score(X_train, y_train)
+    results["R2_test"] = regr.score(X_test, y_test)
+
+    logger.info(f"{model_name} R2 train: {results['R2_train']}")
+    logger.info(f"{model_name} R2 test: {results['R2_test']}")
 
     ba_predicted = get_masked_array(regr.predict(exog_data), master_mask)
 
     ba_data = get_masked_array(endog_data, master_mask)
 
-    model_name = "RFv1"
     with TripleFigureSaver(model_name):
         figs = map_model_output(
             ba_predicted, ba_data, model_name, normal_coast_linewidth
@@ -380,7 +393,7 @@ def RF(endog_data, exog_data):
     mpl.rcParams["figure.figsize"] = (20, 12)
     mpl.rcParams["font.size"] = 18
 
-    with FigureSaver("pdp_RFv1"):
+    with FigureSaver(f"pdp_{model_name}"):
         fig, axes = partial_dependence_plot(
             regr,
             X_test,
@@ -393,7 +406,7 @@ def RF(endog_data, exog_data):
         plt.subplots_adjust(wspace=0.16)
         _ = list(ax.axes.get_yaxis().set_ticks([]) for ax in axes)
 
-    return regr
+    return results
 
 
 if __name__ == "__main__":
@@ -407,6 +420,8 @@ if __name__ == "__main__":
     normal_coast_linewidth = 0.5
     mpl.rcParams["font.size"] = 9.0
     verbose = True
+    np.random.seed(1)
+    plot_variables = False
 
     target_variable = "monthly burned area"
 
@@ -481,6 +496,7 @@ if __name__ == "__main__":
         deletions=deletions,
         log_var_names=log_var_names,
         sqrt_var_names=sqrt_var_names,
+        use_lat_mask=True,
     )
 
     # Plotting land mask.
@@ -540,7 +556,7 @@ if __name__ == "__main__":
             coastline_kwargs={"linewidth": normal_coast_linewidth},
         )
 
-    # Start of variable analysis!!
+    # Variable analysis.
 
     print_vifs(exog_data, thres=6)
 
@@ -548,31 +564,37 @@ if __name__ == "__main__":
         mpl.rcParams["figure.figsize"] = (5, 3)
         corr_plot(exog_data)
 
-    # Creating backup slides.
+    if plot_variables:
+        # Creating backup slides.
 
-    # First the original datasets.
-    mpl.rcParams["figure.figsize"] = (5, 3.8)
+        # First the original datasets.
+        mpl.rcParams["figure.figsize"] = (5, 3.8)
 
-    for cube in masked_datasets.cubes:
-        with FigureSaver("backup_" + cube.name().replace(" ", "_")):
-            fig = cube_plotting(
-                cube,
-                log=log_map(cube.name()),
-                coastline_kwargs={"linewidth": normal_coast_linewidth},
-            )
+        for cube in masked_datasets.cubes:
+            with FigureSaver("backup_" + cube.name().replace(" ", "_")):
+                fig = cube_plotting(
+                    cube,
+                    log=log_map(cube.name()),
+                    coastline_kwargs={"linewidth": normal_coast_linewidth},
+                )
 
-    # Then the datasets after they were processed.
-    for cube in filled_datasets.cubes:
-        with FigureSaver("backup_mod_" + cube.name().replace(" ", "_")):
-            fig = cube_plotting(
-                cube,
-                log=log_map(cube.name()),
-                coastline_kwargs={"linewidth": normal_coast_linewidth},
-            )
+        # Then the datasets after they were processed.
+        for cube in filled_datasets.cubes:
+            with FigureSaver("backup_mod_" + cube.name().replace(" ", "_")):
+                fig = cube_plotting(
+                    cube,
+                    log=log_map(cube.name()),
+                    coastline_kwargs={"linewidth": normal_coast_linewidth},
+                )
 
     # Model Fitting.
-    model_results = GLM(endog_data, exog_data)
-    regr = RF(endog_data, exog_data)
+    logger.info("Starting GLM analysis.")
+    glm_results = GLM(endog_data, exog_data)
+    logger.info("Finished GLM analysis.")
+
+    logger.info("Starting RF analysis.")
+    rf_results = RF(endog_data, exog_data)
+    logger.info("Finished RF analysis.")
 
     if verbose:
-        print_importances(regr)
+        print_importances(rf_results["regr"])

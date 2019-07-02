@@ -154,6 +154,52 @@ def land_mask(n_lon=1440):
     return geom_np
 
 
+def polygon_mask(coordinates, n_lon=1440):
+    """Mask based on a rasterized polygon from specified coordinates.
+
+    Args:
+        coordinates (list of tuple of float): List of (longitude, latitude)
+            coordinates specified in either clockwise or anti-clockwise order. The
+            last point MUST be the same as the first point for the polygon to be
+            recognised as a closed, valid shape. Longitudes are specified in the
+            interval [-180, 180], and latitudes in the interval [-90, 90].
+        n_lon (int): The number of longitude points of the final mask array. As the
+            ratio between number of longitudes and latitudes has to be 2 in order for
+            uniform scaling to work, the number of latitudes points is calculated as
+            n_lon / 2.
+
+    Returns:
+        numpy.ndarray: Array of shape (n_lon / 2, n_lon) and dtype np.bool_. True
+            inside the specified polygon, False otherwise.
+
+    Examples:
+        >>> import numpy as np
+        >>> data = np.arange(720*1440).reshape(720, 1440)
+        >>> # Mask the lower half of the globe.
+        >>> data[
+        ...     polygon_mask([(180, -90), (-180, -90), (-180, 0), (180, 0), (180, -90)])
+        ... ] = 0
+        >>> np.isclose(data.mean(), 388799.75)
+        True
+
+    """
+    assert n_lon % 2 == 0, (
+        "The number of longitude points has to be an even number for the number of "
+        "latitude points to be an integer."
+    )
+    n_lat = round(n_lon / 2)
+    geom_np = np.zeros((n_lat, n_lon), dtype=np.uint8)
+    geom_np += features.rasterize(
+        [{"type": "Polygon", "coordinates": [coordinates]}],
+        out_shape=geom_np.shape,
+        dtype=np.uint8,
+        transform=~(Affine.translation(n_lat, n_lat / 2) * Affine.scale(n_lon / 360)),
+    )
+
+    geom_np = geom_np.astype(np.bool_)
+    return geom_np
+
+
 def pack_input(var, single_type=str, elements=2, fill_source=0):
     """Return a filled tuple with `elements` items.
 
