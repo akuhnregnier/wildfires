@@ -949,6 +949,26 @@ class Dataset(ABC):
         dataset.cubes = copy(self.cubes)
         return dataset
 
+    def grid(self, coord="latitude"):
+        try:
+            diffs = np.diff(self.cubes[0].coord(coord).points)
+            mean = np.mean(diffs)
+            if np.all(np.isclose(diffs, mean)):
+                return np.abs(mean)
+
+        except iris.exceptions.CoordinateNotFoundError:
+            pass
+
+        return "N/A"
+
+    @property
+    def lat_grid(self):
+        return self.grid("latitude")
+
+    @property
+    def lon_grid(self):
+        return self.grid("longitude")
+
     @property
     def frequency(self):
         try:
@@ -3377,7 +3397,7 @@ class VODCA(Dataset):
         return self.select_monthly_from_monthly(start, end)
 
 
-def dataset_times(datasets=None, dataset_names=None):
+def dataset_times(datasets=None, dataset_names=None, lat_lon=False):
     """Compile dataset time span information.
 
     Args:
@@ -3432,8 +3452,12 @@ def dataset_times(datasets=None, dataset_names=None):
     if dataset_names is None:
         dataset_names = tuple(dataset.pretty for dataset in datasets)
 
+    attributes = ["min_time", "max_time", "frequency"]
+    if lat_lon:
+        attributes.extend(("lat_grid", "lon_grid"))
+
     time_dict = OrderedDict(
-        (name, list(map(str, (dataset.min_time, dataset.max_time, dataset.frequency))))
+        (name, list(map(str, (getattr(dataset, attr) for attr in attributes))))
         for dataset, name in zip(datasets, dataset_names)
     )
     min_times, max_times = [], []
@@ -3466,22 +3490,27 @@ def dataset_times(datasets=None, dataset_names=None):
     min_time = np.max(min_times)
     max_time = np.min(max_times)
 
-    time_dict["Overall"] = list(map(str, (min_time, max_time, "N/A")))
+    overall_placeholders = ["N/A"]
+    if lat_lon:
+        overall_placeholders.extend(("N/A", "N/A"))
 
-    dataset_names = list(time_dict.keys())
-    dataset_names = pd.Series(dataset_names, name="Dataset")
-    min_times_series = pd.Series(
-        [time_dict[name][0] for name in dataset_names], name="Minimum"
+    time_dict["Overall"] = list(map(str, (min_time, max_time, *overall_placeholders)))
+
+    dataset_names = pd.Series(list(time_dict.keys()), name="Dataset")
+
+    df_names = ["Minimum", "Maximum", "Frequency"]
+    if lat_lon:
+        df_names.extend(("Latitude Grid", "Longitude Grid"))
+
+    df_series = [dataset_names]
+    df_series.extend(
+        [
+            pd.Series([time_dict[name][i] for name in dataset_names], name=df_name)
+            for i, df_name in enumerate(df_names)
+        ]
     )
-    max_times_series = pd.Series(
-        [time_dict[name][1] for name in dataset_names], name="Maximum"
-    )
-    frequency_series = pd.Series(
-        [time_dict[name][2] for name in dataset_names], name="Frequency"
-    )
-    times_df = pd.DataFrame(
-        [dataset_names, min_times_series, max_times_series, frequency_series]
-    ).T
+
+    times_df = pd.DataFrame(df_series).T
 
     if min_time >= max_time:
         limited_df = times_df[:-1]
