@@ -410,8 +410,8 @@ def retrieve(
         request = (dataset, request_dict, target_file)
         requests.append(request)
 
-    for dataset, request_dict, target_file in requests:
-        if download:
+    if download:
+        for dataset, request_dict, target_file in requests:
             logger.info("Starting download to: '{}'.".format(target_file))
             client.retrieve(dataset, request_dict, target_file)
             logger.info("Finished download to: '{}'.".format(target_file))
