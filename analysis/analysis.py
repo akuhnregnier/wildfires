@@ -121,9 +121,9 @@ def TripleFigureSaver(model_name, *args, **kwargs):
     )
 
 
-def print_dataset_times(datasets, latex=False):
+def print_dataset_times(datasets, latex=False, lat_lon=False):
     """Print information about the dataset times to stdout."""
-    times_df = dataset_times(datasets.datasets)[2]
+    times_df = dataset_times(datasets.datasets, lat_lon=lat_lon)[2]
     if times_df is not None:
         if latex:
             print(times_df.to_latex(index=False))
@@ -511,14 +511,16 @@ if __name__ == "__main__":
     # Plotting masked burned area and AGB.
     cube = masked_datasets.select_variables("monthly burned area", inplace=False).cube
     with FigureSaver(cube.name().replace(" ", "_")):
-        mpl.rcParams["figure.figsize"] = (5, 3.8)
+        mpl.rcParams["figure.figsize"] = (5, 3.33)
         fig = cube_plotting(
             cube,
-            cmap="Reds",
+            cmap="brewer_RdYlBu_11_r",
             log=True,
-            label="ln(Fraction)",
-            title="Log Mean Burned Area (GFEDv4)",
+            label="Burnt Area Fraction",
+            title=None,
+            extend="neither",
             coastline_kwargs={"linewidth": normal_coast_linewidth},
+            boundaries=None,
         )
 
     cube = masked_datasets.select_variables("AGBtree", inplace=False).cube

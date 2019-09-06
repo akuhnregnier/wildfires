@@ -236,7 +236,7 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     """
     figs = []
     # Plotting params.
-    figsize = (4, 2.7)
+    figsize = (5, 3.33)
     mpl.rcParams["figure.figsize"] = figsize
 
     vmin = min((np.min(ba_predicted), np.min(ba_data)))
@@ -246,14 +246,15 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     fig = cube_plotting(
         ba_predicted,
         cmap="brewer_RdYlBu_11_r",
-        label="Fraction",
-        title="Predicted Mean Burned Area ({})".format(model_name),
+        label="Burnt Area Fraction",
+        title=None,
         log=True,
         coastline_kwargs={"linewidth": coast_linewidth},
         vmin=vmin,
         vmax=vmax,
         min_edge=vmin,
         extend="neither",
+        boundaries=None,
     )
     figs.append(fig)
 
@@ -261,14 +262,15 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     fig = cube_plotting(
         ba_data,
         cmap="brewer_RdYlBu_11_r",
-        label="Fraction",
-        title="Mean observed burned area (GFEDv4)",
+        label="Burnt Area Fraction",
+        title=None,
         log=True,
         coastline_kwargs={"linewidth": coast_linewidth},
         vmin=vmin,
         vmax=vmax,
         min_edge=vmin,
         extend="neither",
+        boundaries=None,
     )
     figs.append(fig)
 
@@ -282,7 +284,7 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     fig = cube_plotting(
         perc_diffs,
         cmap="brewer_RdYlBu_11_r",
-        title="({}) Perc. Diff. (Observed - Predicted)".format(model_name),
+        title=None,
         coastline_kwargs={"linewidth": coast_linewidth},
         log=True,
     )
@@ -540,6 +542,7 @@ def cube_plotting(
     transform_vmin_vmax=False,
     nbins=10,
     log_auto_bins=True,
+    boundaries=None,
     min_edge=None,
     extend=None,
     average_first_coord=True,
@@ -576,6 +579,9 @@ def cube_plotting(
             as well.
         nbins (int): Number of bins. Does not apply if `log` and `log_auto_bins`.
         log_auto_bins (bool): Make log bins stick to integers.
+        boundaries (iterable or None): If None, bin boundaries will be computed
+            automatically. Supersedes all other options relating to boundary creation,
+            like `log' or `vmin'.
         min_edge (float or None): Minimum log bin exponent. See `get_bin_edges`.
         extend (None or str): If None, determined based on given vmin/vmax. If vmin is
             given, for example, `extend='min'`. If vmax is given, for example,
@@ -630,14 +636,16 @@ def cube_plotting(
         vmin = kwargs.get("vmin", data_vmin)
         vmax = kwargs.get("vmax", data_vmax)
 
-        boundaries = get_bin_edges(
-            cube.data,
-            vmin,
-            vmax,
-            "auto" if log and log_auto_bins else nbins,
-            log,
-            "symmetric",
-        )
+        if boundaries is None:
+            boundaries = get_bin_edges(
+                cube.data,
+                vmin,
+                vmax,
+                "auto" if log and log_auto_bins else nbins,
+                log,
+                "symmetric" if min_edge is None else "manual",
+                min_edge=min_edge,
+            )
 
         if extend is None:
             if vmin is None and vmax is None:
@@ -660,6 +668,7 @@ def cube_plotting(
         else:
             raise ValueError(f"Unknown value for `extend` {repr(extend)}.")
 
+        # Allow manual flipping of colormap.
         cmap_sample_lims = [0, 1]
         try:
             orig_cmap = plt.get_cmap(kwargs.get("cmap", "viridis"))
@@ -688,6 +697,7 @@ def cube_plotting(
                 orig_cmap = plt.get_cmap("viridis")
             logger.warning(f"Reverting colormap to {orig_cmap.name}.")
 
+        logger.debug(f"Boundaries:{boundaries}.")
         cmap, norm = from_levels_and_colors(
             boundaries,
             orig_cmap(np.linspace(*cmap_sample_lims, n_colors)),
