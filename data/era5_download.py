@@ -214,6 +214,10 @@ def retrieve(
         Time information (ie. hours, minutes, etc...) in the start and end
         arguments will be ignored.
 
+    TODO:
+        Giving `levels` as an iterable should be supported by making the application
+        of `.lower()` and following string comparison more flexible.
+
     Args:
         variable (str or list of str): Variable of interest: eg.
             variable='2t' or variable='2m_temperature' refers to
@@ -412,9 +416,14 @@ def retrieve(
 
     if download:
         for dataset, request_dict, target_file in requests:
-            logger.info("Starting download to: '{}'.".format(target_file))
-            client.retrieve(dataset, request_dict, target_file)
-            logger.info("Finished download to: '{}'.".format(target_file))
+            if not os.path.isfile(target_file):
+                logger.info("Starting download to: '{}'.".format(target_file))
+                client.retrieve(dataset, request_dict, target_file)
+                logger.info("Finished download to: '{}'.".format(target_file))
+            else:
+                logger.info(
+                    f"File already exists, not starting download to: '{target_file}'."
+                )
 
     return requests
 
