@@ -16,7 +16,8 @@ environment).
 
 """
 import argparse
-from subprocess import run
+import os
+from subprocess import check_output, run
 
 YAML_REQUIREMENTS = "requirements.yaml"
 DEFAULT_ENV_NAME = "wildfires"
@@ -126,6 +127,23 @@ def main():
                 "Installation into new environment failed. Use `./bootstrap.py new "
                 "--force` to overwrite an existing environment."
             )
+
+        # Filter out versions that match the new environment name.
+        possible_versions = list(
+            filter(
+                lambda name: args.name in name,
+                map(
+                    lambda entry: entry.strip().strip("* ").split(" ")[0],
+                    check_output(("pyenv", "versions")).decode().split("\n"),
+                ),
+            )
+        )
+        assert len(possible_versions) == 1, "There should only be 1 matching version."
+
+        # Activate the new environment using the 'PYENV_VERSION' environment variable.
+        os.environ["PYENV_VERSION"] = possible_versions[0]
+
+        # possible_versions[0] should be the same as $PYENV_VERSION by this point.
         env_activate_instructions = (
             "To activate the new environment and make it the local default using "
             "pyenv, run the following commands:\n\n"
