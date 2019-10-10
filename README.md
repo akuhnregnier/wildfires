@@ -2,6 +2,8 @@
 
 ## Development
 
+The instructions below assume that you are using Linux and managing Python using [pyenv](https://github.com/pyenv/pyenv) and [pyenv-virtualenv](https://github.com/pyenv/pyenv-virtualenv).
+
 **All** essential configuration steps detailed in the section [Prerequisites](#prerequisites) are automatically carried out by `dev/bootstrap.py`.
 To view options for this initial setup, run
 ```sh
