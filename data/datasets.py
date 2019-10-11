@@ -1985,11 +1985,11 @@ class CRU(Dataset):
             # about the measurement stations, the files have to be handled
             # individually so that we can keep track of which stn cube
             # belongs to which data cube.
-            self.cubes = iris.load(os.path.join(self.dir, "*.nc"))
+            raw_cubes = iris.load(os.path.join(self.dir, "*.nc"))
 
         # TODO: For now, remove the 'stn' cubes (see above).
         self.cubes = iris.cube.CubeList(
-            [cube for cube in self.cubes if cube.name() != "stn"]
+            [cube for cube in raw_cubes if cube.name() != "stn"]
         )
 
         # Fix units for cloud cover.
