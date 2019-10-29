@@ -28,7 +28,7 @@ import warnings
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from copy import copy, deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 
 import cf_units
@@ -724,7 +724,7 @@ class Dataset(ABC):
     # dataset uses these consistently (if defining custom date coordinates).
     calendar = "gregorian"
     time_unit_str = "days since 1970-01-01 00:00:00"
-    time_unit = cf_units.Unit(time_unit_str, calendar="gregorian")
+    time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
 
     _pretty = None
     # Override the `pretty_variable_names` dictionary in each class where bespoke
@@ -3229,6 +3229,94 @@ class Liu_VOD(Dataset):
         return self.select_monthly_from_monthly(start, end)
 
 
+class MCD64CMQ_C6(Dataset):
+    _pretty = "MCD64CMQ C6"
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, "MCD64CMQ_C6")
+
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
+        filenames = glob.glob(os.path.join(self.dir, "*MQ*.hdf"))
+        filenames.sort()  # increasing months & years
+
+        datetimes = []
+        data = []
+
+        for f in filenames:
+            hdf = SD(f, SDC.READ)
+            # TODO: Use 'QA' and 'UnmappedFraction' datasets (see hdf.datasets()).
+
+            burned_area = hdf.select("BurnedArea")
+
+            split_f = os.path.split(f)[1].split(".")[1][1:]
+            year = int(split_f[:4])
+            day = int(split_f[4:])
+
+            date = datetime(year, 1, 1) + timedelta(day - 1)
+
+            assert 2000 <= date.year <= 2030
+            assert 0 < date.month < 13
+
+            datetimes.append(date)
+            data.append(
+                burned_area[:][np.newaxis].astype("float64")
+                # Scale factor from MODIS_C6_BA_User_Guide_1.2, August 2018, to
+                # yield burnt area in hectares.
+                * 0.01
+            )
+
+        data = np.vstack(data)
+
+        time_coord = iris.coords.DimCoord(
+            [
+                cf_units.date2num(dt, self.time_unit_str, self.calendar)
+                for dt in datetimes
+            ],
+            standard_name="time",
+            units=self.time_unit,
+        )
+
+        latitudes = iris.coords.DimCoord(
+            get_centres(np.linspace(90, -90, 721)),
+            standard_name="latitude",
+            units="degrees",
+        )
+        longitudes = iris.coords.DimCoord(
+            get_centres(np.linspace(-180, 180, 1441)),
+            standard_name="longitude",
+            units="degrees",
+        )
+
+        latitudes.guess_bounds()
+        longitudes.guess_bounds()
+
+        burned_area_cube = iris.cube.Cube(
+            data,
+            long_name="Burned Area",
+            dim_coords_and_dims=[(time_coord, 0), (latitudes, 1), (longitudes, 2)],
+        )
+
+        # Normalise using the grid cell areas.
+        # NOTE: Some burned area percentages may be above 1!
+        burned_area_cube.data /= iris.analysis.cartography.area_weights(
+            burned_area_cube
+        )
+
+        burned_area_cube.units = cf_units.Unit("percent")
+
+        self.cubes = iris.cube.CubeList([burned_area_cube])
+        self.write_cache()
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
 class MOD15A2H_LAI_fPAR(Dataset):
     _pretty = "MOD15A2H"
     pretty_variable_names = {
@@ -3495,3 +3583,4 @@ def dataset_times(datasets=None, dataset_names=None):
         )
 
     return min_time, max_time, times_df
+
