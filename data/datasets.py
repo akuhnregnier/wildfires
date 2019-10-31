@@ -3612,4 +3612,3 @@ def dataset_times(datasets=None, dataset_names=None, lat_lon=False):
         )
 
     return min_time, max_time, times_df
-
