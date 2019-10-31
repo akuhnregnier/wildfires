@@ -156,10 +156,6 @@ def main():
 
     if args.skip_all:
         return
-    if not args.skip_pre_commit:
-        if run(("pre-commit", "install")).returncode:
-            raise RuntimeError("pre-commit installation failed.")
-
     if not args.skip_nbstripout:
         code_sum = 0
         code_sum += run(
@@ -172,6 +168,9 @@ def main():
         code_sum += run(
             ("git", "config", "diff.ipynb.textconv", "nbstripout-fast -t")
         ).returncode
+    if not args.skip_pre_commit:
+        if run(("pre-commit", "install")).returncode:
+            raise RuntimeError("pre-commit installation failed.")
 
 
 if __name__ == "__main__":
