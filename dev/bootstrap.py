@@ -163,14 +163,14 @@ def main():
     if not args.skip_nbstripout:
         code_sum = 0
         code_sum += run(
-            ("git", "config", "filter.nbstripout.clean", "nbstripout")
+            ("git", "config", "filter.nbstripout.clean", "nbstripout-fast")
         ).returncode
         code_sum += run(("git", "config", "filter.nbstripout.smudge", "cat")).returncode
         code_sum += run(
             ("git", "config", "filter.nbstripout.required", "true")
         ).returncode
         code_sum += run(
-            ("git", "config", "diff.ipynb.textconv", "nbstripout -t")
+            ("git", "config", "diff.ipynb.textconv", "nbstripout-fast -t")
         ).returncode
 
 

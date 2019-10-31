@@ -55,6 +55,7 @@ dependencies:
   - tqdm
   - pip:
     - https://github.com/akuhnregnier/clean_ipynb/archive/own-working.zip
+    - https://github.com/akuhnregnier/jupyter-notebook-tools/archive/master.zip
     - jupyterlab-code-formatter
     - logging-tree
     - neovim
