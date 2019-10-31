@@ -138,10 +138,14 @@ def main():
                 ),
             )
         )
-        assert len(possible_versions) == 1, "There should only be 1 matching version."
+        assert (
+            len(possible_versions) > 0
+        ), "There should be 1 (or more) matching version(s)."
 
         # Activate the new environment using the 'PYENV_VERSION' environment variable.
-        os.environ["PYENV_VERSION"] = possible_versions[0]
+        new_pyenv_version = max(possible_versions, key=lambda s: len(s))
+        print(f"Activating internally: {new_pyenv_version}")
+        os.environ["PYENV_VERSION"] = new_pyenv_version
 
         # possible_versions[0] should be the same as $PYENV_VERSION by this point.
         env_activate_instructions = (
