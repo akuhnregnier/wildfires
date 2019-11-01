@@ -2474,13 +2474,13 @@ class GFEDv4(Dataset):
             dim_coords_and_dims=[(time_coord, 0), (latitudes, 1), (longitudes, 2)],
         )
 
-        # Normalise using the areas, divide by 10000 to convert from m2 to
-        # hectares (the burned areas are in hectares originally).
-        # NOTE: Some burned area percentages may be above 1!
+        # Normalise using the grid cell areas, divide by 10000 to convert the scaling
+        # factors from m2 to hectares (the burned areas are in hectares originally).
+        # NOTE: Some burned area fractions may be above 1!
         burned_area_cube.data /= (
             iris.analysis.cartography.area_weights(burned_area_cube) / 10000
         )
-        burned_area_cube.units = cf_units.Unit("percent")
+        burned_area_cube.units = cf_units.Unit(1)
 
         self.cubes = iris.cube.CubeList([burned_area_cube])
         self.write_cache()
@@ -2577,7 +2577,7 @@ class GFEDv4s(Dataset):
             ]
         )
 
-        self.cubes[0].units = cf_units.Unit("percent")
+        self.cubes[0].units = cf_units.Unit(1)
         self.cubes[0].var_name = "Burnt_Area"
         self.write_cache()
 
@@ -3320,13 +3320,14 @@ class MCD64CMQ_C6(Dataset):
             dim_coords_and_dims=[(time_coord, 0), (latitudes, 1), (longitudes, 2)],
         )
 
-        # Normalise using the grid cell areas.
-        # NOTE: Some burned area percentages may be above 1!
-        burned_area_cube.data /= iris.analysis.cartography.area_weights(
-            burned_area_cube
+        # Normalise using the grid cell areas, divide by 10000 to convert the scaling
+        # factors from m2 to hectares (the burned areas are in hectares originally).
+        # NOTE: Some burned area fractions may be above 1!
+        burned_area_cube.data /= (
+            iris.analysis.cartography.area_weights(burned_area_cube) / 10000
         )
 
-        burned_area_cube.units = cf_units.Unit("percent")
+        burned_area_cube.units = cf_units.Unit(1)
 
         self.cubes = iris.cube.CubeList([burned_area_cube])
         self.write_cache()
