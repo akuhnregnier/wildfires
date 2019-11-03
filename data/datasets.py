@@ -45,11 +45,11 @@ import scipy.ndimage
 from dateutil.relativedelta import relativedelta
 from git import Repo
 from iris.time import PartialDateTime
+from joblib import Memory, Parallel, delayed
 from numpy.testing import assert_allclose
 from pyhdf.SD import SD, SDC
 from tqdm import tqdm
 
-from joblib import Memory, Parallel, delayed
 from wildfires.analysis.processing import fill_cube
 from wildfires.joblib.caching import CodeObj, wrap_decorator
 from wildfires.joblib.iris_backend import register_backend
@@ -98,6 +98,31 @@ def homogenise_cube_attributes(cubes):
 
     for cube in cubes:
         cube.attributes = common_values
+
+
+def monthly_average_in_dir(directory):
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=((r".*'vod' invalid units 'unitless'.*"))
+        )
+        warnings.filterwarnings(
+            "ignore", message=((r".*'calendar' is not a permitted attribute.*"))
+        )
+        raw_cubes = iris.load(os.path.join(directory, "*.nc"))
+        raw_cubes = iris.cube.CubeList(
+            [
+                cube
+                for cube in raw_cubes
+                if "vegetation optical depth" in cube.name().lower()
+            ]
+        )
+        raw_cubes = raw_cubes.concatenate()
+        assert len(raw_cubes) == 1
+        raw_cube = raw_cubes[0]
+        iris.coord_categorisation.add_month_number(raw_cube, "time")
+        iris.coord_categorisation.add_year(raw_cube, "time")
+
+    return raw_cube.aggregated_by(["month_number", "year"], iris.analysis.MEAN)
 
 
 @wrap_decorator
@@ -2240,7 +2265,6 @@ class Copernicus_SWI(Dataset):
 
 
 class CRU(Dataset):
-
     _pretty = "CRU"
 
     def __init__(self):
@@ -3655,31 +3679,6 @@ class Thurner_AGB(Dataset):
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
     ):
         return self.broadcast_static_data(start, end)
-
-
-def monthly_average_in_dir(directory):
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", message=((r".*'vod' invalid units 'unitless'.*"))
-        )
-        warnings.filterwarnings(
-            "ignore", message=((r".*'calendar' is not a permitted attribute.*"))
-        )
-        raw_cubes = iris.load(os.path.join(directory, "*.nc"))
-        raw_cubes = iris.cube.CubeList(
-            [
-                cube
-                for cube in raw_cubes
-                if "vegetation optical depth" in cube.name().lower()
-            ]
-        )
-        raw_cubes = raw_cubes.concatenate()
-        assert len(raw_cubes) == 1
-        raw_cube = raw_cubes[0]
-        iris.coord_categorisation.add_month_number(raw_cube, "time")
-        iris.coord_categorisation.add_year(raw_cube, "time")
-
-    return raw_cube.aggregated_by(["month_number", "year"], iris.analysis.MEAN)
 
 
 class VODCA(Dataset):

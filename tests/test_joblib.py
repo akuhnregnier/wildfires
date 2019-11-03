@@ -7,8 +7,8 @@ import cf_units
 import iris
 import iris.coord_categorisation
 import numpy as np
-
 from joblib import Memory
+
 from wildfires.data.datasets import dummy_lat_lon_cube
 from wildfires.joblib.iris_backend import register_backend
 

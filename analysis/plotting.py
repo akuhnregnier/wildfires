@@ -242,6 +242,8 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     vmin = min((np.min(ba_predicted), np.min(ba_data)))
     vmax = max((np.max(ba_predicted), np.max(ba_data)))
 
+    boundaries = [1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1]
+
     # Plotting predicted.
     fig = cube_plotting(
         ba_predicted,
@@ -253,8 +255,8 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
         vmin=vmin,
         vmax=vmax,
         min_edge=vmin,
-        extend="neither",
-        boundaries=None,
+        extend="min",
+        boundaries=boundaries,
     )
     figs.append(fig)
 
@@ -269,8 +271,8 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
         vmin=vmin,
         vmax=vmax,
         min_edge=vmin,
-        extend="neither",
-        boundaries=None,
+        extend="min",
+        boundaries=boundaries,
     )
     figs.append(fig)
 
@@ -281,12 +283,17 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
 
     perc_diffs = (ba_data - ba_predicted) / ba_data
 
+    diff_boundaries = [-1e3, -1e0, -1e-1, -1e-2, 0, 1e-1, 5e-1, 1e0]
+
     fig = cube_plotting(
         perc_diffs,
         cmap="brewer_RdYlBu_11_r",
         title=None,
         coastline_kwargs={"linewidth": coast_linewidth},
         log=True,
+        boundaries=diff_boundaries,
+        extend="min" if np.max(perc_diffs) <= max(diff_boundaries) else "both",
+        label="(Observed - Predicted) / Observed",
     )
     figs.append(fig)
     return figs
@@ -614,6 +621,8 @@ def cube_plotting(
         )
 
     cube = cube.copy()
+    if average_first_coord and len(cube.shape) == 3:
+        cube = cube.collapsed(cube.coords()[0], iris.analysis.MEAN)
 
     if ax is None:
         fig = plt.figure()

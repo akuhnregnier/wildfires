@@ -413,7 +413,8 @@ if __name__ == "__main__":
     # General setup.
     logging.config.dictConfig(LOGGING)
 
-    FigureSaver.directory = "~/tmp/to_send"
+    FigureSaver.directory = os.path.expanduser(os.path.join("~", "tmp", "to_send"))
+    os.makedirs(FigureSaver.directory, exist_ok=True)
     FigureSaver.debug = True
 
     # TODO: Plotting setup in a more rigorous manner.
@@ -427,16 +428,17 @@ if __name__ == "__main__":
 
     # Creation of new variables.
     transformations = {
-        "Temperature Range": lambda exog_data: (
-            exog_data["Max Temp"] - exog_data["Min Temp"]
-        )
+        "Temp Range": lambda exog_data: (exog_data["Max Temp"] - exog_data["Min Temp"])
     }
     # Variables to be deleted after the aforementioned transformations.
     deletions = ("Min Temp",)
 
     # Carry out transformations, replacing old variables in the process.
-    log_var_names = ["Temperature Range", "Dry Days", "Dry Day Period"]
-    sqrt_var_names = ["Lightning Climatology", "popd"]
+    log_var_names = ["Temp Range", "Dry Day Period"]
+    sqrt_var_names = [
+        # "Lightning Climatology",
+        "popd"
+    ]
 
     # Dataset selection.
     # selection = get_all_datasets(ignore_names=IGNORED_DATASETS)
@@ -452,8 +454,7 @@ if __name__ == "__main__":
             GFEDv4(),
             GlobFluo_SIF(),
             HYDE(),
-            LIS_OTD_lightning_climatology(),
-            Liu_VOD(),
+            # LIS_OTD_lightning_climatology(),
             MOD15A2H_LAI_fPAR(),
             VODCA(),
         )
@@ -469,13 +470,13 @@ if __name__ == "__main__":
             "dry_day_period",
             "ShrubAll",
             "TreeAll",
-            "pftBare",
+            # "pftBare",
             "pftCrop",
             "pftHerb",
             "monthly burned area",
             "SIF",
             "popd",
-            "Combined Flash Rate Monthly Climatology",
+            # "Combined Flash Rate Monthly Climatology",
             "Fraction of Absorbed Photosynthetically Active Radiation",
             "Leaf Area Index",
             "Vegetation optical depth Ku-band (18.7 GHz - 19.35 GHz)",
@@ -518,9 +519,9 @@ if __name__ == "__main__":
             log=True,
             label="Burnt Area Fraction",
             title=None,
-            extend="neither",
+            extend="min",
             coastline_kwargs={"linewidth": normal_coast_linewidth},
-            boundaries=None,
+            boundaries=[1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1],
         )
 
     cube = masked_datasets.select_variables("AGBtree", inplace=False).cube

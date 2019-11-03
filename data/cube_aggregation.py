@@ -21,9 +21,9 @@ from pprint import pformat, pprint
 import iris
 import iris.coord_categorisation
 import numpy as np
+from joblib import Memory, Parallel, delayed
 
 import wildfires.data.datasets as wildfire_datasets
-from joblib import Memory, Parallel, delayed
 from wildfires.data.datasets import (
     DATA_DIR,
     data_is_available,
