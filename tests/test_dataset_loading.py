@@ -7,10 +7,13 @@ from wildfires.data.datasets import (
     CHELSA,
     CRU,
     HYDE,
+    MCD64CMQ_C6,
     VODCA,
     AvitabileAGB,
     AvitabileThurnerAGB,
     CarvalhaisGPP,
+    CCI_BurnedArea_MERIS_4_1,
+    CCI_BurnedArea_MODIS_5_1,
     Copernicus_SWI,
     Dataset,
     ERA5_CAPEPrecip,
@@ -63,6 +66,28 @@ def test_AvitabileThurnerAGB():
 def test_CarvalhaisGPP():
     try:
         inst = CarvalhaisGPP()
+    except NotImplementedError:
+        return
+    assert isinstance(inst, Dataset)
+
+
+@data_availability
+def test_CCI_BurnedArea_MERIS_4_1():
+    try:
+        inst = CCI_BurnedArea_MERIS_4_1()
+        assert isinstance(inst.vegetation_class_names, list)
+        assert len(inst.vegetation_class_names) == 18
+    except NotImplementedError:
+        return
+    assert isinstance(inst, Dataset)
+
+
+@data_availability
+def test_CCI_BurnedArea_MODIS_5_1():
+    try:
+        inst = CCI_BurnedArea_MODIS_5_1()
+        assert isinstance(inst.vegetation_class_names, list)
+        assert len(inst.vegetation_class_names) == 18
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
@@ -252,6 +277,15 @@ def test_LIS_OTD_lightning_time_series():
 def test_Liu_VOD():
     try:
         inst = Liu_VOD()
+    except NotImplementedError:
+        return
+    assert isinstance(inst, Dataset)
+
+
+@data_availability
+def test_MCD64CMQ_C6():
+    try:
+        inst = MCD64CMQ_C6()
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)

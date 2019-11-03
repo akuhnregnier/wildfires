@@ -83,6 +83,23 @@ iris_memory = Memory(
 )
 
 
+def homogenise_cube_attributes(cubes):
+    """Ensure all given cubes have compatible attributes in-place."""
+    attribute_list = [cube.attributes for cube in cubes]
+    common_values = attribute_list[0].copy()
+
+    for attributes in attribute_list[1:]:
+        shared_keys = set(common_values).intersection(set(attributes))
+        common_values = dict(
+            (key, common_values[key])
+            for key in shared_keys
+            if common_values[key] == attributes[key]
+        )
+
+    for cube in cubes:
+        cube.attributes = common_values
+
+
 @wrap_decorator
 def dataset_cache(func, iris_memory=iris_memory):
     # NOTE: There is a known bug preventing joblib from pickling numpy MaskedArray!
@@ -872,13 +889,19 @@ class Dataset(ABC):
         for cube in self.__cubes:
             n_dim = len(cube.shape)
             coord_names = []
-            if n_dim == 2:
+            if (
+                hasattr(self, "special_coord_cubes")
+                and cube.name() in self.special_coord_cubes
+            ):
+                coord_names.extend(self.special_coord_cubes[cube.name()])
+            elif n_dim == 2:
                 coord_names.extend(("latitude", "longitude"))
             elif n_dim == 3:
                 coord_names.extend(("time", "latitude", "longitude"))
             else:
                 warnings.warn(
-                    f"\n{cube}\nin '{type(self)}' at '{id(self)}' has {n_dim} axes."
+                    f"\n{cube}\nin '{type(self)}' at '{id(self)}' has {n_dim} axes "
+                    "with unexpected coordinate names."
                 )
 
             for coord_name in coord_names:
@@ -1510,6 +1533,234 @@ class CarvalhaisGPP(Dataset):
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
     ):
         return self.broadcast_static_data(start, end)
+
+
+class CCI_BurnedArea_MERIS_4_1(Dataset):
+    _pretty = "CCI MERIS 4.1 Burned Area"
+    special_coord_cubes = {
+        "vegetation class name": ["vegetation_class"],
+        "burned area in vegetation class": [
+            "time",
+            "vegetation_class",
+            "latitude",
+            "longitude",
+        ],
+    }
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, type(self).__name__)
+
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
+        cubes = iris.cube.CubeList()
+        for f in tqdm(
+            glob.glob(os.path.join(self.dir, "**", "*.nc"), recursive=True),
+            desc="Loading cubes",
+        ):
+            cubes.extend(iris.load(f))
+
+        named_cubes = dict(
+            [
+                (var_name, cubes.extract(iris.Constraint(var_name)),)
+                for var_name in set([cube.name() for cube in cubes])
+            ]
+        )
+
+        for var_name, var_cubes in tqdm(
+            named_cubes.items(), desc="Homogenising cube attributes"
+        ):
+            # TODO: Fuse some of the discarded attributes, like the time coverage.
+            homogenise_cube_attributes(var_cubes)
+            var_cube = var_cubes[0]
+            assert all(
+                var_cube.is_compatible(var_cubes[i]) for i in range(1, len(var_cubes))
+            ), "Should be able to concatenate cubes now."
+
+            if var_name == "vegetation class name":
+                # All cubes are the same (except for isolated metadata, like timing
+                # information) so we only deal with one cube.
+
+                # Convert '|S1' dtype to 'u1' ('uint8') dtype to avoid errors during storage.
+                # Replace b'' placeholder values with b' ' to enable usage of `ord'.
+                var_cube.data.data[var_cube.data.mask] = b" "
+
+                int_veg_data = np.asarray(
+                    np.vectorize(ord)(var_cube.data.data), dtype="u1"
+                )
+                var_cube.data = np.ma.MaskedArray(
+                    int_veg_data, mask=var_cube.data.mask, dtype="u1", fill_value=32
+                )
+                # NOTE: Figure out why the masked data, the mask itself, and the fill
+                # value are modified when saving the cube with the data created above.
+
+                named_cubes[var_name] = iris.cube.CubeList([var_cube])
+            else:
+                # The time bounds seem to be wrong in the original data, so remove them.
+                for cube in var_cubes:
+                    cube.coord("time").bounds = None
+
+        raw_cubes = iris.cube.CubeList(
+            [var_cubes.concatenate_cube() for var_cubes in named_cubes.values()]
+        )
+
+        for i, cube in enumerate(tqdm(raw_cubes, desc="Normalising cubes")):
+            if cube.name() in [
+                "burned_area",
+                "burned area in vegetation class",
+                "standard error of the estimation of burned area",
+            ]:
+                # Normalise using the grid cell areas
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore", message=(("Using DEFAULT_SPHERICAL_EARTH_RADIUS."))
+                    )
+                    raw_cubes[i].data /= iris.analysis.cartography.area_weights(
+                        raw_cubes[i]
+                    )
+                raw_cubes[i].units = cf_units.Unit(1)
+
+            # Rewrite coordinate `long_name' values to conform to netCDF variable name
+            # standards to ensure compatibility with the coordinate `var_name'
+            # requirements.
+            if cube.name() == "burned area in vegetation class":
+                cube.coords()[1].long_name = "vegetation_class"
+            elif cube.name() == "vegetation class name":
+                cube.coords()[0].long_name = "vegetation_class"
+
+        self.cubes = raw_cubes
+        self.write_cache()
+
+    @property
+    def vegetation_class_names(self):
+        vegetation_cube = self.cubes.extract_strict(
+            iris.Constraint("vegetation class name")
+        )
+        # Remove artefacts of saving the cube. See note above.
+        vegetation_class_names = [
+            "".join(class_name_data).strip().strip(chr(255))
+            for class_name_data in np.vectorize(chr)(vegetation_cube.data.data)
+        ]
+        return vegetation_class_names
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
+class CCI_BurnedArea_MODIS_5_1(Dataset):
+    _pretty = "CCI MODIS 5.1 Burned Area"
+    special_coord_cubes = {
+        "vegetation class name": ["vegetation_class"],
+        "burned area in vegetation class": [
+            "time",
+            "vegetation_class",
+            "latitude",
+            "longitude",
+        ],
+    }
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, type(self).__name__)
+
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
+        cubes = iris.cube.CubeList()
+        for f in tqdm(
+            glob.glob(os.path.join(self.dir, "**", "*.nc"), recursive=True),
+            desc="Loading cubes",
+        ):
+            cubes.extend(iris.load(f))
+
+        named_cubes = dict(
+            [
+                (var_name, cubes.extract(iris.Constraint(var_name)),)
+                for var_name in set([cube.name() for cube in cubes])
+            ]
+        )
+
+        for var_name, var_cubes in tqdm(
+            named_cubes.items(), desc="Homogenising cube attributes"
+        ):
+            # TODO: Fuse some of the discarded attributes, like the time coverage.
+            homogenise_cube_attributes(var_cubes)
+            var_cube = var_cubes[0]
+            assert all(
+                var_cube.is_compatible(var_cubes[i]) for i in range(1, len(var_cubes))
+            ), "Should be able to concatenate cubes now."
+
+            if var_name == "vegetation class name":
+                # All cubes are the same (except for isolated metadata, like timing
+                # information) so we only deal with one cube.
+
+                # Convert '|S1' dtype to 'u1' ('uint8') dtype to avoid errors during storage.
+                # Replace b'' placeholder values with b' ' to enable usage of `ord'.
+                var_cube.data.data[var_cube.data.mask] = b" "
+
+                int_veg_data = np.asarray(
+                    np.vectorize(ord)(var_cube.data.data), dtype="u1"
+                )
+                var_cube.data = np.ma.MaskedArray(
+                    int_veg_data, mask=var_cube.data.mask, dtype="u1", fill_value=32
+                )
+                # NOTE: Figure out why the masked data, the mask itself, and the fill
+                # value are modified when saving the cube with the data created above.
+
+                named_cubes[var_name] = iris.cube.CubeList([var_cube])
+
+        raw_cubes = iris.cube.CubeList(
+            [var_cubes.concatenate_cube() for var_cubes in named_cubes.values()]
+        )
+
+        for i, cube in enumerate(tqdm(raw_cubes, desc="Normalising cubes")):
+            if cube.name() in [
+                "burned_area",
+                "burned area in vegetation class",
+                "standard error of the estimation of burned area",
+            ]:
+                # Normalise using the grid cell areas
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore", message=(("Using DEFAULT_SPHERICAL_EARTH_RADIUS."))
+                    )
+                    raw_cubes[i].data /= iris.analysis.cartography.area_weights(
+                        raw_cubes[i]
+                    )
+                raw_cubes[i].units = cf_units.Unit(1)
+
+            # Rewrite coordinate `long_name' values to conform to netCDF variable name
+            # standards to ensure compatibility with the coordinate `var_name'
+            # requirements.
+            if cube.name() == "burned area in vegetation class":
+                cube.coords()[1].long_name = "vegetation_class"
+            elif cube.name() == "vegetation class name":
+                cube.coords()[0].long_name = "vegetation_class"
+
+        self.cubes = raw_cubes
+        self.write_cache()
+
+    @property
+    def vegetation_class_names(self):
+        vegetation_cube = self.cubes.extract_strict(
+            iris.Constraint("vegetation class name")
+        )
+        # Remove artefacts of saving the cube. See note above.
+        vegetation_class_names = [
+            "".join(class_name_data).strip().strip(chr(255))
+            for class_name_data in np.vectorize(chr)(vegetation_cube.data.data)
+        ]
+        return vegetation_class_names
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
 
 
 class CHELSA(Dataset):
