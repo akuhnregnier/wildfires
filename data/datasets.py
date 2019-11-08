@@ -1561,7 +1561,8 @@ class CarvalhaisGPP(Dataset):
 
 
 class CCI_BurnedArea_MERIS_4_1(Dataset):
-    _pretty = "CCI MERIS 4.1 Burned Area"
+    _pretty = "CCI MERIS 4.1"
+    pretty_variable_names = {"burned_area": "CCI MERIS BA"}
     special_coord_cubes = {
         "vegetation class name": ["vegetation_class"],
         "burned area in vegetation class": [
@@ -1671,13 +1672,43 @@ class CCI_BurnedArea_MERIS_4_1(Dataset):
         return vegetation_class_names
 
     def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+        self,
+        start=PartialDateTime(2000, 1),
+        end=PartialDateTime(2000, 12),
+        inclusive_lower=True,
+        inclusive_upper=True,
     ):
-        return self.select_monthly_from_monthly(start, end)
+        """Transform the data from two samples a month to having just one."""
+        self.date_order_check(start, end)
+
+        lower_op = operator.ge if inclusive_lower else operator.gt
+        upper_op = operator.le if inclusive_upper else operator.lt
+
+        end = PartialDateTime(end.year, end.month)
+        start = PartialDateTime(start.year, start.month)
+
+        def constraint_func(t):
+            return lower_op(t, start) and upper_op(t, end)
+
+        monthly_cubes = iris.cube.CubeList()
+        for cube in self.cubes.extract(
+            iris.Constraint(time=lambda t: constraint_func(t.point))
+        ):
+            try:
+                iris.coord_categorisation.add_month_number(cube, "time")
+                iris.coord_categorisation.add_year(cube, "time")
+                monthly_cubes.append(
+                    cube.aggregated_by(["month_number", "year"], iris.analysis.MEAN)
+                )
+            except iris.exceptions.CoordinateNotFoundError:
+                monthly_cubes.append(cube)
+
+        return monthly_cubes
 
 
 class CCI_BurnedArea_MODIS_5_1(Dataset):
-    _pretty = "CCI MODIS 5.1 Burned Area"
+    _pretty = "CCI MODIS 5.1"
+    pretty_variable_names = {"burned_area": "CCI MODIS BA"}
     special_coord_cubes = {
         "vegetation class name": ["vegetation_class"],
         "burned area in vegetation class": [
@@ -2678,6 +2709,7 @@ class GFEDv4(Dataset):
     """
 
     _pretty = "GFED4"
+    pretty_variable_names = {"monthly burned area": "GFED4 BA"}
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "gfed4", "data")
@@ -2772,6 +2804,7 @@ class GFEDv4s(Dataset):
     """
 
     _pretty = "GFED4s"
+    pretty_variable_names = {"Burnt_Area": "GFED4s BA"}
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "gfed4", "data")
@@ -2791,7 +2824,7 @@ class GFEDv4s(Dataset):
         for f in filenames:
             year = int(f[-9:-5])
             years.append(year)
-            container = h5py.File(f)
+            container = h5py.File(f, mode="r")
 
             for month_str in [format(m, "02d") for m in range(1, 13)]:
                 data.append(
@@ -3526,6 +3559,7 @@ class Liu_VOD(Dataset):
 
 class MCD64CMQ_C6(Dataset):
     _pretty = "MCD64CMQ C6"
+    pretty_variable_names = {"Burned Area": "MCD64CMQ BA"}
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "MCD64CMQ_C6")
