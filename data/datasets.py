@@ -547,7 +547,7 @@ def translate_longitudes(lons, sort=True):
     """Go from [-180, 180] to [0, 360] domain."""
     transformed = lons % 360
     if sort:
-        assert len(np.unique(np.diff(transformed))) < 3, (
+        assert len(np.unique(np.round(np.diff(transformed), 10))) < 3, (
             "Expecting at most 2 unique differences, one for the regular interval, "
             "another for the jump at 0° in case of the [-180, 180] domain."
         )
