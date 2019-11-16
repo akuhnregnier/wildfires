@@ -93,7 +93,7 @@ def datasets_cache(func):
         original_selection = orig_args[0]
         string_representation = "\n".join(
             dataset._shallow for dataset in original_selection.datasets
-        ) + str(original_selection.get("all", "raw"))
+        ) + str(original_selection.state("all", "raw"))
 
         # Ignore instances with a __call__ method here which also wouldn't necessarily
         # have a __name__ attribute that could be used for sorting!
@@ -204,6 +204,9 @@ class Datasets:
     A raw and pretty name is also stored for each dataset. These names are guaranteed
     to be unique amongst all raw and pretty dataset names in the selection.
 
+    When datasets are added like `Datasets1 + Datasets2`, a deep copy is made. This is
+    not the case when `Datasets1 += Datasets2` is used.
+
     Examples:
         >>> from .datasets import HYDE, data_is_available
         >>> instance_sel = Datasets()
@@ -227,15 +230,13 @@ class Datasets:
 
     def __eq__(self, other):
         if isinstance(other, Datasets):
-            return sorted(self.datasets, key=lambda x: x.name) == sorted(
-                other.datasets, key=lambda x: x.name
+            return sorted(self, key=lambda x: x.name) == sorted(
+                other, key=lambda x: x.name
             )
         return NotImplemented
 
     def __add__(self, other):
-        if isinstance(other, Datasets):
-            other = other.datasets
-        elif isinstance(other, wildfire_datasets.Dataset):
+        if isinstance(other, wildfire_datasets.Dataset):
             other = (other,)
 
         new_datasets = deepcopy(self)
@@ -246,9 +247,7 @@ class Datasets:
     __radd__ = __add__
 
     def __iadd__(self, other):
-        if isinstance(other, Datasets):
-            other = other.datasets
-        elif isinstance(other, wildfire_datasets.Dataset):
+        if isinstance(other, wildfire_datasets.Dataset):
             other = (other,)
 
         for dataset in other:
@@ -256,7 +255,7 @@ class Datasets:
         return self
 
     def __str__(self):
-        return pformat(self.get("all", "pretty"))
+        return pformat(self.state("all", "pretty"))
 
     def __repr__(self):
         return pformat(self.datasets)
@@ -290,12 +289,12 @@ class Datasets:
     @property
     def dataset(self):
         """Convenience method to access a single stored dataset."""
-        if len(self.datasets) != 1:
+        if len(self) != 1:
             raise ValueError(
-                f"Expected 1 Dataset instance, but found {len(self.datasets)} "
+                f"Expected 1 Dataset instance, but found {len(self)} "
                 "Dataset instances."
             )
-        return self.datasets[0]
+        return self[0]
 
     def copy(self, deep=False):
         """Return a copy of the dataset collection.
@@ -324,79 +323,37 @@ class Datasets:
     def raw_variable_names(self):
         """Return a tuple of all raw variable names."""
         return tuple(
-            name for names in self.get("all", "raw").values() for name in names
+            name for names in self.state("all", "raw").values() for name in names
         )
 
     @property
     def pretty_variable_names(self):
         """Return a tuple of all pretty variable names."""
         return tuple(
-            name for names in self.get("all", "pretty").values() for name in names
+            name for names in self.state("all", "pretty").values() for name in names
         )
 
     @property
     def raw_dataset_names(self):
         """Return a tuple of all raw dataset names."""
-        return tuple(self.get("all", "raw"))
+        return tuple(self.state("all", "raw"))
 
     @property
     def pretty_dataset_names(self):
         """Return a tuple of all pretty dataset names."""
-        return tuple(self.get("all", "pretty"))
+        return tuple(self.state("all", "pretty"))
 
     @property
     def cubes(self):
         """Return all cubes."""
-        return iris.cube.CubeList(
-            cube for dataset in self.datasets for cube in dataset.cubes
-        )
+        return iris.cube.CubeList(cube for dataset in self for cube in dataset)
 
     @property
     def cube(self):
         """Return a single cube, if only one cube is stored in the collection."""
         return self.dataset.cube
 
-    def get_index(self, dataset_name, full_index=False):
-        """Get dataset index from a dataset name.
-
-        Args:
-            dataset_name (str): This name may match either the raw or the pretty name.
-            full_index (bool, optional): If False (default), return the integer index
-                of the dataset. Otherwise, return the tuple of dataset names which is
-                used to specify datasets in the dict processing methods
-                dict_remove_variables() and dict_select_variables().
-
-        """
-        if not isinstance(dataset_name, str):
-            dataset_name = dataset_name[0]
-        for dataset in self.datasets:
-            stored_names = dataset.names()
-            if contains(stored_names, dataset_name):
-                if full_index:
-                    return stored_names
-                return self.datasets.index(dataset)
-        raise ValueError("Dataset name '{}' not found.".format(dataset_name))
-
-    def add(self, dataset):
-        """Add a dataset to the database.
-
-        Args:
-            dataset (`Dataset`):
-
-        Raises:
-            ValueError: If the provided dataset matches an existing dataset.
-
-        """
-        for stored_dataset in self.datasets:
-            if set(stored_dataset.names()).intersection(set(dataset.names())):
-                raise ValueError(
-                    "Matching datasets '{}' and '{}'.".format(stored_dataset, dataset)
-                )
-
-        self.datasets.append(dataset)
-        return self
-
-    def get(self, dataset_name="all", variable_format="raw"):
+    def state(self, dataset_name="all", variable_format="raw"):
         """Return a dictionary representation of datasets and variables.
 
         Args:
@@ -416,7 +373,7 @@ class Datasets:
                 therein.
 
         """
-        logger.debug("Get() called with Datasets '{}'".format(id(self)))
+        logger.debug("state() called with Datasets '{}'".format(id(self)))
 
         if dataset_name == "all":
             index = slice(None)
@@ -436,558 +393,29 @@ class Datasets:
 
         return formatted
 
-    def process_datasets(self, selection, names, operation="select"):
-        """Process datasets in `selection` which match `names`.
+    def field_translator(self, name, field):
+        """Translate dataset and variable names into raw names if needed.
 
         Args:
-            selection (`Datasets`): Selection containing datasets to process.
-            names (str or iterable): A name or series of names (dataset_name, ...),
-                for which a match with either raw or pretty names is sufficient.
-            operation (str): If "select", add matching datasets to `selection`. If
-                "remove", remove matching datasets from `selection`.
-
-        Raises:
-            KeyError: If a dataset is not found.
+            name (str): Name to translate.
+            field (str): "dataset", or "variable".
 
         Returns:
-            `Datasets`: `selection` processed using `processing_func`.
-        """
-        if isinstance(names, str):
-            names = (names,)
-        new_datasets = []
-        for search_dataset in names:
-            for stored_dataset in self.datasets:
-                if search_dataset in stored_dataset.names():
-                    if operation == "select":
-                        new_datasets.append(stored_dataset)
-                    elif operation == "remove":
-                        selection.datasets.remove(stored_dataset)
-                    else:
-                        raise ValueError("Invalid operation '{}'".format(operation))
-                    break
-            else:
-                raise KeyError("Dataset '{}' not found.".format(search_dataset))
-
-        if operation == "select":
-            # Do this here since `selection` could be `self` as well.
-            selection.datasets[:] = new_datasets
-        return selection
-
-    def select_datasets(self, names, inplace=True, copy=False):
-        """Return a new `Datasets` containing only datasets matching `names`.
-
-        Args:
-            names (str or iterable): A name or series of names (dataset_name, ...),
-                for which a match with either raw or pretty names is sufficient.
-            inplace (bool, optional): If True (default) modify the selection in-place
-                without creating a copy. The returned selection will be the same
-                selection as the original selection, but without the removed entries.
-                If False, make a copy of the selection (see argument `copy`) before
-                removing entries.
-            copy (bool, optional): Only applies if `inplace` is False. If False
-                (default), the new `Datasets` object will contain references to the
-                same `Dataset` instances and associated cubes as the original. If
-                True, a deep copy will be made which will also copy the underlying
-                data.
-
-        Raises:
-            KeyError: If a dataset is not found.
-
-        Returns:
-            `Datasets`: A copy of a subset of the original selection.
+            (str): Translated name. May be equal to the passed in name.
 
         """
-        if inplace:
-            selection = self
+        if field == "dataset":
+            raw_names = self.raw_dataset_names
+            if name in raw_names:
+                return name
+            return raw_names[self.pretty_dataset_names.index(name)]
+        elif field == "variable":
+            raw_names = self.raw_variable_names
+            if name in raw_names:
+                return name
+            return raw_names[self.pretty_variable_names.index(name)]
         else:
-            selection = self.copy()
-
-        output = self.process_datasets(selection, names, operation="select")
-
-        if copy:
-            return output.copy(deep=True)
-        return output
-
-    def remove_datasets(self, names, inplace=True, copy=False):
-        """Remove datasets not matching `names`.
-
-        Args:
-            names (str or iterable): A name or series of names (dataset_name, ...),
-                for which a match with either raw or pretty names is sufficient.
-            inplace (bool, optional): If True (default) modify the selection in-place
-                without creating a copy. The returned selection will be the same
-                selection as the original selection, but without the removed entries.
-                If False, make a copy of the selection (see argument `copy`) before
-                removing entries.
-            copy (bool, optional): Only applies if `inplace` is False. If False
-                (default), the new `Datasets` object will contain references to the
-                same `Dataset` instances and associated cubes as the original. If
-                True, a deep copy will be made which will also copy the underlying
-                data.
-
-        Raises:
-            KeyError: If a dataset is not found.
-
-        Returns:
-            `Datasets`: A (copy of a) subset of the original selection.
-
-        """
-        if inplace:
-            selection = self
-        else:
-            selection = self.copy()
-
-        output = self.process_datasets(selection, names, operation="remove")
-
-        if copy:
-            return output.copy(deep=True)
-        return output
-
-    @staticmethod
-    def __remove_variable(selection, dataset, cube_name, variable_names=None):
-        """Remove a dataset's cube in-place.
-
-        Selection is carried out exclusively using strings.
-
-        The `variable_names` list is also modified in-place, so it needs to be
-        mutable!
-
-        """
-        if not isinstance(dataset, str):
-            dataset = dataset[0]
-        if not isinstance(cube_name, str):
-            cube_name = cube_name[0]
-        assert isinstance(dataset, str)
-        assert isinstance(cube_name, str)
-
-        logger.debug("Removing variable: '{}'.".format(cube_name))
-
-        if variable_names is None:
-            variable_names = list(selection[dataset].variable_names("raw"))
-
-        index = variable_names.index(cube_name)
-        logger.debug("Removing cube from CubeList at index: {}.".format(index))
-        del selection[dataset].cubes[index]
-        logger.debug("Removing entry from names at index: {}.".format(index))
-        del variable_names[index]
-
-        logger.debug("Finished removing variable: '{}'.".format(cube_name))
-
-    def dict_process_variables(
-        self, selection, search_dict, which="remove", exact=True
-    ):
-        """Modify the selection's matching variable entries using the given function.
-
-        Args:
-            selection (`Datasets`): Selection containing variables to process.
-            search_dict (dict): A dict with form
-                  {dataset_name: (variable_name, ...), ...}, where `dataset_name` and
-                  `variable_name` are of type `str`. This is used to select the
-                  variables to process.
-            which (str): If "remove", remove variables in-place. If "add", add
-                variables.
-            exact (bool, optional): If False, accept partial matches for variable
-                names using `re.search`.
-
-        Returns:
-            `selection` processed using `processing_func`.
-
-        """
-        assert which in {"remove", "add"}
-
-        # Reformat the input dictionary for uniform indexing using dataset name tuples.
-        formatted_values = []
-        for key, value in search_dict.items():
-            formatted_values.append((self.get_index(key, full_index=True), value))
-        search_dict = dict(formatted_values)
-
-        # Build a mutable representation of the current contents.
-        contents = list(map(list, self.get("all", "all").items()))
-        for i in range(len(contents)):
-            contents[i][1] = list(contents[i][1])
-        contents = dict(contents)
-        removal_dict = contents.copy()
-
-        up_to_date_raw = contents.copy()
-        for search_dataset in up_to_date_raw:
-            up_to_date_raw[search_dataset] = [
-                name[0] for name in up_to_date_raw[search_dataset]
-            ]
-
-        # Look for a match for each desired variable.
-        for search_dataset, search_variable in (
-            (search_dataset, search_variable)
-            for search_dataset, search_variables in search_dict.items()
-            for search_variable in search_variables
-        ):
-            logger.debug("{} '{}: {}'.".format(which, search_dataset, search_variable))
-            matches = 0
-            for stored_variable in (
-                stored_variable for stored_variable in contents[search_dataset]
-            ):
-                logger.debug(
-                    "Checking '{}: {}'.".format(search_dataset, stored_variable)
-                )
-                if which == "remove" and contains(
-                    stored_variable, search_variable, exact=exact
-                ):
-                    logger.debug(
-                        "Removing '{}: {}'.".format(search_dataset, stored_variable)
-                    )
-                    self.__remove_variable(
-                        selection,
-                        search_dataset,
-                        stored_variable,
-                        variable_names=up_to_date_raw[search_dataset],
-                    )
-                    # Move on to the next variable.
-                    logger.debug("Searching for next variable.")
-                    break
-                if which == "add":
-                    if contains(stored_variable, search_variable, exact=exact):
-                        logger.debug(
-                            "Adding '{}: {}'.".format(search_dataset, stored_variable)
-                        )
-                        matches += 1
-                        # We want to keep this variable, so we remove it from the
-                        # dictionary which specifies which variables to remove.
-                        removal_dict[search_dataset].remove(stored_variable)
-            else:
-                if which == "remove" or which == "add" and not matches:
-                    raise KeyError(
-                        "Variable '{}' not found for dataset '{}'.".format(
-                            search_variable, search_dataset
-                        )
-                    )
-        if which == "add":
-            return self.dict_process_variables(
-                selection, removal_dict, "remove", exact=exact
-            )
-        if which == "remove":
-            # Remove empty datasets.
-            selection.datasets[:] = [
-                dataset for dataset in selection.datasets if dataset
-            ]
-        return selection
-
-    def dict_select_variables(
-        self, search_dict, exact=True, inplace=True, copy=False, strict=True
-    ):
-        """Return a new `Selection` containing only variables matching `search_dict`.
-
-        Args:
-            search_dict (dict): A dict with form
-                  {dataset_name: (variable_name, ...), ...}, where `dataset_name` and
-                  `variable_name` are of type `str`. This is used to select the
-                  variables to process.
-            exact (bool, optional): If False, accept partial matches for variable
-                names using `re.search`.
-            inplace (bool, optional): If True (default) modify the selection in-place
-                without creating a copy. The returned selection will be the same
-                selection as the original selection, but without the removed entries.
-                If False, make a copy of the selection (see argument `copy`) before
-                removing entries.
-            copy (bool, optional): Only applies if `inplace` is False. If False
-                (default), the new `Datasets` object will contain references to the
-                same `Dataset` instances and associated cubes as the original. If
-                True, a deep copy will be made which will also copy the underlying
-                data.
-            strict (bool, optional): If True (default) expect to select as many
-                variables as given in `search_dict`.
-
-        Raises:
-            KeyError: If a key or value in `search_dict` is not found in the
-                database.
-            ValueError: If strict and if the number of output variables does not match
-                the number of input variables.
-
-        Returns:
-            `Selection`: A copy of a subset of the original selection.
-
-        """
-        n_target_variables = sum(len(variables) for variables in search_dict.values())
-        if inplace:
-            selection = self
-        else:
-            selection = self.copy()
-
-        output = self.dict_process_variables(
-            selection, search_dict, which="add", exact=exact
-        )
-
-        if strict:
-            # Count output cubes.
-            n_output_variables = sum(len(dataset) for dataset in output)
-            if n_target_variables != n_output_variables:
-                raise ValueError(
-                    "Expected to output {} variables, but got {}.".format(
-                        n_target_variables, n_output_variables
-                    )
-                )
-        if copy:
-            return output.copy(deep=True)
-        return output
-
-    def dict_remove_variables(self, search_dict, exact=True, inplace=True, copy=False):
-        """Remove variables matching `search_dict`.
-
-        Cube pruning is performed after removal of entries to remove redundant cubes
-        from dataset instances.
-
-        Args:
-            search_dict (dict): A dict with form
-                  {dataset_name: (variable_name, ...), ...}, where `dataset_name` and
-                  `variable_name` are of type `str`. This is used to select the
-                  variables to process.
-            exact (bool, optional): If False, accept partial matches for variable
-                names using `re.search`.
-            inplace (bool, optional): If True (default) modify the selection in-place
-                without creating a copy. The returned selection will be the same
-                selection as the original selection, but without the removed entries.
-                If False, make a copy of the selection (see argument `copy`) before
-                removing entries.
-            copy (bool, optional): Only applies if `inplace` is False. If False
-                (default), the new `Datasets` object will contain references to the
-                same `Dataset` instances and associated cubes as the original. If
-                True, a deep copy will be made which will also copy the underlying
-                data.
-
-        Raises:
-            KeyError: If a key or value in `search_dict` is not found in the
-                database.
-
-        Returns:
-            `Datasets`: A (copy of a) subset of the original selection.
-
-        """
-        if inplace:
-            selection = self
-        else:
-            selection = self.copy()
-
-        output = self.dict_process_variables(
-            selection, search_dict, "remove", exact=exact
-        )
-
-        if copy:
-            return output.copy(deep=True)
-        return output
-
-    def process_variables(self, selection, names, which="remove", exact=True):
-        """Modify the selection's matching variable entries using the given function.
-
-        Args:
-            selection (`Datasets`): Selection containing variables to process.
-            names (str or iterable): A name or series of names (variable_name, ...),
-                for which a match with either raw or pretty names is sufficient. This
-                is used to determine which variables to process.
-            which (str): If "remove", remove variables in-place. If "add", add
-                variables.
-            exact (bool, optional): If False, accept partial matches for variable
-                names using `re.search`.
-
-        Raises:
-            ValueError: If raw and pretty names are not unique across all stored
-                variable names (raw and pretty) for all datasets. In this case, select
-                variables using a dictionary instead of an iterable.
-            KeyError: If a variable is not found in the database.
-
-        Returns:
-            `Datasets`: `selection` processed using `processing_func`.
-
-        """
-        assert which in {"remove", "add"}
-        logger.debug("Checking for duplicates.")
-        if isinstance(names, str):
-            names = (names,)
-
-        # Build a mutable representation of the current contents.
-        contents = list(map(list, self.get("all", "all").items()))
-        for i in range(len(contents)):
-            contents[i][1] = list(contents[i][1])
-        contents = dict(contents)
-
-        unpacked_datasets_variables = tuple(
-            (dataset[0], variable_name)
-            for dataset, variables in contents.items()
-            for variable_names in variables
-            # Use set() here, since the pretty variable name could be the same as the
-            # raw variable name if no pretty variable has been provided. This would
-            # result in a false positive, as we are only interested in identical names
-            # for different variables.
-            for variable_name in set(variable_names)
-        )
-        all_variable_names = [
-            variable_name
-            for (dataset_name, variable_name) in unpacked_datasets_variables
-        ]
-        n_duplicates = len(all_variable_names) - len(set(all_variable_names))
-        if n_duplicates:
-            duplicated_variables = []
-            duplicated_datasets = []
-            for variable_name in all_variable_names:
-                if (
-                    variable_name not in duplicated_variables
-                    and all_variable_names.count(variable_name) > 1
-                ):
-                    duplicated_variables.append(variable_name)
-                    for dataset_name, comp_variable_name in unpacked_datasets_variables:
-                        if variable_name == comp_variable_name:
-                            duplicated_datasets.append(dataset_name)
-            duplicated_variables = set(duplicated_variables)
-            duplicated_datasets = set(duplicated_datasets)
-            logger.warning("Duplicated variable names: {}".format(duplicated_variables))
-            logger.warning("Duplicated datasets: {}".format(duplicated_datasets))
-            raise ValueError(
-                f"Raw and pretty variable names are not unique ({n_duplicates} "
-                "duplicate(s)). Use dictionaries for selection, or remove some "
-                f"of the datasets '{duplicated_datasets}'."
-            )
-
-        removal_dict = contents.copy()
-
-        # Look for a match for each desired variable.
-        logger.debug("Selecting variables: '{}'.".format(names))
-        for search_variable in names:
-            matches = 0
-            for stored_dataset, stored_variable in (
-                (stored_dataset, stored_variable)
-                for stored_dataset, stored_variables in contents.items()
-                for stored_variable in stored_variables
-            ):
-                # Check against all variables in the dataset.
-                if which == "remove" and contains(
-                    stored_variable, search_variable, exact=exact
-                ):
-                    logger.debug(
-                        "Selecting '{}: {}'.".format(stored_dataset, stored_variable)
-                    )
-                    self.__remove_variable(selection, stored_dataset, stored_variable)
-                    # Move on to the next variable.
-                    break
-                if which == "add":
-                    if contains(stored_variable, search_variable, exact=exact):
-                        matches += 1
-                        # We want to keep this variable, so we remove it from the
-                        # dictionary which specifies which variables to remove.
-                        removal_dict[stored_dataset].remove(stored_variable)
-            else:
-                if which == "remove" or which == "add" and not matches:
-                    raise KeyError("Variable '{}' not found.".format(search_variable))
-
-        if which == "add":
-            return self.dict_process_variables(
-                selection, removal_dict, "remove", exact=exact
-            )
-        if which == "remove":
-            # Remove empty datasets.
-            selection.datasets[:] = [
-                dataset for dataset in selection.datasets if dataset
-            ]
-        return selection
-
-    def select_variables(
-        self, names, exact=True, inplace=True, copy=False, strict=True
-    ):
-        """Return a new `Datasets` containing only variables matching `criteria`.
-
-        Args:
-            names (str or iterable): A name or series of names (variable_name, ...),
-                for which a match with either raw or pretty names is sufficient. This
-                is used to determine which variables to process.
-            exact (bool, optional): If False, accept partial matches for variable
-                names using `re.search`.
-            inplace (bool, optional): If True (default) modify the selection in-place
-                without creating a copy. The returned selection will be the same
-                selection as the original selection, but without the removed entries.
-                If False, make a copy of the selection (see argument `copy`) before
-                removing entries.
-            copy (bool, optional): Only applies if `inplace` is False. If False
-                (default), the new `Datasets` object will contain references to the
-                same `Dataset` instances and associated cubes as the original. If
-                True, a deep copy will be made which will also copy the underlying
-                data.
-            strict (bool, optional): If True (default) expect to select as many
-                variables as given in `search_dict`.
-
-        Raises:
-            ValueError: If raw and pretty names are not unique across all stored
-                variable names (raw and pretty) for all datasets. In this case, select
-                variables using a dictionary instead of an iterable.
-            KeyError: If a variable is not found in the database.
-            ValueError: If strict and if the number of output variables does not match
-                the number of input variables.
-
-        Returns:
-            `Datasets`: A copy of a subset of the original selection.
-
-        """
-        if isinstance(names, str):
-            names = (names,)
-        n_target_variables = len(names)
-        if inplace:
-            selection = self
-        else:
-            selection = self.copy()
-
-        output = self.process_variables(selection, names, "add", exact=exact)
-
-        if strict:
-            # Count output cubes.
-            n_output_variables = sum(len(dataset) for dataset in output)
-            if n_target_variables != n_output_variables:
-                raise ValueError(
-                    "Expected to output {} variables, but got {}.".format(
-                        n_target_variables, n_output_variables
-                    )
-                )
-        if copy:
-            return output.copy(deep=True)
-        return output
-
-    def remove_variables(self, names, exact=True, inplace=True, copy=False):
-        """Return a new `Datasets` without the variables matching `criteria`.
-
-        Cube pruning is performed after removal of entries to remove redundant cubes
-        from dataset instances.
-
-        Args:
-            names (str or iterable): A name or series of names (variable_name, ...),
-                for which a match with either raw or pretty names is sufficient. This
-                is used to determine which variables to process.
-            exact (bool, optional): If False, accept partial matches for variable
-                names using `re.search`.
-            inplace (bool, optional): If True (default) modify the selection in-place
-                without creating a copy. The returned selection will be the same
-                selection as the original selection, but without the removed entries.
-                If False, make a copy of the selection (see argument `copy`) before
-                removing entries.
-            copy (bool, optional): Only applies if `inplace` is False. If False
-                (default), the new `Datasets` object will contain references to the
-                same `Dataset` instances and associated cubes as the original. If
-                True, a deep copy will be made which will also copy the underlying
-                data.
-
-        Raises:
-            ValueError: If raw and pretty names are not unique across all stored
-                variable names (raw and pretty) for all datasets. In this case, select
-                variables using a dictionary instead of an iterable.
-            KeyError: If a variable is not found in the database.
-
-        Returns:
-            `Datasets`: A (copy of a) subset of the original selection.
-
-        """
-        if inplace:
-            selection = self
-        else:
-            selection = self.copy()
-
-        output = self.process_variables(selection, names, "remove", exact=exact)
-
-        if copy:
-            return output.copy(deep=True)
-        return output
+            raise ValueError(f"Unknown field '{field}'.")
 
     def fill(self, *masks, reference_variable="burned.*area"):
         """Fill data gaps in-place.
@@ -1053,13 +481,257 @@ class Datasets:
         return self
 
     def homogenise_masks(self):
-        for dataset in self.datasets:
+        for dataset in self:
             for i in range(len(dataset.cubes)):
                 dataset.cubes[i] = homogenise_cube_mask(dataset.cubes[i])
 
     def show(self, variable_format="all"):
         """Print out a representation of the selection."""
-        pprint(self.get(dataset_name="all", variable_format=variable_format))
+        pprint(self.state(dataset_name="all", variable_format=variable_format))
+
+    def from_state(self, new_state, inplace, copy):
+        """Use a new state dictionary to create a new `Datasets` instance.
+
+        Args:
+            new_state (dict): A dictionary with raw dataset names (keys) and raw
+                variable names (values) specifying the `Datasets` subset.
+            inplace (bool, optional): If True (default) modify the selection in-place
+                without creating a copy. The returned selection will be the same
+                selection as the original selection, but without the removed entries.
+                If False, make a copy of the selection (see argument `copy`) before
+                removing entries.
+            copy (bool, optional): Only applies if `inplace` is False. If False
+                (default), the new `Datasets` object will contain references to the
+                same `Dataset` instances and associated cubes as the original. If
+                True, a deep copy will be made which will also copy the underlying
+                data.
+
+        Returns:
+            `Datasets`: A subset of the original `Datasets` instance.
+
+        """
+        new = self if inplace else self.copy(deep=False)
+
+        # Delete entries from new which are not present in the new_state dictionary.
+        # Start by removing empty lists in `new_state`.
+        new_state = dict([(key, value) for key, value in new_state.items() if value])
+
+        # Remove datasets (datasets are the keys).
+        dataset_diffs = set(new.state()) - set(new_state)
+        new.datasets = [dataset for dataset in new if dataset.name not in dataset_diffs]
+
+        # Then remove variables.
+        for dataset in new:
+            del_vars = set(new.state()[dataset.name]) - set(new_state[dataset.name])
+            if del_vars:
+                dataset.cubes[:] = iris.cube.CubeList(
+                    [cube for cube in dataset.cubes if cube.name() not in del_vars]
+                )
+
+        return deepcopy(new) if copy else new
+
+    def select_datasets(self, names, inplace=True, copy=False):
+        """Return a new `Datasets` containing only datasets matching `names`.
+
+        Args:
+            names (str or iterable): A name or series of names (dataset_name, ...),
+                for which a match with either raw or pretty names is sufficient.
+            inplace (bool, optional): If True (default) modify the selection in-place
+                without creating a copy. The returned selection will be the same
+                selection as the original selection, but without the removed entries.
+                If False, make a copy of the selection (see argument `copy`) before
+                removing entries.
+            copy (bool, optional): Only applies if `inplace` is False. If False
+                (default), the new `Datasets` object will contain references to the
+                same `Dataset` instances and associated cubes as the original. If
+                True, a deep copy will be made which will also copy the underlying
+                data.
+
+        Raises:
+            KeyError: If a dataset is not found.
+
+        Returns:
+            `Datasets`: A copy of a subset of the original selection.
+
+        """
+        if isinstance(names, str):
+            names = (names,)
+        # Homogenise input names.
+        raw_names = map(partial(self.field_translator, field="dataset"), names)
+        to_delete = set(self.raw_dataset_names) - set(raw_names)
+
+        new_state = self.state()
+        for dataset_name in to_delete:
+            del new_state[dataset_name]
+
+        return self.from_state(new_state, inplace=inplace, copy=copy)
+
+    def remove_datasets(self, names, inplace=True, copy=False):
+        """Remove datasets not matching `names`.
+
+        Args:
+            names (str or iterable): A name or series of names (dataset_name, ...),
+                for which a match with either raw or pretty names is sufficient.
+            inplace (bool, optional): If True (default) modify the selection in-place
+                without creating a copy. The returned selection will be the same
+                selection as the original selection, but without the removed entries.
+                If False, make a copy of the selection (see argument `copy`) before
+                removing entries.
+            copy (bool, optional): Only applies if `inplace` is False. If False
+                (default), the new `Datasets` object will contain references to the
+                same `Dataset` instances and associated cubes as the original. If
+                True, a deep copy will be made which will also copy the underlying
+                data.
+
+        Raises:
+            KeyError: If a dataset is not found.
+
+        Returns:
+            `Datasets`: A (copy of a) subset of the original selection.
+
+        """
+        if isinstance(names, str):
+            names = (names,)
+        # Homogenise input names.
+        to_delete = map(partial(self.field_translator, field="dataset"), names)
+
+        new_state = self.state()
+        for dataset_name in to_delete:
+            del new_state[dataset_name]
+
+        return self.from_state(new_state, inplace=inplace, copy=copy)
+
+    def select_variables(self, names, inplace=True, copy=False, strict=True):
+        """Return a new `Datasets` containing only variables matching `criteria`.
+
+        Args:
+            names (str or iterable): A name or series of names (variable_name, ...),
+                for which a match with either raw or pretty names is sufficient. This
+                is used to determine which variables to process.
+            inplace (bool, optional): If True (default) modify the selection in-place
+                without creating a copy. The returned selection will be the same
+                selection as the original selection, but without the removed entries.
+                If False, make a copy of the selection (see argument `copy`) before
+                removing entries.
+            copy (bool, optional): Only applies if `inplace` is False. If False
+                (default), the new `Datasets` object will contain references to the
+                same `Dataset` instances and associated cubes as the original. If
+                True, a deep copy will be made which will also copy the underlying
+                data.
+            strict (bool, optional): If True (default) expect to select as many
+                variables as given in `names`.
+
+        Raises:
+            ValueError: If raw and pretty names are not unique across all stored
+                variable names (raw and pretty) for all datasets. In this case, select
+                variables using a dictionary instead of an iterable.
+            KeyError: If a variable is not found in the database.
+            ValueError: If strict and if the number of output variables does not match
+                the number of input variables.
+
+        Returns:
+            `Datasets`: A copy of a subset of the original selection.
+
+        """
+        if isinstance(names, str):
+            names = (names,)
+        # Homogenise input names.
+        raw_var_names = set(
+            map(partial(self.field_translator, field="variable"), names)
+        )
+
+        new_state = self.state()
+        for dataset_name in new_state:
+            new_state[dataset_name] = list(
+                set(new_state[dataset_name]).intersection(raw_var_names)
+            )
+
+        new = self.from_state(new_state, inplace=inplace, copy=copy)
+        if strict and len(new.raw_variable_names) != len(raw_var_names):
+            raise ValueError(
+                f"Expected {len(raw_var_names)} variables, but got "
+                f"{len(new.raw_variable_names)}."
+            )
+
+        return new
+
+    def remove_variables(self, names, inplace=True, copy=False):
+        """Return a new `Datasets` without the variables matching `criteria`.
+
+        Cube pruning is performed after removal of entries to remove redundant cubes
+        from dataset instances.
+
+        Args:
+            names (str or iterable): A name or series of names (variable_name, ...),
+                for which a match with either raw or pretty names is sufficient. This
+                is used to determine which variables to process.
+            inplace (bool, optional): If True (default) modify the selection in-place
+                without creating a copy. The returned selection will be the same
+                selection as the original selection, but without the removed entries.
+                If False, make a copy of the selection (see argument `copy`) before
+                removing entries.
+            copy (bool, optional): Only applies if `inplace` is False. If False
+                (default), the new `Datasets` object will contain references to the
+                same `Dataset` instances and associated cubes as the original. If
+                True, a deep copy will be made which will also copy the underlying
+                data.
+
+        Raises:
+            ValueError: If raw and pretty names are not unique across all stored
+                variable names (raw and pretty) for all datasets. In this case, select
+                variables using a dictionary instead of an iterable.
+            KeyError: If a variable is not found in the database.
+
+        Returns:
+            `Datasets`: A (copy of a) subset of the original selection.
+
+        """
+        if isinstance(names, str):
+            names = (names,)
+        # Homogenise input names.
+        raw_var_names = set(
+            map(partial(self.field_translator, field="variable"), names)
+        )
+
+        new_state = self.state()
+        for dataset_name in new_state:
+            new_state[dataset_name] = list(set(new_state[dataset_name]) - raw_var_names)
+
+        return self.from_state(new_state, inplace=inplace, copy=copy)
+
+    def get_index(self, dataset_name):
+        """Get dataset index from a dataset name.
+
+        Args:
+            dataset_name (str): This name may match either the raw or the pretty name.
+
+        """
+        if not isinstance(dataset_name, str):
+            dataset_name = dataset_name[0]
+        for dataset in self:
+            stored_names = dataset.names()
+            if contains(stored_names, dataset_name):
+                return self.datasets.index(dataset)
+        raise ValueError("Dataset name '{}' not found.".format(dataset_name))
+
+    def add(self, dataset):
+        """Add a dataset to the database.
+
+        Args:
+            dataset (`Dataset`): Dataset to add.
+
+        Raises:
+            ValueError: If the provided dataset matches an existing dataset.
+
+        """
+        for stored_dataset in self:
+            if set(stored_dataset.names()).intersection(set(dataset.names())):
+                raise ValueError(
+                    "Matching datasets '{}' and '{}'.".format(stored_dataset, dataset)
+                )
+
+        self.datasets.append(dataset)
+        return self
 
 
 def get_all_datasets(

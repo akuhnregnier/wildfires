@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 from copy import deepcopy
@@ -100,7 +99,7 @@ def test_sorting(big_dataset):
 
 def test_pretty_names():
     datasets = Datasets(DummyDataset2())
-    assert datasets.get("all", "all") == {
+    assert datasets.state("all", "all") == {
         ("DummyDataset2", "Dummy2"): (("VarA", "A2"), ("VarB", "B2"))
     }
 

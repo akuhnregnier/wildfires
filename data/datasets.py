@@ -471,6 +471,9 @@ def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180), **kwargs)
     if "dim_coords_and_dims" in kwargs_mod:
         del kwargs_mod["dim_coords_and_dims"]
 
+    new_lat_coord.guess_bounds()
+    new_lon_coord.guess_bounds()
+
     return iris.cube.Cube(
         data,
         dim_coords_and_dims=kwargs.get("dim_coords_and_dims", grid_coords),
@@ -1036,7 +1039,7 @@ class Dataset(ABC):
                 assert len(month_number_coords) == 1
                 if tuple(month_number_coords[0].points) == tuple(range(1, 13)):
                     return "climatology"
-            return "unknown"
+            return str(raw_end - raw_start)
 
         except iris.exceptions.CoordinateNotFoundError:
             return "static"
@@ -1263,7 +1266,7 @@ class Dataset(ABC):
     def limit_months(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
     ):
-        """Discard non-specified time period.
+        """Discard time period outside the specified bounds.
 
         Crucially, this allows for regridding to take place much faster, as
         unused years/months are not considered.
@@ -1289,8 +1292,8 @@ class Dataset(ABC):
             start = PartialDateTime(start.year)
             if end.month != 1:
                 end = PartialDateTime(end.year + 1)
-        elif freq not in ("monthly",):
-            raise ValueError("Invalid frequency:{:}".format(freq))
+        if freq not in ("monthly",):
+            logger.warning("Encountered frequency:{:}".format(freq))
         self.cubes = self.cubes.extract(
             iris.Constraint(time=lambda t: end >= t.point >= start)
         )
@@ -1590,7 +1593,7 @@ class CCI_BurnedArea_MERIS_4_1(Dataset):
 
         named_cubes = dict(
             [
-                (var_name, cubes.extract(iris.Constraint(var_name)),)
+                (var_name, cubes.extract(iris.Constraint(var_name)))
                 for var_name in set([cube.name() for cube in cubes])
             ]
         )
@@ -1736,7 +1739,7 @@ class CCI_BurnedArea_MODIS_5_1(Dataset):
 
         named_cubes = dict(
             [
-                (var_name, cubes.extract(iris.Constraint(var_name)),)
+                (var_name, cubes.extract(iris.Constraint(var_name)))
                 for var_name in set([cube.name() for cube in cubes])
             ]
         )
@@ -3897,3 +3900,48 @@ def dataset_times(datasets=None, dataset_names=None, lat_lon=False):
         )
 
     return min_time, max_time, times_df
+
+
+def regions_GFED():
+    """Return cube describing the geographic regions used in GFED."""
+    regions = dummy_lat_lon_cube(
+        h5py.File(
+            os.path.join(DATA_DIR, "gfed4", "data", "GFED4.1s_1997.hdf5"), mode="r"
+        )["ancill"]["basis_regions"][:][::-1]
+    )
+    regions.long_name = "Basis-regions used for GFED analyses"
+    regions.attributes["regions"] = {
+        0: "Ocean",
+        1: "BONA (Boreal North America)",
+        2: "TENA (Temperate North America)",
+        3: "CEAM (Central America)",
+        4: "NHSA (Northern Hemisphere South America)",
+        5: "SHSA (Southern Hemisphere South America)",
+        6: "EURO (Europe)",
+        7: "MIDE (Middle East)",
+        8: "NHAF (Northern Hemisphere Africa)",
+        9: "SHAF (Southern Hemisphere Africa)",
+        10: "BOAS (Boreal Asia)",
+        11: "CEAS (Central Asia)",
+        12: "SEAS (Southeast Asia)",
+        13: "EQAS (Equatorial Asia)",
+        14: "AUST (Australia and New Zealand)",
+    }
+    regions.attributes["short_regions"] = {
+        0: "Ocean",
+        1: "BONA",
+        2: "TENA",
+        3: "CEAM",
+        4: "NHSA",
+        5: "SHSA",
+        6: "EURO",
+        7: "MIDE",
+        8: "NHAF",
+        9: "SHAF",
+        10: "BOAS",
+        11: "CEAS",
+        12: "SEAS",
+        13: "EQAS",
+        14: "AUST",
+    }
+    return regions

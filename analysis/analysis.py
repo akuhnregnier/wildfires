@@ -57,7 +57,7 @@ def print_vifs(exog_data, thres=6):
     )
 
 
-def print_importances(regr):
+def print_importances(regr, exog_data):
     """Print RF importances.
 
     Args:
@@ -75,9 +75,12 @@ def print_importances(regr):
             "Ratio": np.array(std) / np.array(importances),
         }
     )
-    print(
-        importances_df.sort_values("Importance", ascending=False).to_latex(
-            index=False, float_format="{:0.3f}".format
+    logger.info(
+        "\n"
+        + str(
+            importances_df.sort_values("Importance", ascending=False).to_latex(
+                index=False, float_format="{:0.3f}".format
+            )
         )
     )
 
@@ -126,11 +129,39 @@ def print_dataset_times(datasets, latex=False, lat_lon=False):
     times_df = dataset_times(datasets.datasets, lat_lon=lat_lon)[2]
     if times_df is not None:
         if latex:
-            print(times_df.to_latex(index=False))
+            logger.info("\n" + str(times_df.to_latex(index=False)))
         else:
-            print(times_df.to_string(index=False))
+            logger.info("\n" + str(times_df.to_string(index=False)))
     else:
-        print("No time information found.")
+        logger.info("No time information found.")
+
+
+def get_no_fire_mask():
+    # TODO: This only takes into account the default time interval, 2005-2011 (limited
+    # by MERIS). Make this more general!
+    fire_datasets = Datasets(
+        map(
+            lambda fire_dataset: fire_dataset(),
+            (GFEDv4s, GFEDv4, CCI_BurnedArea_MODIS_5_1, MCD64CMQ_C6),
+        )
+    ).select_variables(
+        ["CCI MODIS BA", "GFED4 BA", "GFED4s BA", "MCD64CMQ BA"]
+    ) + Datasets(
+        CCI_BurnedArea_MERIS_4_1()
+    ).select_variables(
+        "CCI MERIS BA"
+    )
+
+    monthly = prepare_selection(fire_datasets, which="monthly")
+
+    no_fire_mask = np.all(
+        reduce(
+            np.logical_and,
+            map(partial(np.isclose, b=0), (cube.data for cube in monthly.cubes)),
+        ),
+        axis=0,
+    )
+    return no_fire_mask
 
 
 def data_processing(
@@ -143,11 +174,12 @@ def data_processing(
     log_var_names=None,
     sqrt_var_names=None,
     verbose=True,
+    use_fire_mask=False,
 ):
     """Create datasets for further analysis and model fitting."""
-    if verbose:
-        selection.show("pretty")
-        print_dataset_times(selection, latex=False)
+    # TODO: Make this go through a logger.
+    selection.show("pretty")
+    print_dataset_times(selection, latex=False)
 
     raw_datasets = prepare_selection(selection, which=which)
     # XXX: This realises data, which is only acceptable since (if) other code accesses
@@ -172,10 +204,11 @@ def data_processing(
     # Make a deep copy so that the original cubes are preserved.
     masked_datasets = raw_datasets.copy(deep=True)
 
+    masks_to_apply = [land_mask]
     if use_lat_mask:
-        masks_to_apply = (lat_mask, land_mask)
-    else:
-        masks_to_apply = (land_mask,)
+        masks_to_apply.append(lat_mask)
+    if use_fire_mask:
+        masks_to_apply.append(get_no_fire_mask())
 
     for cube in masked_datasets.cubes:
         cube.data.mask |= reduce(
@@ -207,7 +240,9 @@ def data_processing(
         logger.info(f"Masking {np.sum(invalid_mask)} invalid values for LIS/OTD.")
         lightning_cube.data.mask |= invalid_mask
 
-    filled_datasets = masked_datasets.copy(deep=True).fill(*masks_to_apply)
+    filled_datasets = masked_datasets.copy(deep=True).fill(
+        *masks_to_apply, reference_variable=target_variable
+    )
 
     # Creating exog and endog pandas containers.
     burned_area_cube = filled_datasets.select_variables(
@@ -316,7 +351,9 @@ def corr_plot(exog_data):
     fig.tight_layout()
 
 
-def GLM(endog_data, exog_data, model_name="GLMv1"):
+def GLM(
+    endog_data, exog_data, master_mask, model_name="GLMv1", normal_coast_linewidth=0.5
+):
     results = {}
 
     model = sm.GLM(endog_data, exog_data, family=sm.families.Binomial())
@@ -359,7 +396,9 @@ def GLM(endog_data, exog_data, model_name="GLMv1"):
     return results
 
 
-def RF(endog_data, exog_data, model_name="RFv1"):
+def RF(
+    endog_data, exog_data, master_mask, model_name="RFv1", normal_coast_linewidth=0.5
+):
     results = {}
 
     regr = RandomForestRegressor(
@@ -377,6 +416,8 @@ def RF(endog_data, exog_data, model_name="RFv1"):
 
     results["R2_train"] = regr.score(X_train, y_train)
     results["R2_test"] = regr.score(X_test, y_test)
+
+    print_importances(regr, exog_data)
 
     logger.info(f"{model_name} R2 train: {results['R2_train']}")
     logger.info(f"{model_name} R2 test: {results['R2_test']}")
@@ -420,11 +461,10 @@ if __name__ == "__main__":
     # TODO: Plotting setup in a more rigorous manner.
     normal_coast_linewidth = 0.5
     mpl.rcParams["font.size"] = 9.0
-    verbose = True
     np.random.seed(1)
     plot_variables = False
 
-    target_variable = "monthly burned area"
+    target_variable = "GFED4 BA"
 
     # Creation of new variables.
     transformations = {
@@ -473,14 +513,14 @@ if __name__ == "__main__":
             # "pftBare",
             "pftCrop",
             "pftHerb",
-            "monthly burned area",
+            "GFED4 BA",
             "SIF",
             "popd",
             # "Combined Flash Rate Monthly Climatology",
             "Fraction of Absorbed Photosynthetically Active Radiation",
             "Leaf Area Index",
             "Vegetation optical depth Ku-band (18.7 GHz - 19.35 GHz)",
-            "Vegetation optical depth X-band (10.65 GHz - 10.7 GHz)",
+            # "Vegetation optical depth X-band (10.65 GHz - 10.7 GHz)",
         ]
     )
     (
@@ -492,12 +532,14 @@ if __name__ == "__main__":
         land_mask,
     ) = data_processing(
         selection,
-        which="mean",
+        which="monthly",
         transformations=transformations,
         deletions=deletions,
         log_var_names=log_var_names,
         sqrt_var_names=sqrt_var_names,
-        use_lat_mask=True,
+        use_lat_mask=False,
+        use_fire_mask=True,
+        target_variable=target_variable,
     )
 
     # Plotting land mask.
@@ -510,7 +552,7 @@ if __name__ == "__main__":
     plot_histograms(masked_datasets)
 
     # Plotting masked burned area and AGB.
-    cube = masked_datasets.select_variables("monthly burned area", inplace=False).cube
+    cube = masked_datasets.select_variables(target_variable, inplace=False).cube
     with FigureSaver(cube.name().replace(" ", "_")):
         mpl.rcParams["figure.figsize"] = (5, 3.33)
         fig = cube_plotting(
@@ -541,7 +583,7 @@ if __name__ == "__main__":
         mpl.rcParams["figure.figsize"] = (8, 5)
         fig = cube_plotting(
             filled_datasets.select_variables(
-                "monthly burned area", strict=True, inplace=False
+                target_variable, strict=True, inplace=False
             ).cube.data.mask.astype("int64"),
             title="Land Mask",
             cmap="Reds_r",
@@ -592,12 +634,19 @@ if __name__ == "__main__":
 
     # Model Fitting.
     logger.info("Starting GLM analysis.")
-    glm_results = GLM(endog_data, exog_data)
+    glm_results = GLM(
+        endog_data,
+        exog_data,
+        master_mask,
+        normal_coast_linewidth=normal_coast_linewidth,
+    )
     logger.info("Finished GLM analysis.")
 
     logger.info("Starting RF analysis.")
-    rf_results = RF(endog_data, exog_data)
+    rf_results = RF(
+        endog_data,
+        exog_data,
+        master_mask,
+        normal_coast_linewidth=normal_coast_linewidth,
+    )
     logger.info("Finished RF analysis.")
-
-    if verbose:
-        print_importances(rf_results["regr"])

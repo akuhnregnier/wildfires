@@ -1,4 +1,4 @@
-fail_fast: false
+fail_fast: true
 minimum_pre_commit_version: '1.16.1'
 repos:
     - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -6,6 +6,7 @@ repos:
       hooks:
           - id: check-added-large-files
             args: ['--maxkb=400']
+            exclude: \.ipynb$
           - id: check-ast
           - id: check-docstring-first
           - id: check-executables-have-shebangs

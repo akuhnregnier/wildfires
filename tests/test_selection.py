@@ -1,61 +1,29 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 from copy import deepcopy
-from datetime import datetime
 
-import cf_units
 import iris
 import iris.coord_categorisation
 import numpy as np
 import pytest
-from dateutil.relativedelta import relativedelta
 from iris.time import PartialDateTime
 
 import wildfires.data.datasets as wildfire_datasets
 from test_datasets import data_availability
 from wildfires.data.cube_aggregation import Datasets
-from wildfires.data.datasets import get_centres
+from wildfires.data.datasets import dummy_lat_lon_cube
 
 # FIXME: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
 
 
 class DummyDataset(wildfire_datasets.Dataset):
-    def __init__(self):
+    def __init__(self, name=None):
         data = np.random.random((100, 100, 100))
         data = np.ma.MaskedArray(data, mask=data > 0.5)
 
-        latitudes = iris.coords.DimCoord(
-            get_centres(np.linspace(-90, 90, data.shape[1] + 1)),
-            standard_name="latitude",
-            units="degrees",
-        )
-        longitudes = iris.coords.DimCoord(
-            get_centres(np.linspace(-180, 180, data.shape[2] + 1)),
-            standard_name="longitude",
-            units="degrees",
-        )
-
-        calendar = "gregorian"
-        time_unit_str = "days since 1970-01-01 00:00:00"
-        time_unit = cf_units.Unit(time_unit_str, calendar=calendar)
-
-        datetimes = [datetime(2000, 1, 1)]
-        while len(datetimes) < 100:
-            datetimes.append(datetimes[-1] + relativedelta(months=+1))
-
-        time_coord = iris.coords.DimCoord(
-            cf_units.date2num(datetimes, time_unit_str, calendar),
-            standard_name="time",
-            units=time_unit,
-        )
-        coords = [(time_coord, 0), (latitudes, 1), (longitudes, 2)]
-        cube = iris.cube.Cube(
+        cube = dummy_lat_lon_cube(
             data,
-            dim_coords_and_dims=coords,
-            units=cf_units.Unit("1"),
             var_name="var_name" + self.name,
-            long_name="long_name" + self.name,
+            long_name="long_name" + self.name if name is None else name,
         )
         self.cubes = iris.cube.CubeList([cube])
 
@@ -71,7 +39,7 @@ DUMMY_DATASETS = [type(name, (DummyDataset,), {}) for name in ["A", "B", "C", "D
 @pytest.fixture(scope="function")
 def big_dataset():
     big_dataset = DummyDataset()
-    dummy_cube = deepcopy(big_dataset.cubes[0])
+    dummy_cube = deepcopy(big_dataset.cube)
     dummy_cube.long_name = "second_name"
     dummy_cube.var_name = "second_var"
     big_dataset.cubes.append(dummy_cube)
@@ -80,18 +48,12 @@ def big_dataset():
 
 @pytest.fixture(scope="function")
 def sel():
-    sel = Datasets()
-    sel.add(DUMMY_DATASETS[0]())
-    sel.add(DUMMY_DATASETS[1]())
-    return sel
+    return Datasets(map(lambda dataset: dataset(), DUMMY_DATASETS[:2]))
 
 
 @pytest.fixture(scope="function")
 def long_sel():
-    long_sel = Datasets()
-    for dataset in DUMMY_DATASETS:
-        long_sel.add(dataset())
-    return long_sel
+    return Datasets(map(lambda dataset: dataset(), DUMMY_DATASETS))
 
 
 def test_ordering():
@@ -107,19 +69,16 @@ def test_ordering():
 
 
 def test_representations(sel):
-    # Confirm expected output.
-    all_all = sel.get(dataset_name="all", variable_format="all")
+    all_all = sel.state(dataset_name="all", variable_format="all")
     assert all_all == {
         ("A", "A"): (("long_nameA", "long_nameA"),),
         ("B", "B"): (("long_nameB", "long_nameB"),),
     }
 
-    # Confirm expected output.
-    all_pretty = sel.get(dataset_name="all", variable_format="pretty")
+    all_pretty = sel.state(dataset_name="all", variable_format="pretty")
     assert all_pretty == {"A": ("long_nameA",), "B": ("long_nameB",)}
 
-    # Confirm expected output.
-    all_raw = sel.get(dataset_name="all", variable_format="raw")
+    all_raw = sel.state(dataset_name="all", variable_format="raw")
     assert all_raw == {"A": ("long_nameA",), "B": ("long_nameB",)}
 
 
@@ -234,48 +193,20 @@ def test_pruning(big_dataset):
     assert len(Datasets(big_dataset).remove_variables("second_name")[0]) == 1
 
 
-def test_dict_select(big_dataset):
-    assert (
-        Datasets(big_dataset).dict_remove_variables(
-            {"DummyDataset": ("long_nameDummyDataset",)}, inplace=False
+def test_same_var_names():
+    sel1 = Datasets(
+        (
+            type("A", (DummyDataset,), {})("var_name_1"),
+            type("B", (DummyDataset,), {})("var_name_1"),
         )
-    ).raw_variable_names == ("second_name",)
-
-    dataset_copy = Datasets(big_dataset).copy(deep=True)
-
-    assert id(
-        dataset_copy.dict_remove_variables({"DummyDataset": ("long_nameDummyDataset",)})
-    ) == id(dataset_copy.dict_remove_variables({"DummyDataset": ("second_name",)}))
-
-    dataset_copy2 = Datasets(big_dataset).copy(deep=True)
-
-    assert id(
-        dataset_copy2.dict_remove_variables(
-            {"DummyDataset": ("long_nameDummyDataset",)}
-        )
-    ) != id(
-        dataset_copy2.dict_remove_variables(
-            {"DummyDataset": ("second_name",)}, inplace=False
+    )
+    sel2 = Datasets(
+        (
+            type("B", (DummyDataset,), {})("var_name_1"),
+            type("A", (DummyDataset,), {})("var_name_1"),
         )
     )
 
-    dataset_copy3 = Datasets(big_dataset).copy(deep=True)
+    sel3 = sel1.select_variables("var_name_1", strict=False)
 
-    removed1 = dataset_copy3.dict_remove_variables(
-        {"DummyDataset": ("long_nameDummyDataset",)}, inplace=False
-    )
-    removed2 = dataset_copy3.dict_remove_variables(
-        {"DummyDataset": ("long_nameDummyDataset",)}, inplace=False
-    )
-
-    assert id(removed1.cubes) != id(removed2.cubes)
-    assert id(removed1.cubes[0]) == id(removed2.cubes[0])
-    assert id(removed1.cubes[0].data) == id(removed2.cubes[0].data)
-
-    removed3 = dataset_copy3.dict_remove_variables(
-        {"DummyDataset": ("long_nameDummyDataset",)}, inplace=False, copy=True
-    )
-
-    assert id(removed1.cubes) != id(removed3.cubes)
-    assert id(removed1.cubes[0]) != id(removed3.cubes[0])
-    assert id(removed1.cubes[0].data) != id(removed3.cubes[0].data)
+    assert sel1 == sel2 == sel3
