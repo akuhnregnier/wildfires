@@ -299,6 +299,28 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     return figs
 
 
+def _get_log_bin_edges(vmin, vmax, n_bins):
+    if isinstance(n_bins, (int, np.integer)):
+        return np.geomspace(vmin, vmax, n_bins + 1)
+    else:
+        edges = []
+        # "Auto" bins.
+        vmax_log = np.log10(vmax)
+        vmin_log = np.log10(vmin)
+        # Convert to float here explicitly as np.float32 does not have an
+        # `is_integer()` method, for example.
+        if not float(vmax_log).is_integer():
+            edges.append(vmax)
+            vmax_log = math.floor(vmax_log)
+
+        if not float(vmin_log).is_integer():
+            edges.append(vmin)
+            vmin_log = math.ceil(vmin_log)
+
+        edges.extend(np.logspace(vmin_log, vmax_log, vmax_log - vmin_log + 1))
+        return sorted(edges)
+
+
 def get_bin_edges(
     data=None,
     vmin=None,
@@ -307,34 +329,34 @@ def get_bin_edges(
     log=True,
     min_edge_type="manual",
     min_edge=None,
+    simple_lin_bins=False,
 ):
     """Get bin edges.
 
     Args:
-        data (numpy.ndarray): Data array to determine limits.
-        vmin (float): Minimum bin edge.
-        vmax (float): Maximum bin edge.
+        data (numpy.ndarray or None): Data array to determine limits.
+        vmin (float or None): Minimum bin edge.
+        vmax (float or None): Maximum bin edge.
         n_bins (int or str): If "auto" (only applies when `log=True`), determine bin
             edges using the data (see `min_edge`).
         log (bool): If `log`, bin edges are computed in log space (base 10).
         min_edge_type (str): If "manual", the supplied `min_edge` will be used for the
-            minimum exponent (for both positive and negative edges), and `vmin` and
-            `vmax` for the upper limits. If "auto", determine `min_edge` from the
-            data. If "symmetric", determine `min_edge` from the data, but use the same
-            value for the positive and negative edges. If either `vmin` or `vmax` is
-            very close to (or equal to) 0, `min_edge` is also required as the starting
-            point of the bin edges (see examples).
-        min_edge (float or None): If None, the minimum (absolute) data value will be
-            used. Otherwise the supplied float will be used to set the minimum
-            exponent of the log bins.
+            minimum edge(s), and `vmin` and `vmax` for the upper limits. If "auto",
+            determine `min_edge` from the data. If "symmetric", determine `min_edge`
+            from the data, but use the same value for the positive and negative edges.
+            If either `vmin` or `vmax` is very close to (or equal to) 0, `min_edge` is
+            also required as the starting point of the bin edges (see examples).
+        min_edge (float, iterable of float, or None): If None, the minimum (absolute)
+            data value will be used. Otherwise the supplied float will be used to set
+            the minimum exponent of the log bins. If two floats are given, they will
+            be used for the positive and negative ranges, respectively.
+        simple_lin_bins (bool): If True, simply create `n_bins` divisions from vmin
+            (minimum data) to vmax (maximum data). If False (default), explicitly
+            structure the bins around 0 if needed. If there is only positive or only
+            negative data, the two cases are equivalent.
 
     Returns:
         list: The bin edges.
-
-    TODO:
-        Make sure the n_bins parameter is respected, which is not true at the moment
-        for cases where vmin or vmax are close to 0, or when an additional 0 is
-        inserted otherwise.
 
     Examples:
         >>> get_bin_edges(vmin=0, vmax=100, n_bins=2, log=False)
@@ -344,73 +366,134 @@ def get_bin_edges(
         >>> get_bin_edges(vmin=-100, vmax=100, n_bins="auto", log=True, min_edge=1,
         ...               min_edge_type="manual")
         [-100.0, -10.0, -1.0, 0.0, 1.0, 10.0, 100.0]
+        >>> get_bin_edges(vmin=-150, vmax=150, n_bins="auto", log=True, min_edge=1,
+        ...               min_edge_type="manual")
+        [-150.0, -100.0, -10.0, -1.0, 0.0, 1.0, 10.0, 100.0, 150.0]
+        >>> get_bin_edges(vmin=-1000, vmax=100, n_bins=7, log=True, min_edge=1,
+        ...               min_edge_type="manual")
+        [-1000.0, -100.0, -10.0, -1.0, 0.0, 1.0, 10.0, 100.0]
         >>> get_bin_edges(vmin=-100, vmax=1000, n_bins="auto", log=True, min_edge=1,
         ...               min_edge_type="manual")
         [-100.0, -10.0, -1.0, 0.0, 1.0, 10.0, 100.0, 1000.0]
-        >>> get_bin_edges(vmin=0, vmax=100, n_bins=2, log=True, min_edge=1)
+        >>> get_bin_edges(vmin=0, vmax=100, n_bins=3, log=True, min_edge=1)
         [0.0, 1.0, 10.0, 100.0]
+        >>> get_bin_edges(np.array([0, 1000]), n_bins=4, min_edge=1.0, log=True)
+        [0.0, 1.0, 10.0, 100.0, 1000.0]
+        >>> get_bin_edges(np.array([0, 1, 1000]), n_bins=4, min_edge_type="auto", log=True)
+        [0.0, 1.0, 10.0, 100.0, 1000.0]
+        >>> get_bin_edges(np.array([0, 10, 100]), n_bins=2, min_edge_type="auto", log=True)
+        [0.0, 10.0, 100.0]
+        >>> get_bin_edges(vmin=-20, vmax=80, n_bins=5, log=False,
+        ...               simple_lin_bins=True)
+        [-20.0, 0.0, 20.0, 40.0, 60.0, 80.0]
+        >>> get_bin_edges(vmin=-20, vmax=80, n_bins=5, log=False,
+        ...               simple_lin_bins=False)
+        [-20.0, 0.0, 20.0, 40.0, 60.0, 80.0]
+        >>> np.all(
+        ...     np.isclose(
+        ...         get_bin_edges(
+        ...             vmin=-20,
+        ...             vmax=77,
+        ...             n_bins=9,
+        ...             log=False,
+        ...             simple_lin_bins=True,
+        ...         ),
+        ...         np.linspace(-20, 77, 10),
+        ...     )
+        ... )
+        True
+        >>> get_bin_edges(vmin=-20, vmax=77, n_bins=9, log=False,
+        ...               simple_lin_bins=False)
+        [-20.0, -10.0, 0.0, 11.0, 22.0, 33.0, 44.0, 55.0, 66.0, 77.0]
 
     """
-    input_args = locals()
     if not log:
-        assert type(n_bins) == int
+        assert isinstance(
+            n_bins, (int, np.integer)
+        ), f"Bin number must be an integer if `log=False`. Got {repr(n_bins)} instead."
         if any(vlim is None for vlim in (vmin, vmax)) and data is None:
-            raise ValueError("Need data for vmin/vmax that are None.")
+            raise ValueError("Need data when vmin & vmax are not supplied (are None).")
 
-    if vmin is not None and vmax is not None and vmin > vmax:
+    if all(vlim is not None for vlim in (vmin, vmax)) and vmin > vmax:
         raise ValueError(f"vmin ({vmin}) must not be larger than vmax ({vmax}).")
 
-    if log and vmin is not None and vmax is not None and data is None:
+    if log and all(vlim is not None for vlim in (vmin, vmax)) and data is None:
         assert (
             min_edge is not None
         ), "When not supplying data, `min_edge` needs to be given."
         assert (
             min_edge_type == "manual"
         ), "When not supplying data, `min_edge_type` needs to be 'manual'."
-        # Get bin edges without relying on data at all.
-        input_args["data"] = np.array([1])
-        return get_bin_edges(**input_args)
 
-    min_bin = vmin if vmin is not None else np.min(data)
-    max_bin = vmax if vmax is not None else np.max(data)
+    vmin = vmin if vmin is not None else np.min(data)
+    vmax = vmax if vmax is not None else np.max(data)
 
-    n_close_lim = sum(np.isclose(lim_bin, 0) for lim_bin in (min_bin, max_bin))
+    n_close_lim = sum(np.isclose(vlim, 0) for vlim in (vmin, vmax))
     assert n_close_lim <= 1, "At most one limit should be close to 0."
 
-    min_force = True if vmin is not None else False
-    max_force = True if vmax is not None else False
-
     if not log:
-        assert (
-            type(n_bins) == int
-        ), f"Bin number must be an integer if `log=False`. Got {repr(n_bins)} instead."
-        return list(np.linspace(min_bin, max_bin, n_bins + 1))
+        if simple_lin_bins or not (vmin < 0 and vmax > 0):
+            # Handle simple cases where the bin edges do not cross 0.
+            return list(np.linspace(vmin, vmax, n_bins + 1))
+        else:
+            vrange = vmax - vmin
 
-    # Only the case with log=True remains here.
-    # Positive and negative data are handled the same way (after taking the absolute
-    # value) and the resulting bins are then stitched together if needed.
+            pos_edges = math.ceil((n_bins + 1) * np.abs(vmin) / vrange)
+            neg_edges = math.ceil((n_bins + 1) * vmax / vrange)
 
-    zero_mask = ~np.isclose(data, 0)
-    split_data = (data[(data > 0) & zero_mask], np.abs(data[(data < 0) & zero_mask]))
-    multipliers = (1, -1)
+            # The desired number of edges is bins + 2, since we are removing one edge
+            # (the duplicated 0) and thus we are left with bins + 1, the number of
+            # edges required to form 'bins' number of bins as desired.
+            if pos_edges + neg_edges != n_bins + 2:
+                assert pos_edges + neg_edges == n_bins + 1, (
+                    "Expecting at most 1 missing edge. Got "
+                    f"{pos_edges + neg_edges}, expected {n_bins + 1} or {n_bins + 2}."
+                )
 
-    if min_bin >= 0:
-        split_data = split_data[:1]
-        multipliers = (1,)
-    if max_bin <= 0:
-        split_data = split_data[1:]
-        multipliers = (-1,)
+                # Determine which side to add an edge to.
+                ideal_pos_ratio = vmax / vrange
+                if pos_edges / (pos_edges + neg_edges) >= ideal_pos_ratio:
+                    # We have too many positive edges already, so increment the number
+                    # of negative edges.
+                    neg_edges += 1
+                else:
+                    pos_edges += 1
 
-    if n_close_lim == 1:
-        assert (
-            len(split_data) == 1
-        ), "There should be only 1 split dataset if one of the limits is 0."
+            return list(np.linspace(vmin, 0, pos_edges)) + list(
+                np.linspace(0, vmax, neg_edges)[1:]
+            )
 
-    limits_list = []
-    force_bins_list = []
+    # Only the log case remains here.
+
+    if min_edge_type not in ("symmetric", "auto", "manual"):
+        raise ValueError(f"Unexpected `min_edge_type` {min_edge_type}.")
 
     if min_edge_type == "manual":
         assert min_edge is not None, "Need valid `min_edge` for 'manual' edge type."
+
+    if min_edge is not None:
+        if isinstance(min_edge, (float, int, np.float, np.integer)):
+            min_edge = [min_edge, min_edge]
+        min_edge = np.abs(np.asarray(min_edge, dtype=np.float64))
+
+    # Handle the positive and negative data ranges separately.
+
+    # Positive and negative data are handled the same way (after taking the absolute
+    # value) and the resulting bins are then stitched together if needed.
+
+    if data is not None:
+        zero_mask = ~np.isclose(data, 0)
+        split_data = (
+            data[(data > 0) & zero_mask],
+            np.abs(data[(data < 0) & zero_mask]),
+        )
+    else:
+        split_data = (None, None)
+
+    if vmin >= 0:
+        split_data = split_data[:1]
+    elif vmax <= 0:
+        split_data = split_data[1:]
 
     if min_edge is not None:
         if min_edge_type != "manual":
@@ -418,118 +501,95 @@ def get_bin_edges(
                 "Value for `min_edge` supplied even though `min_edge_type` was set to "
                 f"'{min_edge_type}'."
             )
-        min_edge_type = "manual"
 
     if min_edge_type in ("symmetric", "auto"):
-        if min_edge is not None:
-            raise ValueError(
-                "Value for `min_edge` supplied even though "
-                f"`min_edge_type` was set to '{min_edge_type}'."
-            )
+        # This guarantees that data is not None, meaning that we can use the zero
+        # mask.
         if min_edge_type == "symmetric":
+            # Use the same minimum edge for both data ranges if needed.
             min_edge_type = "manual"
-            min_edge = np.min(np.abs(data))
+            min_edge = [np.min(np.abs(data[zero_mask]))] * 2
         else:
             # If edge type is auto, data is needed to infer the bounds.
             if not all(map(np.any, split_data)):
                 raise ValueError(
                     f"Insufficient data for `min_edge_type` '{min_edge_type}'."
                 )
+            # Use the data to infer the minimum edge separately for each data range.
+            min_edge = list(map(np.min, split_data))
 
-    fallback_min_edge = 1e-7
-    if min_edge < 1e-8:
-        logger.warning(
-            f"Low `min_edge` ('{min_edge}') replaced with '{fallback_min_edge}'."
-        )
-        min_edge = 1e-7
+    # List that holds the output bin edges.
+    bin_edges = []
 
-    for s_data, multiplier in zip(split_data, multipliers):
-        # Get the relevant limits for the data in both the positive and negative case.
-        # Do this by checking the sign and magnitude of the predefined limits, and
-        # using max/min of the selected data if necessary.
-        limits = []
-        force_bins = []
-        for s_bin, func, force in zip(
-            (min_bin, max_bin)[::multiplier],
-            (np.min, np.max),
-            (min_force, max_force)[::multiplier],
-        ):
-            force_bin = False
-            # If vmin/vmax are applicable.
-            if multiplier * s_bin >= 0:
-                limits.append(multiplier * s_bin)
-                if force:
-                    force_bin = True
-            # Purely data-informed - relies on respective data being available.
-            elif min_edge_type == "manual":
-                limits.append(min_edge)
-            elif min_edge_type == "auto":
-                limits.append(func(s_data))
-            else:
-                raise ValueError(f"Unknown `min_edge_type` '{min_edge_type}'.")
-
-            force_bins.append(force_bin)
-
-        limits_list.append(limits)
-        force_bins_list.append(force_bins)
-
-    log_limits_list = []
-    for limits in limits_list:
-        log_limits = []
-
-        if np.isclose(limits[0], 0):
-            assert min_edge is not None
-            to_process = min_edge
-        else:
-            to_process = limits[0]
-        log_limits.append(math.floor(np.log10(to_process)))
-
-        log_limits.append(math.ceil(np.log10(limits[1])))
-        log_limits_list.append(log_limits)
-
-    boundaries = []
-    if n_bins != "auto":
-        if len(split_data) == 2:
-            denom = sum([np.ptp(log_limits) + 1 for log_limits in log_limits_list])
-            ratio = (np.ptp(log_limits_list[0]) + 1) / (denom)
-            split_bins = (
-                math.ceil((n_bins + 1) * ratio),
-                math.floor((n_bins + 1) * (1 - ratio)),
-            )
-        else:
-            split_bins = (n_bins + 1,)
-
-        for multiplier, limits, bin_number in zip(multipliers, limits_list, split_bins):
-            if np.isclose(limits[0], 0):
-                limits[0] = min_edge
-                boundaries.append(0)
-            boundaries.extend(multiplier * np.geomspace(*limits, bin_number))
+    if vmin >= 0:
+        multipliers = (1,)
+        limits = [[vmin, vmax]]
+        if np.isclose(limits[0][0], 0):
+            bin_edges.append(limits[0][0])
+            if isinstance(n_bins, (int, np.integer)):
+                n_bins -= 1  # Compensate for the additional edge above.
+            limits[0][0] = min_edge[0]
+    elif vmax <= 0:
+        multipliers = (-1,)
+        limits = [[np.abs(vmax), np.abs(vmin)]]
+        if np.isclose(limits[0][0], 0):
+            bin_edges.append(limits[0][0])
+            if isinstance(n_bins, (int, np.integer)):
+                n_bins -= 1  # Compensate for the additional edge above.
+            limits[0][0] = min_edge[1]
     else:
-        for multiplier, force_bins, limits, log_limits in zip(
-            multipliers, force_bins_list, limits_list, log_limits_list
-        ):
-            # Forced bins are kept as explicit limits. If the bin is not forced, the
-            # value derived from the log limits is used.
-            boundaries.extend(
-                multiplier * limit
-                for forced, limit in zip(force_bins, limits)
-                if forced
+        multipliers = (1, -1)
+        limits = [(min_edge[0], vmax), (min_edge[1], np.abs(vmin))]
+
+    if vmin >= 0 or vmax <= 0:
+        # Only a single bin number is required.
+        bins = [n_bins]
+    else:
+        if isinstance(n_bins, (int, np.integer)):
+            contributions = np.array(
+                [np.ptp(np.log10(s_limits)) for s_limits in limits]
             )
+            total = np.sum(contributions)
+            # To arrive at `n_bins` bins (ie. `n_bins + 1` edges), we need to consider
+            # the number of bins for the -ve and +ve part, and the 0-edge in the
+            # middle. Concatenating the two ranges (which do not include 0 as opposed
+            # to the linear case above) adds 1 bin, while adding the 0-edge adds
+            # another bin. Thus, `n_bins - 2` bins need to be provided by the two
+            # parts.
+            bins = [math.ceil(n_bin) for n_bin in (n_bins - 2) * contributions / total]
 
-            force_exponent_mod = np.array([1, -1])
-            force_exponent_mod[~np.array(force_bins, dtype=np.bool_)] = 0
-            log_limits = tuple(np.array(log_limits) + force_exponent_mod)
-            limit_diff = log_limits[1] - log_limits[0]
-            if limit_diff > 0 or np.isclose(limit_diff, 0):
-                boundaries.extend(
-                    multiplier * np.logspace(*log_limits, np.ptp(log_limits) + 1)
-                )
+            # If we have 1 bin too few (remember that we want `n_bins - 2` bins at
+            # this stage.
+            if sum(bins) < n_bins - 2:
+                ideal_pos_ratio = contributions[0] / total
+                if bins[0] / np.sum(bins) >= ideal_pos_ratio:
+                    # We have too many positive bins already, so increment the number
+                    # of negative bins.
+                    bins[0] += 1
+                else:
+                    bins[1] += 1
+        else:
+            # Ie. use "auto" bins for both ranges.
+            bins = [n_bins, n_bins]
 
-    # TODO: Remove something to make up for this?
+    if n_close_lim == 1:
+        assert (
+            len(split_data) == 1
+        ), "There should be only 1 split dataset if one of the limits is (close to) 0."
+
+    # Now that the ranges have been segregated, handle them each individually and
+    # combine the resulting bin edges.
+
+    # Get the relevant limits for the data in both the positive and negative case.
+    # Do this by checking the sign and magnitude of the predefined limits, and
+    # using max/min of the selected data if necessary.
+    for multiplier, s_limits, s_bins in zip(multipliers, limits, bins):
+        bin_edges.extend(multiplier * np.asarray(_get_log_bin_edges(*s_limits, s_bins)))
+
     if len(split_data) == 2:
-        boundaries.append(0)
+        bin_edges.append(0)
 
-    return sorted(float(edge) for edge in boundaries)
+    return sorted(float(edge) for edge in bin_edges)
 
 
 def cube_plotting(
@@ -602,17 +662,16 @@ def cube_plotting(
                 `matplotlib.colors.Colormap` instance.
             vmin: Minimum value for colorbar.
             vmax: Maximum value for colorbar.
-            colorbar_kwargs: Dictionary with any number of the following keys and
-                corresponding values:
-                    - label
-                    - orientation
-                    - fraction
-                    - pad
-                    - srhink
-                    - aspect
-                    - anchor
-                    - panchor
-                    - format
+        possible colorbar kwargs:
+            label:
+            orientation:
+            fraction:
+            pad:
+            srhink:
+            aspect:
+            anchor:
+            panchor:
+            format:
 
     """
     if not isinstance(cube, iris.cube.Cube):
