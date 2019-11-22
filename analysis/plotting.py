@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from wildfires.data.datasets import dummy_lat_lon_cube
 from wildfires.logging_config import LOGGING
+from wildfires.utils import select_valid_subset
 
 logger = logging.getLogger(__name__)
 
@@ -613,6 +614,7 @@ def cube_plotting(
     min_edge=None,
     extend=None,
     average_first_coord=True,
+    select_valid=False,
     **kwargs,
 ):
     """Pretty plotting.
@@ -656,6 +658,8 @@ def cube_plotting(
             can be set manually to one of the aforementioned options.
         average_first_coord (bool): Average out first coordinate if there are 3
             dimensions.
+        select_valid (bool): If True, select central contiguous unmasked subset of
+            data.
         possible kwargs:
             title: str or None of False. If None or False, no title will be plotted.
             cmap: Example: 'viridis', 'Reds', 'Reds_r', etc... Can also be a
@@ -674,6 +678,9 @@ def cube_plotting(
             format:
 
     """
+    if select_valid:
+        cube = select_valid_subset(cube)
+
     if not isinstance(cube, iris.cube.Cube):
         cube = dummy_lat_lon_cube(
             cube, lat_lims=dummy_lat_lims, lon_lims=dummy_lon_lims
@@ -1011,6 +1018,23 @@ def sample_map_model_output():
     data = np.random.normal(size=(100, 50))
     data2 = np.random.normal(size=(100, 50))
     map_model_output(data, data2, "testing", 1.0)
+
+
+def sample_region_plotting():
+    np.random.seed(1)
+    shape = (200, 400)
+    cube = dummy_lat_lon_cube(np.random.random(shape) ** 3 + 0.05, units="1")
+    cube.data = np.ma.MaskedArray(
+        cube.data, mask=np.zeros_like(cube.data, dtype=np.bool_)
+    )
+    cube.data.mask[:50] = True
+    cube.data.mask[150:] = True
+    cube.data.mask[:, :50] = True
+    cube.data.mask[:, 150:] = True
+    cube_plotting(
+        cube, log=True, title="Testing", orientation="horizontal", select_valid=True
+    )
+    plt.show()
 
 
 if __name__ == "__main__":

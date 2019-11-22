@@ -14,6 +14,7 @@ from subprocess import CalledProcessError, check_output
 from time import time
 
 import fiona
+import iris
 import numpy as np
 from affine import Affine
 from rasterio import features
@@ -491,3 +492,70 @@ def get_ncpus(default=1):
         "Could not read NCPUS environment variable. Using default: {}.".format(default)
     )
     return default
+
+
+def select_valid_subset(data, axis=None):
+    """Extract contiguous subset of `data` by removing masked borders.
+
+    Args:
+        data (numpy.ma.core.MaskedArray or iris.cube.Cube): Data needs to have an
+            array mask.
+        axis (int, tuple of int, or None): Axes to subject to selection.
+
+    Returns:
+        Subset of `data` with same type.
+
+    Examples:
+        >>> import numpy as np
+        >>> np.all(
+        ...     np.isclose(
+        ...         select_valid_subset(
+        ...             np.ma.MaskedArray([1, 2, 3, 4], mask=[1, 1, 0, 0])
+        ...         ),
+        ...         [3, 4],
+        ...     )
+        ... )
+        True
+
+    """
+    if isinstance(data, iris.cube.Cube):
+        mask = data.data.mask
+    else:
+        mask = data.mask
+
+    if isinstance(mask, (bool, np.bool_)):
+        raise ValueError(f"Mask is '{mask}'. Expected an array instead.")
+
+    if axis is None:
+        axis = tuple(range(len(data.shape)))
+    elif isinstance(axis, (int, np.integer)):
+        axis = (axis,)
+    elif not isinstance(axis, tuple):
+        raise ValueError(f"Invalid axis ('{axis}') type '{type(axis)}'.")
+
+    slices = [slice(None)] * len(data.shape)
+
+    all_axes = list(range(len(data.shape)))
+    for ax in axis:
+        # Compress mask such that only the axis of interest remains.
+        compressed = np.all(mask, axis=tuple(x for x in all_axes if x != ax))
+
+        diff_elements = np.diff(compressed).cumsum()
+
+        ini_index = 0
+        fin_index = data.shape[ax]
+
+        # Check the beginning.
+        if compressed[0]:
+            # Since 0 refers to contiguous blocks of masked elements at the beginning.
+            # + 1 since the first such masked element is consumed when carrying out
+            # numpy.diff() as the reference value.
+            ini_index += np.sum(diff_elements == 0) + 1
+
+        if compressed[-1]:
+            # Since the maximum diff element has to appear at the end.
+            fin_index -= np.sum(diff_elements == np.max(diff_elements))
+
+        slices[ax] = slice(ini_index, fin_index)
+
+    return data[tuple(slices)]
