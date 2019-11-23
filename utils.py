@@ -10,6 +10,8 @@ import os
 import platform
 import re
 import socket
+from collections import Counter, namedtuple
+from copy import deepcopy
 from subprocess import CalledProcessError, check_output
 from time import time
 
@@ -18,6 +20,7 @@ import iris
 import numpy as np
 from affine import Affine
 from rasterio import features
+from scipy.ndimage import label
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -494,16 +497,67 @@ def get_ncpus(default=1):
     return default
 
 
-def select_valid_subset(data, axis=None):
+def translate_longitude_system(longitudes, orig="-180", return_indices=False):
+    """Translate the longitudes from one system to another.
+
+    Note:
+        The resulting longitudes may not be returned in the initial order, see
+        `return_indices`.
+
+    Args:
+        longitudes (1-D iterable): Longitudes to translate.
+        orig (str): If "-180", translate longitudes from [-180, 180] to [0, 360) and
+            if "0", from [0, 360] to [-180, 180).
+        return_indices (bool): Return the indices used in the post-translation sort.
+            These can be used to translate the corresponding datasets using
+            `numpy.take_along_axis` for example.
+
+    Returns:
+        translated, sorted longitudes [, argsort indices].
+
+    Examples:
+        >>> list(translate_longitude_system([-180, -179, -90, -1, 0, 180], orig="-180"))
+        [0, 180, 180, 181, 270, 359]
+        >>> # Take care with the extrema! Notice that the above input is not restored
+        >>> # below due to the asymmetric mapping [-180, 180] to [0, 360) vs [0, 360]
+        >>> # to [-180, 180).
+        >>> list(translate_longitude_system([0, 180, 180, 181, 270, 359], orig="0"))
+        [-180, -180, -179, -90, -1, 0]
+        >>> list(translate_longitude_system([0, 180, 270, 359, 360], orig="0"))
+        [-180, -90, -1, 0, 0]
+
+    """
+    if orig == "-180":
+        new_longitudes = np.asarray(longitudes) % 360
+    elif orig == "0":
+        new_longitudes = np.asarray(longitudes).copy()
+        new_longitudes[new_longitudes >= 180] -= 360
+    else:
+        raise ValueError(f"Unknown `orig` {orig}. Expected '-180' or '0'.")
+
+    indices = np.argsort(new_longitudes)
+    if return_indices:
+        return new_longitudes[indices], indices
+    else:
+        return new_longitudes[indices]
+
+
+def select_valid_subset(data, axis=None, longitudes=None):
     """Extract contiguous subset of `data` by removing masked borders.
 
     Args:
         data (numpy.ma.core.MaskedArray or iris.cube.Cube): Data needs to have an
             array mask.
         axis (int, tuple of int, or None): Axes to subject to selection.
+        longitudes (1-D iterable): Longitudes associated with the last axis of the
+            data, ie. `len(longitudes) == data.shape[-1]`. If supplied, translation of
+            the longitudes between systems ([-180, 180] <-> [0, 360]) will be
+            considered to achieve the minimum possible resultant array size. If
+            longitudes are supplied, both the (transformed - if needed) data and
+            longitudes will be returned.
 
     Returns:
-        Subset of `data` with same type.
+        (Translated) subset of `data` with same type [, (translated) longitudes].
 
     Examples:
         >>> import numpy as np
@@ -536,26 +590,171 @@ def select_valid_subset(data, axis=None):
     slices = [slice(None)] * len(data.shape)
 
     all_axes = list(range(len(data.shape)))
+    lon_ax = all_axes[-1]
+
+    attempt_translation = False
+    if longitudes is not None and lon_ax in axis:
+        # Figure out if longitude translation is necessary separately.
+        axis = tuple(x for x in axis if x != lon_ax)
+        attempt_translation = True
+
     for ax in axis:
         # Compress mask such that only the axis of interest remains.
         compressed = np.all(mask, axis=tuple(x for x in all_axes if x != ax))
 
-        diff_elements = np.diff(compressed).cumsum()
+        elements, n_elements = label(compressed)
+        if not n_elements:
+            # If no masked elements were found there is nothing to do.
+            slices[ax] = slice(None)
+        else:
+            ini_index = 0
+            fin_index = data.shape[ax]
 
-        ini_index = 0
-        fin_index = data.shape[ax]
+            # Check the beginning.
+            if elements[0]:
+                # Since False elements are labelled as 0, we know that the first element
+                # is masked (True) here.
 
-        # Check the beginning.
-        if compressed[0]:
-            # Since 0 refers to contiguous blocks of masked elements at the beginning.
-            # + 1 since the first such masked element is consumed when carrying out
-            # numpy.diff() as the reference value.
-            ini_index += np.sum(diff_elements == 0) + 1
+                # Count how many elements belong to this feature.
+                ini_index += np.sum(elements == elements[0])
 
-        if compressed[-1]:
-            # Since the maximum diff element has to appear at the end.
-            fin_index -= np.sum(diff_elements == np.max(diff_elements))
+            if elements[-1]:
+                fin_index -= np.sum(elements == elements[-1])
 
-        slices[ax] = slice(ini_index, fin_index)
+            slices[ax] = slice(ini_index, fin_index)
 
-    return data[tuple(slices)]
+    indices = None
+
+    if attempt_translation:
+        # Check how many entries along the longitude axis could be removed for each of
+        # the two cases.
+
+        Result = namedtuple("Result", ("n_invalid", "ini_index", "fin_index"))
+
+        # First check the native, untranslated case.
+
+        # Compress mask such that only the axis of interest remains.
+        compressed = np.all(mask, axis=tuple(x for x in all_axes if x != lon_ax))
+
+        elements, n_elements = label(compressed)
+        if not n_elements:
+            # If no masked elements were found there is nothing to do.
+            slices[lon_ax] = slice(None)
+        else:
+            ini_index = 0
+            fin_index = data.shape[lon_ax]
+
+            n_invalid = 0
+            # Check the beginning.
+            if elements[0]:
+                # Since False elements are labelled as 0, we know that the first element
+                # is masked (True) here.
+
+                # Count how many elements belong to this feature.
+                beginning_offset = np.sum(elements == elements[0])
+                n_invalid += beginning_offset
+                ini_index += beginning_offset
+
+            if elements[-1]:
+                end_offset = np.sum(elements == elements[-1])
+                n_invalid += end_offset
+                fin_index -= end_offset
+
+            native_result = Result(n_invalid, ini_index, fin_index)
+
+            # If there is a contiguous block of invalid values bigger than the
+            # previous result, we have to carry out longitude translation to remove
+            # it.
+            if native_result.n_invalid >= max(
+                Counter(
+                    elements[native_result.ini_index : native_result.fin_index]
+                ).values()
+            ):
+                slices[lon_ax] = slice(native_result.ini_index, native_result.fin_index)
+            else:
+                logger.info("Carrying out longitude translation.")
+                # Carry out the translation.
+                if np.any(longitudes) > 180:
+                    orig = "0"
+                else:
+                    orig = "-180"
+
+                tr_longitudes, tr_indices = translate_longitude_system(
+                    longitudes, orig=orig, return_indices=True
+                )
+
+                tr_indices = tr_indices.reshape(*[1] * (len(data.shape) - 1), -1)
+                tr_mask = np.take_along_axis(mask, tr_indices, axis=lon_ax)
+
+                # Compress mask such that only the axis of interest remains.
+                compressed = np.all(
+                    tr_mask, axis=tuple(x for x in all_axes if x != lon_ax)
+                )
+
+                elements, n_elements = label(compressed)
+                assert n_elements, (
+                    "We should only be here if there exists a bigger (by definition "
+                    "with non-zero length) contiguous block of invalid elements after "
+                    "translation."
+                )
+
+                ini_index = 0
+                fin_index = data.shape[lon_ax]
+
+                n_invalid = 0
+                # Check the beginning.
+                if elements[0]:
+                    # Since False elements are labelled as 0, we know that the first element
+                    # is masked (True) here.
+
+                    # Count how many elements belong to this feature.
+                    beginning_offset = np.sum(elements == elements[0])
+                    n_invalid += beginning_offset
+                    ini_index += beginning_offset
+
+                if elements[-1]:
+                    end_offset = np.sum(elements == elements[-1])
+                    n_invalid += end_offset
+                    fin_index -= end_offset
+
+                translated_result = Result(n_invalid, ini_index, fin_index)
+
+                # Compare the translated case with the native case.
+                assert translated_result.n_invalid > native_result.n_invalid, (
+                    "We should only be here if there exists a bigger contiguous block "
+                    "of invalid elements after translation."
+                )
+                slices[lon_ax] = slice(
+                    translated_result.ini_index, translated_result.fin_index
+                )
+                indices = tr_indices
+
+    if longitudes is not None:
+        if indices is None:
+            return data[tuple(slices)], longitudes
+        else:
+            # If a longitude translation was carried out, we need to translate the
+            # data accordingly before we select it using the slices.
+
+            # The `take_along_axis` operation is not compatible with iris Cubes.
+            if isinstance(data, iris.cube.Cube):
+                tr_new_data = np.take_along_axis(data.data, tr_indices, axis=lon_ax)
+
+                old_lon = data.coord("longitude")
+
+                # Cut down to required size, then fill with the update information.
+                new_data = deepcopy(data)[..., : tr_new_data.shape[-1]]
+                new_data.data = tr_new_data
+
+                new_lon = new_data.coord("longitude")
+                new_lon.points = tr_longitudes
+                new_lon.bounds = None
+                if old_lon.has_bounds():
+                    new_lon.guess_bounds()
+
+            else:
+                new_data = np.take_along_axis(data, tr_indices, axis=lon_ax)
+
+            return new_data[tuple(slices)], tr_longitudes
+    else:
+        return data[tuple(slices)]

@@ -671,20 +671,20 @@ def cube_plotting(
             orientation:
             fraction:
             pad:
-            srhink:
+            shrink:
             aspect:
             anchor:
             panchor:
             format:
 
     """
-    if select_valid:
-        cube = select_valid_subset(cube)
-
     if not isinstance(cube, iris.cube.Cube):
         cube = dummy_lat_lon_cube(
             cube, lat_lims=dummy_lat_lims, lon_lims=dummy_lon_lims
         )
+
+    if select_valid:
+        cube, _ = select_valid_subset(cube, longitudes=cube.coord("longitude").points)
 
     cube = cube.copy()
     if average_first_coord and len(cube.shape) == 3:
@@ -814,6 +814,8 @@ def cube_plotting(
         "anchor": kwargs.get("anchor", (0.5, 1.0)),
         "panchor": kwargs.get("panchor", (0.5, 0.0)),
         "format": "%.1e" if log else None,
+        "cax": kwargs.get("cax"),
+        "ax": ax,
     }
     # TODO: https://matplotlib.org/3.1.0/gallery/axes_grid1/simple_colorbar.html
     # TODO: Use this to attach the colorbar to the axes, not the figure. Errors were

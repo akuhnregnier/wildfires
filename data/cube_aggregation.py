@@ -440,7 +440,7 @@ class Datasets:
             final_masks = []
         else:
             reference_cube = self.select_variables(
-                reference_variable, exact=False, strict=True, inplace=False, copy=False
+                reference_variable, strict=True, inplace=False, copy=False
             ).cubes[0]
             final_masks = [reference_cube.data.mask]
         for mask in masks:
@@ -635,15 +635,16 @@ class Datasets:
         """
         if isinstance(names, str):
             names = (names,)
-        # Homogenise input names.
-        raw_var_names = set(
+        # Homogenise input names. Do not convert to set here since variable names may
+        # be identical (eg. 'burned_area' for multiple datasets).
+        raw_var_names = tuple(
             map(partial(self.field_translator, field="variable"), names)
         )
 
         new_state = self.state()
         for dataset_name in new_state:
             new_state[dataset_name] = list(
-                set(new_state[dataset_name]).intersection(raw_var_names)
+                set(new_state[dataset_name]).intersection(set(raw_var_names))
             )
 
         new = self.from_state(new_state, inplace=inplace, copy=copy)
