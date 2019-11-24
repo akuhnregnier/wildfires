@@ -813,12 +813,21 @@ class Dataset(ABC):
             new_dataset.cubes = self.cubes[index]
             return new_dataset
         if isinstance(index, str):
-            # TODO: Use contains() function to search for pretty names as well, (and to
-            # TODO: implement regex matching).
+            # Substitute pretty name for raw name if needed.
+            index = self._get_raw_variable_names().get(index, index)
             new_index = self.variable_names(which="raw").index(index)
         else:
             new_index = index
         return self.cubes[new_index]
+
+    @classmethod
+    def _get_raw_variable_names(cls):
+        """The inverse of the pretty variable name dict."""
+        all_pretty = list(cls.pretty_variable_names.values())
+        assert len(set(all_pretty)) == len(
+            all_pretty
+        ), "Mapping pretty to raw names requires unique pretty variable names."
+        return dict((pretty, raw) for raw, pretty in cls.pretty_variable_names.items())
 
     @property
     def _shallow(self):
@@ -1267,7 +1276,7 @@ class Dataset(ABC):
         if start is None and end is None:
             return
         if not all(
-            hasattr(date, required_type) and getattr(date, required_type) is not None
+            getattr(date, required_type, None) is not None
             for date in (start, end)
             for required_type in ("year", "month")
         ):
@@ -1526,12 +1535,12 @@ class Dataset(ABC):
         logger.debug(f"Finished getting monthly climatology for '{self}'.")
         return mean_dataset, climatology_dataset, monthly_dataset
 
-    def get_observed_mask(self, thres=0.8, frequency="raw"):
+    def get_observed_mask(self, thres=0.8, frequency=None):
         """Calculate a mask from the observed area and a minimum threshold.
 
         Args:
             thres (float): Minimum observed area threshold in [0, 1].
-            frequency (str): If "raw", use the native temporal frequency. If
+            frequency (str or None): If None, use the native temporal frequency. If
                 "monthly", average observed fraction to monthly data before applying
                 the threshold.
 
@@ -1547,8 +1556,8 @@ class Dataset(ABC):
         assert (
             0 <= thres <= 1
         ), f"Threshold needs to be in range [0, 1], but got '{thres}'."
-        assert frequency in ("raw", "monthly"), (
-            "Expected frequency to be one of 'raw' and 'monthly', but got "
+        assert frequency in (None, "monthly"), (
+            "Expected frequency to be one of 'None' and 'monthly', but got "
             f"'{frequency}'."
         )
         if not hasattr(self, "_observed_area"):
@@ -1564,13 +1573,7 @@ class Dataset(ABC):
             # Otherwise recreate all cubes.
             target_dataset = type(self)()
 
-        target_dataset.cubes = iris.cube.CubeList(
-            [
-                target_dataset.cubes.extract_strict(
-                    iris.Constraint(self._observed_area["name"])
-                )
-            ]
-        )
+        target_dataset.cubes[:] = [target_dataset[self._observed_area["name"]]]
 
         # Implement unit conversions here if needed.
         if target_dataset.cube.units != cf_units.Unit(1):
@@ -1590,6 +1593,89 @@ class Dataset(ABC):
         target_cube.data = observed_mask
         target_cube.units = cf_units.Unit("1")
         return target_cube
+
+    @classmethod
+    def get_obs_masked_dataset(cls, mask_vars, thres=0.8, ndigits=3):
+        """Create a new dataset based on masking of certain variables.
+
+        The mask will be based on the observed area and the given threshold.
+
+        Args:
+            mask_vars ([iterable of] str): Variable(s) to mask using the observed area
+                mask.
+            thres (float): Minimum observed area threshold in [0, 1].
+            ndigits (int): Number of digits to round `thres` to.
+
+        Returns:
+            Instance of `cls` subclass: The name of this class will reflect the masked
+                variables and the applied threshold.
+
+        """
+        rounded_thres = round(thres, ndigits)
+        assert np.isclose(thres - rounded_thres, 0), (
+            "Supplied threshold has too much precision. Either decrease precision or "
+            "increase `ndigits`."
+        )
+
+        if isinstance(mask_vars, str):
+            mask_vars = (mask_vars,)
+
+        # Map given names to raw names if needed.
+        raw_mask_vars = [
+            cls._get_raw_variable_names()
+            .get(name, name)
+            .replace(" ", "_")
+            .replace("-", "_")
+            .replace("__", "_")
+            .strip("_")
+            for name in mask_vars
+        ]
+
+        name_mask_vars = [
+            raw_name.replace(" ", "_").replace("-", "_").replace("__", "_").strip("_")
+            for raw_name in raw_mask_vars
+        ]
+
+        format_str = "_thres_{rounded_thres:0." + str(ndigits) + "f}"
+        pretty_format_str = "Thres {rounded_thres:0." + str(ndigits) + "f}"
+
+        new_name = (
+            cls.__name__
+            + f"_{'__'.join(name_mask_vars)}_"
+            + format_str.format(rounded_thres=rounded_thres)
+        )
+
+        # Initialise new Dataset instance.
+        new_pretty_dataset_name = (
+            cls._pretty
+            + f" {' '.join(raw_mask_vars)} "
+            + pretty_format_str.format(rounded_thres=rounded_thres)
+        )
+
+        # Intercept the cache writing operation in order to modify the cubes with the
+        # observation mask before they get written to the cache. This will then also
+        # affect subsequent retrievals of the cache.
+        def new_cache_func(self):
+            # Apply the mask. At this point the `cubes` attribute has already been
+            # populated.
+
+            # Retrieve the observation mask at the dataset-native frequency.
+            obs_mask = cls().get_observed_mask(thres=rounded_thres)
+
+            # Apply the mask to the cubes as set out in `mask_vars`.
+            for var in raw_mask_vars:
+                self[var].data.mask |= obs_mask.data
+
+            # Call the original cache function to actually store the modified CubeList.
+            cls.write_cache(self)
+
+        masked_dataset = type(
+            new_name,
+            (cls,),
+            {"_pretty": new_pretty_dataset_name, "write_cache": new_cache_func},
+        )()
+
+        return masked_dataset
 
 
 class AvitabileAGB(Dataset):
@@ -1661,7 +1747,8 @@ class CCI_BurnedArea_MERIS_4_1(Dataset):
     _observed_area = {"name": "fraction of observed area"}
 
     def __init__(self):
-        self.dir = os.path.join(DATA_DIR, type(self).__name__)
+        # Manually input directory name here to maintain this directory for subclasses.
+        self.dir = os.path.join(DATA_DIR, "CCI_BurnedArea_MERIS_4_1")
 
         self.cubes = self.read_cache()
         # If a CubeList has been loaded successfully, exit __init__
@@ -1760,9 +1847,7 @@ class CCI_BurnedArea_MERIS_4_1(Dataset):
             # Otherwise recreate all cubes and extract the needed data.
             target_dataset = type(self)()
 
-        vegetation_cube = target_dataset.cubes.extract_strict(
-            iris.Constraint("vegetation class name")
-        )
+        vegetation_cube = target_dataset["vegetation class name"]
         # Remove artefacts of saving the cube. See note above.
         vegetation_class_names = [
             "".join(class_name_data).strip().strip(chr(255))
@@ -1821,7 +1906,8 @@ class CCI_BurnedArea_MODIS_5_1(Dataset):
     }
 
     def __init__(self):
-        self.dir = os.path.join(DATA_DIR, type(self).__name__)
+        # Manually input directory name here to maintain this directory for subclasses.
+        self.dir = os.path.join(DATA_DIR, "CCI_BurnedArea_MODIS_5_1")
 
         self.cubes = self.read_cache()
         # If a CubeList has been loaded successfully, exit __init__
@@ -1904,9 +1990,7 @@ class CCI_BurnedArea_MODIS_5_1(Dataset):
 
     @property
     def vegetation_class_names(self):
-        vegetation_cube = self.cubes.extract_strict(
-            iris.Constraint("vegetation class name")
-        )
+        vegetation_cube = self["vegetation class name"]
         # Remove artefacts of saving the cube. See note above.
         vegetation_class_names = [
             "".join(class_name_data).strip().strip(chr(255))

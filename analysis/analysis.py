@@ -136,9 +136,7 @@ def print_dataset_times(datasets, latex=False, lat_lon=False):
         logger.info("No time information found.")
 
 
-def get_no_fire_mask():
-    # TODO: This only takes into account the default time interval, 2005-2011 (limited
-    # by MERIS). Make this more general!
+def get_no_fire_mask(min_time=None, max_time=None):
     fire_datasets = Datasets(
         (
             fire_dataset()
@@ -154,7 +152,9 @@ def get_no_fire_mask():
         ["CCI MERIS BA", "CCI MODIS BA", "GFED4 BA", "GFED4s BA", "MCD64CMQ BA"]
     )
 
-    monthly = prepare_selection(fire_datasets, which="monthly")
+    monthly = prepare_selection(
+        fire_datasets, min_time=min_time, max_time=max_time, which="monthly"
+    )
 
     no_fire_mask = np.all(
         reduce(np.logical_and, (np.isclose(cube.data, 0) for cube in monthly.cubes)),
@@ -211,7 +211,7 @@ def data_processing(
 
     for cube in masked_datasets.cubes:
         cube.data.mask |= reduce(
-            np.logical_or, (match_shape(mask, cube.shape) for mask in masks_to_apply),
+            np.logical_or, (match_shape(mask, cube.shape) for mask in masks_to_apply)
         )
 
     # Filling/processing/cleaning datasets.
