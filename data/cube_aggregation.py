@@ -49,7 +49,6 @@ IGNORED_DATASETS = [
     "ESA_CCI_Landcover",
     "ESA_CCI_Soilmoisture",
     "ESA_CCI_Soilmoisture_Daily",
-    "GFEDv4s",
     "GPW_v4_pop_dens",
     "LIS_OTD_lightning_time_series",
     "Simard_canopyheight",

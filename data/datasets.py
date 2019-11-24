@@ -83,6 +83,14 @@ iris_memory = Memory(
 )
 
 
+class Error(Exception):
+    """Base class for exceptions in the datasets module."""
+
+
+class ObservedAreaError(Error):
+    """Raised when a Dataset does not satisfy observed area calculation requirements."""
+
+
 def homogenise_cube_attributes(cubes):
     """Ensure all given cubes have compatible attributes in-place."""
     attribute_list = [cube.attributes for cube in cubes]
@@ -918,10 +926,10 @@ class Dataset(ABC):
             n_dim = len(cube.shape)
             coord_names = []
             if (
-                hasattr(self, "special_coord_cubes")
-                and cube.name() in self.special_coord_cubes
+                hasattr(self, "_special_coord_cubes")
+                and cube.name() in self._special_coord_cubes
             ):
-                coord_names.extend(self.special_coord_cubes[cube.name()])
+                coord_names.extend(self._special_coord_cubes[cube.name()])
             elif n_dim == 2:
                 coord_names.extend(("latitude", "longitude"))
             elif n_dim == 3:
@@ -1021,9 +1029,18 @@ class Dataset(ABC):
         return self.grid("longitude")
 
     @property
+    def _temporal_cubes(self):
+        temporal_cubes = iris.cube.CubeList()
+        for cube in self:
+            if any(coord.name() == "time" for coord in cube.coords()):
+                temporal_cubes.append(cube)
+        return temporal_cubes
+
+    @property
     def frequency(self):
-        try:
-            time_coord = self.cubes[0].coord("time")
+        temporal_cubes = self._temporal_cubes
+        if temporal_cubes:
+            time_coord = temporal_cubes[0].coord("time")
             if len(time_coord.points) == 1:
                 return "static"
             raw_start = time_coord.cell(0).point
@@ -1034,28 +1051,29 @@ class Dataset(ABC):
                 return "monthly"
             if (start + relativedelta(months=+12)) == end:
                 return "yearly"
-            month_number_coords = self.cubes[0].coords("month_number")
+            month_number_coords = temporal_cubes[0].coords("month_number")
             if month_number_coords:
                 assert len(month_number_coords) == 1
                 if tuple(month_number_coords[0].points) == tuple(range(1, 13)):
                     return "climatology"
             return str(raw_end - raw_start)
-
-        except iris.exceptions.CoordinateNotFoundError:
+        else:
             return "static"
 
     @property
     def min_time(self):
-        try:
-            return max(cube.coord("time").cell(0).point for cube in self.cubes)
-        except iris.exceptions.CoordinateNotFoundError:
+        temporal_cubes = self._temporal_cubes
+        if temporal_cubes:
+            return max(cube.coord("time").cell(0).point for cube in temporal_cubes)
+        else:
             return "static"
 
     @property
     def max_time(self):
-        try:
-            return min(cube.coord("time").cell(-1).point for cube in self.cubes)
-        except iris.exceptions.CoordinateNotFoundError:
+        temporal_cubes = self._temporal_cubes
+        if temporal_cubes:
+            return min(cube.coord("time").cell(-1).point for cube in temporal_cubes)
+        else:
             return "static"
 
     @property
@@ -1508,6 +1526,71 @@ class Dataset(ABC):
         logger.debug(f"Finished getting monthly climatology for '{self}'.")
         return mean_dataset, climatology_dataset, monthly_dataset
 
+    def get_observed_mask(self, thres=0.8, frequency="raw"):
+        """Calculate a mask from the observed area and a minimum threshold.
+
+        Args:
+            thres (float): Minimum observed area threshold in [0, 1].
+            frequency (str): If "raw", use the native temporal frequency. If
+                "monthly", average observed fraction to monthly data before applying
+                the threshold.
+
+        Raises:
+            ObservedAreaError: If the `_observed_area` attribute is not defined, or
+                the cube specified therein does not match one of the supported units
+                (1,).
+
+        Returns:
+            iris.cube.Cube: Cube containing the Boolean mask.
+
+        """
+        assert (
+            0 <= thres <= 1
+        ), f"Threshold needs to be in range [0, 1], but got '{thres}'."
+        assert frequency in ("raw", "monthly"), (
+            "Expected frequency to be one of 'raw' and 'monthly', but got "
+            f"'{frequency}'."
+        )
+        if not hasattr(self, "_observed_area"):
+            raise ObservedAreaError(
+                f"The dataset {self} does not specify the information necessary to "
+                "determine the observed area mask."
+            )
+
+        if self._observed_area["name"] in self.variable_names("raw"):
+            # If the cube containing the observed fraction is still present.
+            target_dataset = self.copy()
+        else:
+            # Otherwise recreate all cubes.
+            target_dataset = type(self)()
+
+        target_dataset.cubes = iris.cube.CubeList(
+            [
+                target_dataset.cubes.extract_strict(
+                    iris.Constraint(self._observed_area["name"])
+                )
+            ]
+        )
+
+        # Implement unit conversions here if needed.
+        if target_dataset.cube.units != cf_units.Unit(1):
+            raise ObservedAreaError(
+                "Unsupported observed area unit '{self._observed_area['unit']}'."
+            )
+
+        if frequency == "monthly" and self.frequency != "monthly":
+            target_dataset = target_dataset.get_monthly_dataset(
+                target_dataset.min_time, target_dataset.max_time
+            )
+
+        target_cube = target_dataset.cube
+        observed_mask = target_cube.data.data < thres
+
+        # Exchange data with the original (perhaps averaged) Cube for consistency.
+        target_cube.data = observed_mask
+        target_cube.units = cf_units.Unit("1")
+        return target_cube
+
 
 class AvitabileAGB(Dataset):
     _pretty = "Avitabile AGB"
@@ -1566,7 +1649,7 @@ class CarvalhaisGPP(Dataset):
 class CCI_BurnedArea_MERIS_4_1(Dataset):
     _pretty = "CCI MERIS 4.1"
     pretty_variable_names = {"burned_area": "CCI MERIS BA"}
-    special_coord_cubes = {
+    _special_coord_cubes = {
         "vegetation class name": ["vegetation_class"],
         "burned area in vegetation class": [
             "time",
@@ -1575,6 +1658,7 @@ class CCI_BurnedArea_MERIS_4_1(Dataset):
             "longitude",
         ],
     }
+    _observed_area = {"name": "fraction of observed area"}
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, type(self).__name__)
@@ -1664,7 +1748,19 @@ class CCI_BurnedArea_MERIS_4_1(Dataset):
 
     @property
     def vegetation_class_names(self):
-        vegetation_cube = self.cubes.extract_strict(
+        """Retrieve the vegetation class names."""
+        # Make the vegetation names persist even if the corresponding cube is removed.
+        if hasattr(self, "_cached_vegetation_class_names"):
+            return self._cached_vegetation_class_names
+
+        if "vegetation class name" in self.variable_names("raw"):
+            # If the cube containing the names is still present.
+            target_dataset = self
+        else:
+            # Otherwise recreate all cubes and extract the needed data.
+            target_dataset = type(self)()
+
+        vegetation_cube = target_dataset.cubes.extract_strict(
             iris.Constraint("vegetation class name")
         )
         # Remove artefacts of saving the cube. See note above.
@@ -1672,6 +1768,8 @@ class CCI_BurnedArea_MERIS_4_1(Dataset):
             "".join(class_name_data).strip().strip(chr(255))
             for class_name_data in np.vectorize(chr)(vegetation_cube.data.data)
         ]
+
+        self._cached_vegetation_class_names = vegetation_class_names
         return vegetation_class_names
 
     def get_monthly_data(
@@ -1712,7 +1810,7 @@ class CCI_BurnedArea_MERIS_4_1(Dataset):
 class CCI_BurnedArea_MODIS_5_1(Dataset):
     _pretty = "CCI MODIS 5.1"
     pretty_variable_names = {"burned_area": "CCI MODIS BA"}
-    special_coord_cubes = {
+    _special_coord_cubes = {
         "vegetation class name": ["vegetation_class"],
         "burned area in vegetation class": [
             "time",
