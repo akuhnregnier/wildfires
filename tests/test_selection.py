@@ -48,12 +48,12 @@ def big_dataset():
 
 @pytest.fixture(scope="function")
 def sel():
-    return Datasets(map(lambda dataset: dataset(), DUMMY_DATASETS[:2]))
+    return Datasets(dataset() for dataset in DUMMY_DATASETS[:2])
 
 
 @pytest.fixture(scope="function")
 def long_sel():
-    return Datasets(map(lambda dataset: dataset(), DUMMY_DATASETS))
+    return Datasets(dataset() for dataset in DUMMY_DATASETS)
 
 
 def test_ordering():

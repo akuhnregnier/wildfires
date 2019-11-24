@@ -140,25 +140,24 @@ def get_no_fire_mask():
     # TODO: This only takes into account the default time interval, 2005-2011 (limited
     # by MERIS). Make this more general!
     fire_datasets = Datasets(
-        map(
-            lambda fire_dataset: fire_dataset(),
-            (GFEDv4s, GFEDv4, CCI_BurnedArea_MODIS_5_1, MCD64CMQ_C6),
+        (
+            fire_dataset()
+            for fire_dataset in (
+                GFEDv4s,
+                GFEDv4,
+                CCI_BurnedArea_MODIS_5_1,
+                MCD64CMQ_C6,
+                CCI_BurnedArea_MERIS_4_1,
+            )
         )
     ).select_variables(
-        ["CCI MODIS BA", "GFED4 BA", "GFED4s BA", "MCD64CMQ BA"]
-    ) + Datasets(
-        CCI_BurnedArea_MERIS_4_1()
-    ).select_variables(
-        "CCI MERIS BA"
+        ["CCI MERIS BA", "CCI MODIS BA", "GFED4 BA", "GFED4s BA", "MCD64CMQ BA"]
     )
 
     monthly = prepare_selection(fire_datasets, which="monthly")
 
     no_fire_mask = np.all(
-        reduce(
-            np.logical_and,
-            map(partial(np.isclose, b=0), (cube.data for cube in monthly.cubes)),
-        ),
+        reduce(np.logical_and, (np.isclose(cube.data, 0) for cube in monthly.cubes)),
         axis=0,
     )
     return no_fire_mask
@@ -212,8 +211,7 @@ def data_processing(
 
     for cube in masked_datasets.cubes:
         cube.data.mask |= reduce(
-            np.logical_or,
-            map(partial(match_shape, target_shape=cube.shape), masks_to_apply),
+            np.logical_or, (match_shape(mask, cube.shape) for mask in masks_to_apply),
         )
 
     # Filling/processing/cleaning datasets.

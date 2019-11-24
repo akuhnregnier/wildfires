@@ -68,9 +68,9 @@ if __name__ == "__main__":
     ]
 
     fire_datasets = Datasets(
-        map(
-            lambda fire_dataset: fire_dataset(),
-            (GFEDv4s, GFEDv4, CCI_BurnedArea_MODIS_5_1, MCD64CMQ_C6),
+        (
+            fire_dataset()
+            for fire_dataset in (GFEDv4s, GFEDv4, CCI_BurnedArea_MODIS_5_1, MCD64CMQ_C6)
         )
     ).select_variables(
         ["CCI MODIS BA", "GFED4 BA", "GFED4s BA", "MCD64CMQ BA"]

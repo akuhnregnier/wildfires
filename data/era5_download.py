@@ -176,10 +176,9 @@ def format_variable(
     if isinstance(variable, valid_single_types):
         return [single_value_formatter(variable)]
 
-    type_error_msg = "Type {} not supported for argument '{}'".format(
-        type(variable), variable_name
+    type_error_msg = (
+        f"Type '{type(variable)}' not supported for argument '{variable_name}'."
     )
-
     if hasattr(variable, "__iter__"):
         formatted_variables = []
         for single_value in variable:
