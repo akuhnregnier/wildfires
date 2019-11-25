@@ -1677,6 +1677,79 @@ class Dataset(ABC):
 
         return masked_dataset
 
+    @classmethod
+    def get_temporally_shifted_dataset(cls, months=0):
+        """Derive a new dataset with shifted temporal cubes.
+
+        The definition of the sign of the shift is motivated by the investigation of
+        pre-seasonal vegetation effects. Thus, `months=-1` shifts the data from
+        January to February. Following this, an unshifted dataset's data from February
+        could be compared to the shifted dataset's data from January by simply
+        selecting the month February for both datasets.
+
+        Args:
+            months (int or None): Number of months to shift the "time" coordinates by.
+
+        Returns:
+            An instance of a subclass of `cls` containing the shifted cubes.
+
+        """
+        assert isinstance(months, (int, np.integer))
+        orig_inst = cls()
+        if not months:
+            # No shift to be carried out - return instance of original class.
+            return orig_inst
+
+        if not orig_inst.frequency == "monthly":
+            orig_inst = orig_inst.get_monthly_dataset(
+                orig_inst.min_time, orig_inst.max_time
+            )
+
+        shift_dir = "plus" if months > 0 else "minus"
+        month_str = "months" if abs(months) > 1 else "month"
+
+        # Handle each cube different, since each cube may have unique time coordinates
+        # (different bands for example).
+        for cube in orig_inst:
+            if not cube.coords("time"):
+                continue
+            time_coord = cube.coord("time")
+            time_coord.bounds = None
+            shifted_dates = [
+                time_coord.cell(i).point - relativedelta(months=months)
+                for i in range(len(time_coord.points))
+            ]
+
+            time_unit_str = time_coord.units.name
+            time_unit_cal = time_coord.units.calendar
+
+            num_shifted_dates = [
+                cf_units.date2num(shifted_date, time_unit_str, time_unit_cal)
+                for shifted_date in shifted_dates
+            ]
+
+            time_coord.points = num_shifted_dates
+
+            cube.standard_name = None
+            if cube.long_name:
+                cube.long_name += f" {months} {month_str.capitalize()}"
+            if cube.var_name:
+                cube.var_name += f"_{months}_{month_str}"
+
+        # Instantiate new dataset instance. This will lack any instantiation, which
+        # must be replicated by manually assigning to the cubes attribute below.
+        new_inst = type(
+            cls.__name__ + f"__{shift_dir}_{abs(months)}_{month_str}",
+            (cls,),
+            {
+                "__init__": lambda self: None,
+                "_pretty": cls._pretty + f" {months} {month_str.capitalize()}",
+            },
+        )()
+        new_inst.cubes = orig_inst.cubes
+
+        return new_inst
+
 
 class AvitabileAGB(Dataset):
     _pretty = "Avitabile AGB"
