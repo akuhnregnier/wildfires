@@ -9,6 +9,18 @@ from wildfires.data.datasets import CCI_BurnedArea_MERIS_4_1
 
 
 @data_availability
+def test_observed_mask_id():
+    meris = CCI_BurnedArea_MERIS_4_1()
+    # Isolate the observed area cube only.
+    meris.cubes[:] = [meris[meris._observed_area["name"]]]
+
+    # Calculate the mask.
+    mask = meris.get_observed_mask(thres=0.5)
+
+    assert id(mask) != id(meris.cube)
+
+
+@data_availability
 def test_MERIS_observed_area_mask():
     # Test retrieval of mask from full dataset.
     meris = CCI_BurnedArea_MERIS_4_1()

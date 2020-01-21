@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import logging.config
 import os
+from copy import deepcopy
 
 log_dir = os.path.expanduser(os.path.join("~", "Documents", "wildfire_logs"))
 if not os.path.isdir(log_dir):
@@ -85,15 +87,29 @@ LOGGING = {
 }
 
 LOGGING["loggers"]["__main__"] = LOGGING["loggers"]["wildfires"]
-
 # A copy of the usual configuration with a higher threshold for console output.
-JUPYTER_LOGGING = LOGGING.copy()
+JUPYTER_LOGGING = deepcopy(LOGGING)
 JUPYTER_LOGGING["handlers"]["console"]["level"] = "WARNING"
+
+
+def enable_logging(mode="normal"):
+    """Configure logging in a standardised manner.
+
+    Args:
+        mode (str): Which configuration to use. Possible values are "normal" or
+            "jupyter".
+
+    """
+    if mode == "normal":
+        logging.config.dictConfig(LOGGING)
+    elif mode == "jupyter":
+        logging.config.dictConfig(JUPYTER_LOGGING)
+    else:
+        raise ValueError(f"Unknown mode '{mode}'.")
 
 
 if __name__ == "__main__":
     import logging
-    import logging.config
     from logging_tree import printout
     import cdsapi
 

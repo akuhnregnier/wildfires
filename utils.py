@@ -810,7 +810,7 @@ def select_valid_subset(data, axis=None, longitudes=None):
 
     if longitudes is not None:
         if indices is None:
-            return data[tuple(slices)], longitudes
+            return data[tuple(slices)], longitudes[slices[lon_ax]]
         else:
             # If a longitude translation was carried out, we need to translate the
             # data accordingly before we select it using the slices.
@@ -821,7 +821,7 @@ def select_valid_subset(data, axis=None, longitudes=None):
             else:
                 new_data = np.take_along_axis(data, tr_indices, axis=lon_ax)
 
-            return new_data[tuple(slices)], tr_longitudes
+            return new_data[tuple(slices)], tr_longitudes[slices[lon_ax]]
     else:
         return data[tuple(slices)]
 

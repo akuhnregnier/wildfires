@@ -703,9 +703,11 @@ def cube_plotting(
             # translation is necessary.
             tr_longitudes = longitudes
 
+    title = kwargs.get("title", cube.name())
+
     if projection is None:
         central_longitude = np.mean(tr_longitudes)
-        logger.debug(f"Central longitude: {central_longitude:0.2f}")
+        logger.debug(f"Central longitude ({title}): {central_longitude:0.2f}")
         projection = ccrs.Robinson(central_longitude=central_longitude)
 
     cube = cube.copy()
@@ -844,7 +846,6 @@ def cube_plotting(
     # encountered due to cartopy geoaxes.
     if new_colorbar:
         fig.colorbar(mesh, **colorbar_kwargs)
-    title = kwargs.get("title", cube.name())
     if title:
         if isinstance(title, mpl.text.Text):
             title_text.set_text(title)

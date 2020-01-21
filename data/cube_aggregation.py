@@ -33,7 +33,6 @@ from wildfires.data.datasets import (
     get_mean,
     get_monthly,
     get_monthly_mean_climatology,
-    homogenise_cube_mask,
 )
 from wildfires.joblib.caching import CodeObj, wrap_decorator
 from wildfires.logging_config import LOGGING
@@ -481,8 +480,16 @@ class Datasets:
 
     def homogenise_masks(self):
         for dataset in self:
-            for i in range(len(dataset.cubes)):
-                dataset.cubes[i] = homogenise_cube_mask(dataset.cubes[i])
+            dataset.homogenise_masks()
+        return self
+
+    def apply_masks(self, *masks):
+        """Apply given masks on top of existing masks."""
+        # Ensure masks are recorded in a format to enable the modifications below.
+        self.homogenise_masks()
+        for dataset in self:
+            dataset.apply_masks(*masks)
+        return self
 
     def show(self, variable_format="all"):
         """Print out a representation of the selection."""

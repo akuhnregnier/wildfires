@@ -29,7 +29,7 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from copy import copy, deepcopy
 from datetime import datetime, timedelta
-from functools import wraps
+from functools import reduce, wraps
 
 import cf_units
 import h5py
@@ -57,6 +57,7 @@ from wildfires.utils import (
     get_bounds_from_centres,
     get_centres,
     in_360_longitude_system,
+    match_shape,
     reorder_cube_coord,
     translate_longitude_system,
 )
@@ -1109,9 +1110,32 @@ class Dataset(ABC):
         dataset.cubes = copy(self.cubes)
         return dataset
 
+    def homogenise_masks(self):
+        for i, cube in enumerate(self):
+            self.cubes[i] = homogenise_cube_mask(cube)
+
+    def apply_masks(self, *masks):
+        """Apply given masks on top of existing masks."""
+        # Ensure masks are recorded in a format to enable the modifications below.
+        self.homogenise_masks()
+        # Check the given masks.
+        # TODO: If the masks contain cubes, check that their coordinates are
+        # TODO: consistent.
+        masks = list(masks)
+        for i, mask in enumerate(masks):
+            if isinstance(mask, iris.cube.Cube):
+                masks[i] = mask.data
+
+        for cube in self:
+            # Create the combined mask and apply them each in turn.
+            # TODO: Only calculate the aggregated mask for each unique shape present.
+            cube.data.mask |= reduce(
+                np.logical_or, (match_shape(mask, cube.shape) for mask in masks)
+            )
+
     def grid(self, coord="latitude"):
         try:
-            diffs = np.diff(self.cubes[0].coord(coord).points)
+            diffs = np.diff(self[0].coord(coord).points)
             mean = np.mean(diffs)
             if np.all(np.isclose(diffs, mean)):
                 return np.abs(mean)
@@ -1668,9 +1692,12 @@ class Dataset(ABC):
             target_dataset = self.copy()
         else:
             # Otherwise recreate all cubes.
+            logger.warning(f"Recreating original cubes for {self}.")
             target_dataset = type(self)()
 
-        target_dataset.cubes[:] = [target_dataset[self._observed_area["name"]]]
+        target_dataset.cubes[:] = [
+            deepcopy(target_dataset[self._observed_area["name"]])
+        ]
 
         # Implement unit conversions here if needed.
         if target_dataset.cube.units != cf_units.Unit(1):
@@ -1678,7 +1705,8 @@ class Dataset(ABC):
                 "Unsupported observed area unit '{self._observed_area['unit']}'."
             )
 
-        if frequency == "monthly" and self.frequency != "monthly":
+        if frequency == "monthly" and target_dataset.frequency != "monthly":
+            logger.info("Converting mask to monthly data.")
             target_dataset = target_dataset.get_monthly_dataset(
                 target_dataset.min_time, target_dataset.max_time
             )
