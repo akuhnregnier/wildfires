@@ -496,9 +496,7 @@ if __name__ == "__main__":
             MOD15A2H_LAI_fPAR(),
             VODCA(),
         )
-    )
-
-    selection = selection.select_variables(
+    ).select_variables(
         [
             "AGBtree",
             "maximum temperature",

@@ -10,12 +10,7 @@ from iris.time import PartialDateTime
 
 import wildfires.data.datasets as wildfire_datasets
 from wildfires.data.cube_aggregation import Datasets
-from wildfires.data.datasets import (
-    DATA_DIR,
-    data_is_available,
-    dummy_lat_lon_cube,
-    get_centres,
-)
+from wildfires.data.datasets import data_is_available, dummy_lat_lon_cube
 
 data_availability = pytest.mark.skipif(
     not data_is_available(), reason="Data directory is unavailable."

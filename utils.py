@@ -452,7 +452,8 @@ def get_qstat_ncpus():
     except CalledProcessError:
         logger.exception("Call to qstat failed.")
         return None
-    if out:
+    jobs = out.get("Jobs")
+    if jobs:
         current_hostname = platform.node()
         if not current_hostname:
             current_hostname = socket.gethostname()
@@ -461,7 +462,6 @@ def get_qstat_ncpus():
             return None
 
         # Loop through each job.
-        jobs = out["Jobs"]
         for job_name, job in jobs.items():
             if not job["job_state"] == "R":
                 logger.info(
@@ -497,7 +497,36 @@ def get_ncpus(default=1):
     return default
 
 
-def translate_longitude_system(longitudes, orig="-180", return_indices=False):
+def in_360_longitude_system(longitudes, tol=1e-4):
+    """Determine if the longitudes are represented in the [0, 360] system.
+
+    Note: `np.all` seems to have issues with tolerances lower than ~1e-5.
+
+    Args:
+        longitudes (1-D iterable): Longitudes to translate.
+
+    Examples:
+        >>> in_360_longitude_system([0, 180, 360])
+        True
+        >>> in_360_longitude_system([0, 180])
+        False
+        >>> in_360_longitude_system([-180, 0, 180])
+        False
+
+    """
+    longitudes = np.asarray(longitudes)
+    if np.any(longitudes > 180):
+        assert np.all(
+            longitudes > -tol
+        ), "If longitudes over 180 are present, there should be no longitudes below 0."
+        return True
+    assert np.all(
+        longitudes > (-180 - tol)
+    ), "Longitudes below -180 were found in the [-180, 180] system."
+    return False
+
+
+def translate_longitude_system(longitudes, return_indices=False):
     """Translate the longitudes from one system to another.
 
     Note:
@@ -506,8 +535,6 @@ def translate_longitude_system(longitudes, orig="-180", return_indices=False):
 
     Args:
         longitudes (1-D iterable): Longitudes to translate.
-        orig (str): If "-180", translate longitudes from [-180, 180] to [0, 360) and
-            if "0", from [0, 360] to [-180, 180).
         return_indices (bool): Return the indices used in the post-translation sort.
             These can be used to translate the corresponding datasets using
             `numpy.take_along_axis` for example.
@@ -516,30 +543,86 @@ def translate_longitude_system(longitudes, orig="-180", return_indices=False):
         translated, sorted longitudes [, argsort indices].
 
     Examples:
-        >>> list(translate_longitude_system([-180, -179, -90, -1, 0, 180], orig="-180"))
+        >>> list(translate_longitude_system([-180, -179, -90, -1, 0, 180]))
         [0, 180, 180, 181, 270, 359]
         >>> # Take care with the extrema! Notice that the above input is not restored
         >>> # below due to the asymmetric mapping [-180, 180] to [0, 360) vs [0, 360]
         >>> # to [-180, 180).
-        >>> list(translate_longitude_system([0, 180, 180, 181, 270, 359], orig="0"))
+        >>> list(translate_longitude_system([0, 180, 180, 181, 270, 359]))
         [-180, -180, -179, -90, -1, 0]
-        >>> list(translate_longitude_system([0, 180, 270, 359, 360], orig="0"))
+        >>> list(translate_longitude_system([0, 180, 270, 359, 360]))
         [-180, -90, -1, 0, 0]
 
     """
-    if orig == "-180":
-        new_longitudes = np.asarray(longitudes) % 360
-    elif orig == "0":
-        new_longitudes = np.asarray(longitudes).copy()
-        new_longitudes[new_longitudes >= 180] -= 360
+    if in_360_longitude_system(longitudes):
+        new_longitudes = ((np.asarray(longitudes) + 180) % 360) - 180
     else:
-        raise ValueError(f"Unknown `orig` {orig}. Expected '-180' or '0'.")
+        new_longitudes = np.asarray(longitudes) % 360
 
     indices = np.argsort(new_longitudes)
     if return_indices:
         return new_longitudes[indices], indices
     else:
         return new_longitudes[indices]
+
+
+def reorder_cube_coord(cube, indices, new_coord_points, axis):
+    """Use indices and the corresponding axis to reorder a cube's data along that axis.
+
+    Args:
+        cube (iris.cube.Cube): Cube to be modified.
+        indices (1-D iterable): Indices used to select new ordering of values along
+            the chosen axis.
+        new_coord_points (1-D iterable): New coordinates along `axis`. The length of
+            this iterable needs to match the number of indices.
+        axis (int): Axis along which to reorder the cube.
+
+    Returns:
+        iris.cube.Cube: Reordered cube.
+
+    Examples:
+        >>> from wildfires.data.datasets import dummy_lat_lon_cube
+        >>> import numpy as np
+        >>> data = np.arange(4).reshape(2, 2)
+        >>> a = dummy_lat_lon_cube(data)
+        >>> old_lon_points = a.coord("longitude").points
+        >>> indices = [1, 0]
+        >>> tr_longitudes = old_lon_points[indices]
+        >>> b = reorder_cube_coord(a, indices, tr_longitudes, 1)
+        >>> np.all(np.isclose(b.data, data[:, ::-1]))
+        True
+        >>> id(a) != id(b)
+        True
+        >>> b2 = reorder_cube_coord(a, indices, tr_longitudes, -1)
+        >>> np.all(np.isclose(b2.data, data[:, ::-1]))
+        True
+        >>> new_lon = [90, -90]
+        >>> np.all(np.isclose(b.coord("longitude").points, new_lon))
+        True
+
+    """
+    indices = np.asarray(indices)
+    # To conform with the requirements of the `numpy.take_along_axis` function.
+    indices_shape = [1] * len(cube.shape)
+    indices_shape[axis] = -1
+
+    indices = indices.reshape(*indices_shape)
+    tr_new_data = np.take_along_axis(cube.data, indices, axis=axis)
+
+    # Cut down to the required size, then substitute the reordered data.
+    slices = [slice(None)] * len(cube.shape)
+    slices[axis] = slice(indices.shape[axis])
+    new_cube = deepcopy(cube)[tuple(slices)]
+    new_cube.data = tr_new_data
+
+    coord_name = [coord.name() for coord in cube.coords()][axis]
+    new_lon = new_cube.coord(coord_name)
+    new_lon.points = new_coord_points
+    new_lon.bounds = None
+
+    if cube.coord(coord_name).has_bounds():
+        new_lon.guess_bounds()
+    return new_cube
 
 
 def select_valid_subset(data, axis=None, longitudes=None):
@@ -673,14 +756,10 @@ def select_valid_subset(data, axis=None, longitudes=None):
                 slices[lon_ax] = slice(native_result.ini_index, native_result.fin_index)
             else:
                 logger.info("Carrying out longitude translation.")
-                # Carry out the translation.
-                if np.any(longitudes) > 180:
-                    orig = "0"
-                else:
-                    orig = "-180"
 
+                # Carry out the translation.
                 tr_longitudes, tr_indices = translate_longitude_system(
-                    longitudes, orig=orig, return_indices=True
+                    longitudes, return_indices=True
                 )
 
                 tr_indices = tr_indices.reshape(*[1] * (len(data.shape) - 1), -1)
@@ -738,23 +817,54 @@ def select_valid_subset(data, axis=None, longitudes=None):
 
             # The `take_along_axis` operation is not compatible with iris Cubes.
             if isinstance(data, iris.cube.Cube):
-                tr_new_data = np.take_along_axis(data.data, tr_indices, axis=lon_ax)
-
-                old_lon = data.coord("longitude")
-
-                # Cut down to required size, then fill with the update information.
-                new_data = deepcopy(data)[..., : tr_new_data.shape[-1]]
-                new_data.data = tr_new_data
-
-                new_lon = new_data.coord("longitude")
-                new_lon.points = tr_longitudes
-                new_lon.bounds = None
-                if old_lon.has_bounds():
-                    new_lon.guess_bounds()
-
+                new_data = reorder_cube_coord(data, tr_indices, tr_longitudes, lon_ax)
             else:
                 new_data = np.take_along_axis(data, tr_indices, axis=lon_ax)
 
             return new_data[tuple(slices)], tr_longitudes
     else:
         return data[tuple(slices)]
+
+
+def get_centres(data):
+    """Get the elements between elements of an array.
+
+    Examples:
+        >>> import numpy as np
+        >>> a = np.array([1,2,3])
+        >>> b = get_centres(a)
+        >>> np.all(np.isclose(b, np.array([1.5, 2.5])))
+        True
+
+    """
+    return (data[:-1] + data[1:]) / 2.0
+
+
+def get_bounds_from_centres(data):
+    """Get coordinate bounds from a series of cell centres.
+
+    Only the centre extrema are considered and an equal spacing between samples is
+    assumed.
+
+    Args:
+        data (array-like): Cell centres, which will be processed along axis 0.
+
+    Returns:
+        array-like: (min, max) coordinate bounds.
+
+    Examples:
+        >>> import numpy as np
+        >>> centres = [0.5, 1.5, 2.5]
+        >>> np.all(
+        ...     np.isclose(
+        ...         get_bounds_from_centres(centres),
+        ...         [0.0, 3.0]
+        ...     )
+        ... )
+        True
+
+    """
+    data_min = np.min(data)
+    data_max = np.max(data)
+    half_spacing = (data_max - data_min) / (2 * (len(data) - 1))
+    return data_min - half_spacing, data_max + half_spacing

@@ -86,6 +86,10 @@ LOGGING = {
 
 LOGGING["loggers"]["__main__"] = LOGGING["loggers"]["wildfires"]
 
+# A copy of the usual configuration with a higher threshold for console output.
+JUPYTER_LOGGING = LOGGING.copy()
+JUPYTER_LOGGING["handlers"]["console"]["level"] = "WARNING"
+
 
 if __name__ == "__main__":
     import logging

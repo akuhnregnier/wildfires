@@ -53,6 +53,13 @@ from tqdm import tqdm
 from wildfires.analysis.processing import fill_cube
 from wildfires.joblib.caching import CodeObj, wrap_decorator
 from wildfires.joblib.iris_backend import register_backend
+from wildfires.utils import (
+    get_bounds_from_centres,
+    get_centres,
+    in_360_longitude_system,
+    reorder_cube_coord,
+    translate_longitude_system,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +96,18 @@ class Error(Exception):
 
 class ObservedAreaError(Error):
     """Raised when a Dataset does not satisfy observed area calculation requirements."""
+
+
+class NonUniformCoordError(Error):
+    """Raised when a coordinate is neither monotonically increasing or decreasing."""
+
+
+def cube_contains_coords(cube, *coords):
+    """Check whether the given cube contains all the requested coordinates."""
+    for coord in coords:
+        if not cube.coords(coord):
+            return False
+    return True
 
 
 def homogenise_cube_attributes(cubes):
@@ -540,20 +559,6 @@ def load_cubes(files, n=None):
     return cube_list
 
 
-def get_centres(data):
-    """Get the elements between elements of an array.
-
-    Examples:
-        >>> import numpy as np
-        >>> a = np.array([1,2,3])
-        >>> b = get_centres(a)
-        >>> np.all(np.isclose(b, np.array([1.5, 2.5])))
-        True
-
-    """
-    return (data[:-1] + data[1:]) / 2.0
-
-
 def translate_longitudes(lons, sort=True):
     """Go from [-180, 180] to [0, 360] domain."""
     transformed = lons % 360
@@ -594,8 +599,9 @@ def lat_lon_match(
     new_longitudes=get_centres(np.linspace(-180, 180, 1441)),
 ):
     """Test whether regridding is necessary."""
-    n_dim = len(cube.shape)
-    assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
+    assert cube_contains_coords(
+        cube, "latitude", "longitude"
+    ), "Need [[time,] lat, lon] dimensions."
 
     new_latitudes, new_longitudes = lat_lon_dimcoords(new_latitudes, new_longitudes)
 
@@ -616,9 +622,9 @@ def regrid(
     new_latitudes=get_centres(np.linspace(-90, 90, 721)),
     new_longitudes=get_centres(np.linspace(-180, 180, 1441)),
 ):
-    """Keep (optional) time coordinate, but regrid latitudes and longitudes.
+    """Regrid latitudes and longitudes.
 
-    Expects either (time, lat, lon) or (lat, lon) coordinates.
+    Expects at least latitude and longitude coordinates.
 
     NOTE: Regarding caching AreaWeighted regridders - the creation of the
     regridder does not seem to take much time, however, so this step is
@@ -629,8 +635,9 @@ def regrid(
     cached regridders.
 
     """
-    n_dim = len(cube.shape)
-    assert n_dim in {2, 3}, "Need [[time,] lat, lon] dimensions."
+    assert cube_contains_coords(
+        cube, "latitude", "longitude"
+    ), "Need at least latitude and longitude coordinates."
 
     # TODO: Check that coordinate system discrepancies are picked up by
     # this check!!
@@ -642,36 +649,63 @@ def regrid(
 
     new_latitudes, new_longitudes = lat_lon_dimcoords(new_latitudes, new_longitudes)
 
-    if n_dim == 3:
-        # Call the regridding function recursively with time slices of the
+    if len(cube.shape) > 2:
+        # Call the regridding function recursively with slices of the
         # data, in order to try to prevent occasional Segmentation Faults
-        # that occur when trying to regrid a large chunk of data in 3
+        # that occur when trying to regrid a large chunk of data in > 2
         # dimensions.
+
+        # Make sure that the latitude and longitude coordinates are placed after the
+        # initial coordinates to ensure proper indexing below. Note that additional
+        # coordinates may exist which are not reflected in the data's shape - thus
+        # the use of `len(cube.shape) - 1` as opposed to simply `-1`.
+        assert set(
+            (
+                coord.name()
+                for coord in (
+                    cube.coords()[len(cube.shape) - 2],
+                    cube.coords()[len(cube.shape) - 1],
+                )
+            )
+        ) == set(("latitude", "longitude"))
+
+        # Ensure the initial coordinates reflect the data.
+        assert all(
+            (len(cube.coords()[i].points) == cube.shape[i])
+            for i in range(len(cube.shape))
+        )
+
+        # Iterate over all dimensions but (guaranteed to be preceding) latitude and
+        # longitude.
         regridded_cubes = iris.cube.CubeList()
-        assert len(cube.coords()[0].points) == cube.shape[0]
-        for i in range(cube.shape[0]):
+        for indices in zip(
+            *(
+                ind_arr.flatten()
+                for ind_arr in np.indices(cube.shape[: len(cube.shape) - 2])
+            )
+        ):
             regridded_cubes.append(
                 regrid(
-                    cube[i],
+                    cube[indices],
                     area_weighted=area_weighted,
                     new_latitudes=new_latitudes,
                     new_longitudes=new_longitudes,
                 )
             )
 
-        coord_names = [coord.name() for coord in regridded_cubes[0].coords()]
-        if (
-            "time" in coord_names
-            and "year" in coord_names
-            and "month_number" in coord_names
-        ):
-            for regridded_cube in regridded_cubes:
-                regridded_cube.remove_coord("year")
-                regridded_cube.remove_coord("month_number")
+        to_remove = set(
+            [coord.name() for coord in regridded_cubes[0].coords()]
+        ).intersection(set(("year", "month_number")))
+        for regridded_cube in regridded_cubes:
+            for coord in to_remove:
+                regridded_cube.remove_coord(coord)
+                regridded_cube.remove_coord(coord)
 
         return regridded_cubes.merge_cube()
 
-    assert n_dim == 2, "Need [lat, lon] dimensions for core algorithm."
+    assert cube_contains_coords(
+        cube, "latitude", "longitude"
+    ), "Need [lat, lon] dimensions for core algorithm."
 
     WGS84 = iris.coord_systems.GeogCS(
         semi_major_axis=6378137.0, semi_minor_axis=6356752.314245179
@@ -910,7 +944,7 @@ class Dataset(ABC):
         return "\n".join(cubelist_hash_items)
 
     def __check_cubes(self):
-        """Functions that should be run prior to accessing data.
+        """Verification functions that should be run prior to accessing data.
 
         Cubes are sorted by name and the uniqueness of the variables names is
         verified.
@@ -953,6 +987,17 @@ class Dataset(ABC):
                 try:
                     coord = cube.coord(coord_name)
                     coord.var_name = coord_name
+                    if coord_name in ("latitude", "longitude"):
+                        # Check that the coordinates are monotonically increasing.
+                        assert np.all(
+                            np.diff(coord.points) > 0
+                        ), f"{coord_name.capitalize()}s need to increase monotonically."
+                        if coord_name == "longitude":
+                            # Check that longitudes are in the [-180, 180] system.
+                            assert not (
+                                in_360_longitude_system(coord.points)
+                            ), "Longitudes need to be in the [-180, 180] system."
+
                 except iris.exceptions.CoordinateNotFoundError:
                     warnings.warn(
                         f"{n_dim}-dimensional cube '{cube}' in '{self.name}' did not "
@@ -990,6 +1035,53 @@ class Dataset(ABC):
             assert isinstance(
                 new_cubes, iris.cube.CubeList
             ), "New cube list must be an iris CubeList (`iris.cube.CubeList`)."
+
+            # Ensure uniformity of latitudes and longitudes. They should both be
+            # monotonically increasing, and the longitudes should be in the
+            # [-180, 180] system.
+            for i in range(len(new_cubes)):
+                # Ensure the proper longitude system.
+                if new_cubes[i].coords("longitude"):
+                    if in_360_longitude_system(new_cubes[i].coord("longitude").points):
+                        # Reorder longitudes into the [-180, 180] system.
+                        tr_longitudes, tr_indices = translate_longitude_system(
+                            new_cubes[i].coord("longitude").points, return_indices=True
+                        )
+                        new_cubes[i] = reorder_cube_coord(
+                            new_cubes[i],
+                            tr_indices,
+                            tr_longitudes,
+                            len(new_cubes[i].shape) - 1,
+                        )
+
+                # Ensure longitudes and latitudes are properly ordered.
+                for coord in ("latitude", "longitude"):
+                    if new_cubes[i].coords(coord):
+                        if not np.all(np.diff(new_cubes[i].coord(coord).points) > 0):
+                            # If the coordinate is not monotonically increasing we
+                            # need to handle this.
+                            if np.all(np.diff(new_cubes[i].coord(coord).points) < 0):
+                                # If they are monotonically decreasing we just need the flip them.
+                                logger.info(
+                                    f"Inverting {coord}s for: {new_cubes[i].name()}."
+                                )
+                                lat_index = [
+                                    coord.name() for coord in new_cubes[i].coords()
+                                ].index(coord)
+                                slices = [
+                                    slice(None) for i in range(len(new_cubes[i].shape))
+                                ]
+                                slices[lat_index] = slice(None, None, -1)
+                                new_cubes[i] = new_cubes[i][tuple(slices)]
+                            else:
+                                # If there is another pattern, one could attempt
+                                # regridding, but we will alert the user to this
+                                # instead.
+                                raise NonUniformCoordError(
+                                    f"{coord.capitalize()}s for {new_cubes[i].name()} are not "
+                                    "uniform."
+                                )
+
             self.__cubes = new_cubes
 
     @property
@@ -1135,6 +1227,10 @@ class Dataset(ABC):
     def cache_filename(self):
         return os.path.join(DATA_DIR, "cache", self.name + ".nc")
 
+    @classmethod
+    def _get_cache_filename(cls):
+        return os.path.join(DATA_DIR, "cache", cls.__name__ + ".nc")
+
     @staticmethod
     def save_data(cache_data, target_filename):
         """Save as NetCDF file.
@@ -1223,6 +1319,7 @@ class Dataset(ABC):
         at the time.
 
         """
+        self.__check_cubes()
         self.save_data(self.cubes, self.cache_filename)
 
     def read_cache(self):
@@ -1595,7 +1692,7 @@ class Dataset(ABC):
         return target_cube
 
     @classmethod
-    def get_obs_masked_dataset(cls, mask_vars, thres=0.8, ndigits=3):
+    def get_obs_masked_dataset(cls, mask_vars, thres=0.8, ndigits=3, cached_only=False):
         """Create a new dataset based on masking of certain variables.
 
         The mask will be based on the observed area and the given threshold.
@@ -1605,9 +1702,10 @@ class Dataset(ABC):
                 mask.
             thres (float): Minimum observed area threshold in [0, 1].
             ndigits (int): Number of digits to round `thres` to.
+            cached_only (bool): If True, only load cached data. Otherwise return None.
 
         Returns:
-            Instance of `cls` subclass: The name of this class will reflect the masked
+            Instance of `cls` subclass or None: The name of this class will reflect the masked
                 variables and the applied threshold.
 
         """
@@ -1669,13 +1767,18 @@ class Dataset(ABC):
             # Call the original cache function to actually store the modified CubeList.
             cls.write_cache(self)
 
-        masked_dataset = type(
+        masked_dataset_class = type(
             new_name,
             (cls,),
             {"_pretty": new_pretty_dataset_name, "write_cache": new_cache_func},
-        )()
+        )
 
-        return masked_dataset
+        if cached_only and not masked_dataset_class.read_data(
+            masked_dataset_class._get_cache_filename()
+        ):
+            return
+
+        return masked_dataset_class()
 
     @classmethod
     def get_temporally_shifted_dataset(cls, months=0):
@@ -1791,13 +1894,15 @@ class CarvalhaisGPP(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "Carvalhais_VegC-TotalC-Tau")
-        self.cubes = iris.cube.CubeList(
+        raw_cubes = iris.cube.CubeList(
             [iris.load_cube(os.path.join(self.dir, "Carvalhais.gpp_50.360.720.1.nc"))]
         )
         # There is only one time coordinate, and its value is of no relevance.
         # Therefore, remove this coordinate.
-        self.cubes[0] = self.cubes[0][0]
-        self.cubes[0].remove_coord("time")
+        raw_cubes[0] = raw_cubes[0][0]
+        raw_cubes[0].remove_coord("time")
+
+        self.cubes = raw_cubes
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
@@ -2732,7 +2837,9 @@ class ERA5_DryDayPeriod(Dataset):
 
                 dry_day_period_cubes.append(dry_day_period_cube)
 
-        self.cubes = iris.cube.CubeList([dry_day_period_cubes.merge_cube()])
+        raw_cubes = iris.cube.CubeList([dry_day_period_cubes.merge_cube()])
+
+        self.cubes = raw_cubes
         self.write_cache()
 
     def get_monthly_data(

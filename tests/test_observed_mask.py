@@ -3,9 +3,9 @@ import iris
 import numpy as np
 import pytest
 
-from wildfires.data.cube_aggregation import Datasets
-from wildfires.data.datasets import CCI_BurnedArea_MERIS_4_1
 from test_datasets import data_availability
+from wildfires.data.cube_aggregation import Datasets, prepare_selection
+from wildfires.data.datasets import CCI_BurnedArea_MERIS_4_1
 
 
 @data_availability
@@ -37,6 +37,29 @@ def test_MERIS_observed_area_mask():
     assert mask_monthly.dtype in (np.bool, np.bool_)
     assert mask_monthly.shape == tuple(target_shape)
 
+    # Partial dataset, after being processed into monthly data.
+    monthly = prepare_selection(Datasets(CCI_BurnedArea_MERIS_4_1()), which="monthly")
+    from_partial = monthly["CCI MERIS 4.1"].get_observed_mask(
+        thres=0.8, frequency="monthly"
+    )
+    reference = CCI_BurnedArea_MERIS_4_1().get_observed_mask(
+        thres=0.8, frequency="monthly"
+    )
+    # Implement custom boolean cube comparison, because the default comparison uses
+    # boolean subtract in this case, resulting in an error.
+
+    # Check metadata.
+    assert from_partial.metadata == reference.metadata
+
+    # Check that coordinates match.
+    coord_comparison = iris.analysis.coord_comparison(from_partial, reference)
+    assert not (
+        coord_comparison["not_equal"] or coord_comparison["non_equal_data_dimension"]
+    )
+
+    # Check that the boolean data matches.
+    assert np.all(from_partial.data == reference.data)
+
 
 @data_availability
 @pytest.mark.parametrize("thres", [0.1, 0.8, 0.9])
@@ -47,6 +70,13 @@ def test_MERIS_obs_masked_dataset(thres):
     # Reference masked burned area.
     meris = CCI_BurnedArea_MERIS_4_1()
     mask = meris.get_observed_mask(thres=thres)
+
+    manual_mask = (
+        CCI_BurnedArea_MERIS_4_1()["fraction of observed area"].data.data < thres
+    )
+
+    assert np.all(mask.data == manual_mask.data)
+
     manual_ba = meris[ba_var]
     manual_ba.data.mask |= mask.data
 

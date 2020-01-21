@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 
-from wildfires.data.datasets import dummy_lat_lon_cube, get_centres
-from wildfires.utils import select_valid_subset, translate_longitude_system
+from wildfires.data.datasets import dummy_lat_lon_cube
+from wildfires.utils import get_centres, select_valid_subset, translate_longitude_system
 
 
 def test_subset():
@@ -24,7 +24,7 @@ def test_longitude_system():
     data = np.array([1, 2, 3, 4, 5])
     longitudes = np.array([-180, -90, 0, 90, 170])
     new_longitudes, indices = translate_longitude_system(
-        longitudes, orig="-180", return_indices=True
+        longitudes, return_indices=True
     )
     new_data = data[indices]
     assert np.all(np.isclose(new_longitudes, [0, 90, 170, 180, 270]))
@@ -34,7 +34,7 @@ def test_longitude_system():
     data = np.array([3, 4, 5, 1, 2])
     longitudes = np.array([0, 90, 170, 180, 270])
     new_longitudes, indices = translate_longitude_system(
-        longitudes, orig="0", return_indices=True
+        longitudes, return_indices=True
     )
     new_data = data[indices]
     assert np.all(np.isclose(new_longitudes, [-180, -90, 0, 90, 170]))

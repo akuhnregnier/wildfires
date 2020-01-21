@@ -51,6 +51,7 @@ def test_AvitabileAGB():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -60,15 +61,7 @@ def test_AvitabileThurnerAGB():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
-
-
-@data_availability
-def test_CarvalhaisGPP():
-    try:
-        inst = CarvalhaisGPP()
-    except NotImplementedError:
-        return
-    assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -80,6 +73,7 @@ def test_CCI_BurnedArea_MERIS_4_1():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -91,6 +85,7 @@ def test_CCI_BurnedArea_MODIS_5_1():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -100,15 +95,7 @@ def test_CHELSA():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
-
-
-@data_availability
-def test_Copernicus_SWI():
-    try:
-        inst = Copernicus_SWI()
-    except NotImplementedError:
-        return
-    assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -118,24 +105,27 @@ def test_CRU():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
-def test_ERA5_TotalPrecipitation():
+def test_CarvalhaisGPP():
     try:
-        inst = ERA5_TotalPrecipitation()
+        inst = CarvalhaisGPP()
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
-def test_ERA5_DryDayPeriod():
+def test_Copernicus_SWI():
     try:
-        inst = ERA5_DryDayPeriod()
+        inst = Copernicus_SWI()
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -145,6 +135,27 @@ def test_ERA5_CAPEPrecip():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
+
+
+@data_availability
+def test_ERA5_DryDayPeriod():
+    try:
+        inst = ERA5_DryDayPeriod()
+    except NotImplementedError:
+        return
+    assert isinstance(inst, Dataset)
+    assert inst.cubes
+
+
+@data_availability
+def test_ERA5_TotalPrecipitation():
+    try:
+        inst = ERA5_TotalPrecipitation()
+    except NotImplementedError:
+        return
+    assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -154,6 +165,7 @@ def test_ESA_CCI_Fire():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -163,6 +175,7 @@ def test_ESA_CCI_Landcover():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -172,6 +185,7 @@ def test_ESA_CCI_Landcover_PFT():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -181,6 +195,7 @@ def test_ESA_CCI_Soilmoisture():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -190,6 +205,7 @@ def test_ESA_CCI_Soilmoisture_Daily():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -199,6 +215,7 @@ def test_GFEDv4():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -208,15 +225,7 @@ def test_GFEDv4s():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
-
-
-@data_availability
-def test_GlobFluo_SIF():
-    try:
-        inst = GlobFluo_SIF()
-    except NotImplementedError:
-        return
-    assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -226,6 +235,7 @@ def test_GPW_v4_pop_dens():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -235,6 +245,7 @@ def test_GSMaP_dry_day_period():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -244,6 +255,17 @@ def test_GSMaP_precipitation():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
+
+
+@data_availability
+def test_GlobFluo_SIF():
+    try:
+        inst = GlobFluo_SIF()
+    except NotImplementedError:
+        return
+    assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -253,6 +275,7 @@ def test_HYDE():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -262,6 +285,7 @@ def test_LIS_OTD_lightning_climatology():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -271,6 +295,7 @@ def test_LIS_OTD_lightning_time_series():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -280,6 +305,7 @@ def test_Liu_VOD():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -289,6 +315,7 @@ def test_MCD64CMQ_C6():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -298,6 +325,7 @@ def test_MOD15A2H_LAI_fPAR():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -307,6 +335,7 @@ def test_Simard_canopyheight():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -316,6 +345,7 @@ def test_Thurner_AGB():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes
 
 
 @data_availability
@@ -325,3 +355,4 @@ def test_VODCA():
     except NotImplementedError:
         return
     assert isinstance(inst, Dataset)
+    assert inst.cubes

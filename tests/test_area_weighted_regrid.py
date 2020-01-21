@@ -3,7 +3,8 @@ import iris
 import numpy as np
 import pytest
 
-from wildfires.data.datasets import dummy_lat_lon_cube, get_centres, regrid
+from wildfires.data.datasets import dummy_lat_lon_cube, regrid
+from wildfires.utils import get_centres
 
 
 @pytest.fixture

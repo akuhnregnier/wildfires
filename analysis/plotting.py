@@ -17,7 +17,11 @@ from tqdm import tqdm
 
 from wildfires.data.datasets import dummy_lat_lon_cube
 from wildfires.logging_config import LOGGING
-from wildfires.utils import select_valid_subset
+from wildfires.utils import (
+    in_360_longitude_system,
+    select_valid_subset,
+    translate_longitude_system,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -601,7 +605,7 @@ def cube_plotting(
     dummy_lat_lims=(-90, 90),
     dummy_lon_lims=(-180, 180),
     vmin_vmax_percentiles=(0, 100),
-    projection=ccrs.Robinson(),
+    projection=None,
     animation_output=False,
     ax=None,
     mesh=None,
@@ -635,7 +639,9 @@ def cube_plotting(
             and maximum values on the colorbar. If `None`, use the minimum and maximum
             of the data (equivalent to percentiles of (0, 100)). Explicitly passed-in
             `vmin` and `vmax` parameters take precedence.
-        projection: A projection as defined in `cartopy.crs`.
+        projection: A projection as defined in `cartopy.crs`. If None (default),
+            ccrs.Robinson() will be used, where the central longitude will be defined
+            as the average of the cube longitudes.
         animation_output (bool): Output additional variables required to create an
             animation.
         ax (matplotlib axis): Axis to plot onto.
@@ -684,7 +690,23 @@ def cube_plotting(
         )
 
     if select_valid:
-        cube, _ = select_valid_subset(cube, longitudes=cube.coord("longitude").points)
+        cube, tr_longitudes = select_valid_subset(
+            cube, longitudes=cube.coord("longitude").points
+        )
+    else:
+        longitudes = cube.coord("longitude").points
+        if in_360_longitude_system(longitudes):
+            logger.debug("Translating longitudes from [0, 360] to [-180, 180].")
+            tr_longitudes = translate_longitude_system(longitudes, return_indices=False)
+        else:
+            # Here, the longitudes are in the [-180, 180] system as desired, and no
+            # translation is necessary.
+            tr_longitudes = longitudes
+
+    if projection is None:
+        central_longitude = np.mean(tr_longitudes)
+        logger.debug(f"Central longitude: {central_longitude:0.2f}")
+        projection = ccrs.Robinson(central_longitude=central_longitude)
 
     cube = cube.copy()
     if average_first_coord and len(cube.shape) == 3:
