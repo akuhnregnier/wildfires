@@ -1,5 +1,7 @@
 # wildfires
 
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/ambv/black)
+
 ## Development
 
 The instructions below assume that you are using Linux and managing Python using [pyenv](https://github.com/pyenv/pyenv) and [pyenv-virtualenv](https://github.com/pyenv/pyenv-virtualenv).
