@@ -112,3 +112,10 @@ venv.bak/
 
 # Joblib cache
 .cachedir
+cachedir
+
+# Analysis cx1 files.
+cx1_files*/
+
+# Generated html files.
+*.html

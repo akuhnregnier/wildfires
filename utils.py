@@ -8,7 +8,6 @@ import logging
 import logging.config
 import os
 import platform
-import re
 import socket
 from collections import Counter, namedtuple
 from copy import deepcopy
@@ -433,6 +432,20 @@ def get_masked_array(data, mask=False, dtype=np.float64):
     return np.ma.MaskedArray(data, mask=mask, dtype=dtype)
 
 
+def get_qstat_json():
+    """Retrieve the json representation of the qstat output.
+
+    Raises:
+        FileNotFoundError: If the command is not run on the hpc.
+
+    """
+    raw_output = check_output(("qstat", "-f", "-F", "json")).decode()
+    # Filter out invalid json (unescaped double quotes).
+    filtered_lines = [line for line in raw_output.split("\n") if '"""' not in line]
+    filtered_output = "\n".join(filtered_lines)
+    return json.loads(filtered_output)
+
+
 def get_qstat_ncpus():
     """Get ncpus from qstat job details.
 
@@ -441,11 +454,7 @@ def get_qstat_ncpus():
 
     """
     try:
-        raw_output = check_output(("qstat", "-f", "-F", "json")).decode()
-        # Filter out invalid json (unescaped double quotes).
-        filtered_lines = [line for line in raw_output.split("\n") if '"""' not in line]
-        filtered_output = "\n".join(filtered_lines)
-        out = json.loads(filtered_output)
+        out = get_qstat_json()
     except FileNotFoundError:
         logger.warning("Not running on hpc.")
         return None
@@ -463,13 +472,24 @@ def get_qstat_ncpus():
 
         # Loop through each job.
         for job_name, job in jobs.items():
-            if not job["job_state"] == "R":
-                logger.info(
-                    "Ignoring job '{}' as it is not running.".format(job["Job_Name"])
+            # 'B' only applies to array jobs and indicates that the job has begun.
+            if not job["job_state"] in ("R", "B"):
+                logger.debug(
+                    f"Ignoring job '{job['Job_Name']}' in state '{job['job_state']}' "
+                    "as it is not running."
                 )
                 continue
+
             # If we are on the same machine.
-            if re.search(current_hostname, job["exec_host"]):
+            if "exec_host" not in job:
+                # Skip this job if it has no 'exec_host' attribute to compare against.
+                continue
+            exec_host = job["exec_host"]
+            logger.debug(
+                f"Comparing hostname '{current_hostname}' to job exec host "
+                f"'{exec_host}'."
+            )
+            if current_hostname in exec_host:
                 # Other keys include 'mem' (eg. '32gb'), 'mpiprocs'
                 # and 'walltime' (eg. '08:00:00').
                 resources = job["Resource_List"]
@@ -478,6 +498,8 @@ def get_qstat_ncpus():
                     "Getting ncpus: {} from job '{}'.".format(ncpus, job["Job_Name"])
                 )
                 return int(ncpus)
+    else:
+        logger.debug("No running jobs were found.")
     return None
 
 

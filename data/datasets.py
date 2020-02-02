@@ -1837,7 +1837,6 @@ class Dataset(ABC):
             )
 
         shift_dir = "plus" if months > 0 else "minus"
-        month_str = "months" if abs(months) > 1 else "month"
 
         # Handle each cube different, since each cube may have unique time coordinates
         # (different bands for example).
@@ -1861,20 +1860,30 @@ class Dataset(ABC):
 
             time_coord.points = num_shifted_dates
 
+            def cube_name_mod_func(s, capitalize=False):
+                if capitalize:
+                    return s + f" {months} Month"
+                return s + f" {months} month"
+
+            cube.long_name = cube_name_mod_func(cube.name())
             cube.standard_name = None
-            if cube.long_name:
-                cube.long_name += f" {months} {month_str.capitalize()}"
-            if cube.var_name:
-                cube.var_name += f"_{months}_{month_str}"
+            cube.var_name = None
 
         # Instantiate new dataset instance. This will lack any instantiation, which
         # must be replicated by manually assigning to the cubes attribute below.
         new_inst = type(
-            cls.__name__ + f"__{shift_dir}_{abs(months)}_{month_str}",
+            cls.__name__ + f"__{shift_dir}_{abs(months)}_month",
             (cls,),
             {
                 "__init__": lambda self: None,
-                "_pretty": cls._pretty + f" {months} {month_str.capitalize()}",
+                "_pretty": cls._pretty + f" {months} Month",
+                "pretty_variable_names": dict(
+                    (
+                        cube_name_mod_func(raw),
+                        cube_name_mod_func(pretty, capitalize=True),
+                    )
+                    for raw, pretty in cls.pretty_variable_names.items()
+                ),
             },
         )()
         new_inst.cubes = orig_inst.cubes

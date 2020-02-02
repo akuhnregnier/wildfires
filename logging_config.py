@@ -92,17 +92,22 @@ JUPYTER_LOGGING = deepcopy(LOGGING)
 JUPYTER_LOGGING["handlers"]["console"]["level"] = "WARNING"
 
 
-def enable_logging(mode="normal"):
+def enable_logging(mode="normal", level=None):
     """Configure logging in a standardised manner.
 
     Args:
         mode (str): Which configuration to use. Possible values are "normal" or
             "jupyter".
+        level (logging level): If given, alter the console logger level.
 
     """
     if mode == "normal":
+        if level is not None:
+            LOGGING["handlers"]["console"]["level"] = level
         logging.config.dictConfig(LOGGING)
     elif mode == "jupyter":
+        if level is not None:
+            JUPYTER_LOGGING["handlers"]["console"]["level"] = level
         logging.config.dictConfig(JUPYTER_LOGGING)
     else:
         raise ValueError(f"Unknown mode '{mode}'.")

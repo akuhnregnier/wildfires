@@ -672,6 +672,8 @@ def cube_plotting(
                 `matplotlib.colors.Colormap` instance.
             vmin: Minimum value for colorbar.
             vmax: Maximum value for colorbar.
+            cbar_tick_size: Colorbar tick param text size.
+            cbar_label_size:
         possible colorbar kwargs:
             label:
             orientation:
@@ -845,7 +847,12 @@ def cube_plotting(
     # TODO: Use this to attach the colorbar to the axes, not the figure. Errors were
     # encountered due to cartopy geoaxes.
     if new_colorbar:
-        fig.colorbar(mesh, **colorbar_kwargs)
+        cbar = fig.colorbar(mesh, **colorbar_kwargs)
+        if "cbar_tick_size" in kwargs:
+            cbar.ax.tick_params(labelsize=kwargs["cbar_tick_size"])
+        if "cbar_label_size" in kwargs:
+            cbar.set_label(label=colorbar_kwargs["label"],
+            size=kwargs["cbar_label_size"])
     if title:
         if isinstance(title, mpl.text.Text):
             title_text.set_text(title)
@@ -867,8 +874,10 @@ def partial_dependence_plot(
     percentiles=(0.0, 1.0),
     coverage=1,
     random_state=None,
-    predicted_name="burned area",
+    predicted_name="Burned Area",
     norm_y_ticks=False,
+    single_plots=False,
+    keep_y_ticks=False
 ):
     """Plot 1 dimensional partial dependence plots.
 
@@ -895,9 +904,13 @@ def partial_dependence_plot(
             run to the next).
         predicted_name (string): Name on the y axis.
         norm_y_ticks (bool): If True, scale y ticks using the range.
+        single_plots (bool): If True, plot `n_features` plots instead of combining
+            them.
+        keep_y_ticks (bool): If True, do not turn off y-axis ticks.
 
     Returns:
-        fig, ax: Figure and axes holding the pdp.
+        fig, ax or ((fig1, ax1), (fig2, ax2), ...): Figure and axes holding the pdp
+            (see `single_plots`).
 
     """
     features = list(features)
@@ -940,59 +953,77 @@ def partial_dependence_plot(
     datasets = np.hstack(datasets)
     results = pd.DataFrame(datasets, columns=features)
 
-    valid = ("rows", "columns")
-    if prefer not in valid:
-        raise ValueError(
-            f"Unknown parameter value '{prefer}' for `prefer`."
-            f"Choose one of '{valid}'."
-        )
-
-    if prefer == "rows":
-        n_cols = int(math.floor(np.sqrt(len(features))))
-    else:
-        n_cols = int(math.ceil(np.sqrt(len(features))))
-
-    fig, axes = plt.subplots(
-        nrows=math.ceil(len(features) / n_cols), ncols=n_cols, squeeze=False
-    )
-
-    axes = axes.flatten()
-
-    if norm_y_ticks:
-        predicted_name = "relative " + predicted_name
-        # Calculate the normalised ranges.
-        results -= results.to_numpy().min()
-        results /= results.to_numpy().max()
-
-    for (i, (ax, feature)) in enumerate(zip(axes, features)):
-        ax.plot(quantile_data[feature], results[feature])
-        ax.set_xlabel(feature)
-        if i % n_cols == 0:
+    if single_plots:
+        figs_axes = []
+        for feature in features:
+            fig, ax = plt.subplots()
+            figs_axes.append((fig, ax))
+            ax.plot(quantile_data[feature],
+                    results[feature])
+            ax.set_xlabel(feature)
             ax.set_ylabel(predicted_name)
 
-    # Make empty plots (should they exist) invisible.
-    for ax in axes[len(features) :]:
-        ax.set_axis_off()
+        if not keep_y_ticks:
+            for fig, ax in figs_axes:
+                ax.axes.get_yaxis().set_ticks([])
+        return figs_axes
+    else:
+        valid = ("rows", "columns")
+        if prefer not in valid:
+            raise ValueError(
+                f"Unknown parameter value '{prefer}' for `prefer`."
+                f"Choose one of '{valid}'."
+            )
 
-    # TODO: Make the positioning and the number of labels more uniform.
-    # if norm_y_ticks:
-    #     y_ticklabels = []
-    #     for ax in axes:
-    #         y_ticklabels.extend(ax.get_yticks())
-    #     y_tick_values = np.array(y_ticklabels)
-    #     min_val = np.min(y_tick_values)
-    #     max_val = np.max(y_tick_values - min_val)
-    #     # for ax in axes:
-    #     #     # ax.set_yticks((ax.get_yticks() - min_val) / max_val)
-    #     #     ax.set_yticks([])
-    #     for ax in axes:
-    #         ticks = ax.get_yticks().tolist()
-    #         ticks = ["test" for tick in ticks]
-    #         ax.set_yticklabels(ticks)
+        if prefer == "rows":
+            n_cols = int(math.floor(np.sqrt(len(features))))
+        else:
+            n_cols = int(math.ceil(np.sqrt(len(features))))
 
-    plt.tight_layout()
+        fig, axes = plt.subplots(
+            nrows=math.ceil(len(features) / n_cols), ncols=n_cols, squeeze=False
+        )
 
-    return fig, axes
+        axes = axes.flatten()
+
+        if norm_y_ticks:
+            predicted_name = "relative " + predicted_name
+            # Calculate the normalised ranges.
+            results -= results.to_numpy().min()
+            results /= results.to_numpy().max()
+
+        for (i, (ax, feature)) in enumerate(zip(axes, features)):
+            ax.plot(quantile_data[feature], results[feature])
+            ax.set_xlabel(feature)
+            if i % n_cols == 0:
+                ax.set_ylabel(predicted_name)
+
+        # Make empty plots (should they exist) invisible.
+        for ax in axes[len(features) :]:
+            ax.set_axis_off()
+
+        # TODO: Make the positioning and the number of labels more uniform.
+        # if norm_y_ticks:
+        #     y_ticklabels = []
+        #     for ax in axes:
+        #         y_ticklabels.extend(ax.get_yticks())
+        #     y_tick_values = np.array(y_ticklabels)
+        #     min_val = np.min(y_tick_values)
+        #     max_val = np.max(y_tick_values - min_val)
+        #     # for ax in axes:
+        #     #     # ax.set_yticks((ax.get_yticks() - min_val) / max_val)
+        #     #     ax.set_yticks([])
+        #     for ax in axes:
+        #         ticks = ax.get_yticks().tolist()
+        #         ticks = ["test" for tick in ticks]
+        #         ax.set_yticklabels(ticks)
+
+        if not keep_y_ticks:
+            for ax in axes:
+                ax.axes.get_yaxis().set_ticks([])
+        plt.tight_layout()
+
+        return fig, axes
 
 
 def sample_pdp():

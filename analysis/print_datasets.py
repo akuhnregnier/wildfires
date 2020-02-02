@@ -20,19 +20,8 @@ from wildfires.data.cube_aggregation import (
     get_all_datasets,
     prepare_selection,
 )
-from wildfires.data.datasets import (
-    CHELSA,
-    HYDE,
-    VODCA,
-    AvitabileThurnerAGB,
-    Copernicus_SWI,
-    ERA5_CAPEPrecip,
-    ERA5_DryDayPeriod,
-    ESA_CCI_Landcover_PFT,
-    GFEDv4,
-    GlobFluo_SIF,
-    MOD15A2H_LAI_fPAR,
-)
+from wildfires.data.datasets import *
+
 from wildfires.logging_config import LOGGING
 
 logger = logging.getLogger(__name__)
@@ -45,15 +34,18 @@ if __name__ == "__main__":
     selection = Datasets(
         (
             AvitabileThurnerAGB(),
+            CCI_BurnedArea_MERIS_4_1(),
+            CCI_BurnedArea_MODIS_5_1(),
             CHELSA(),
             Copernicus_SWI(),
             ERA5_CAPEPrecip(),
             ERA5_DryDayPeriod(),
             ESA_CCI_Landcover_PFT(),
             GFEDv4(),
+            GFEDv4s(),
             GlobFluo_SIF(),
             HYDE(),
-            # LIS_OTD_lightning_climatology(),
+            MCD64CMQ_C6(),
             MOD15A2H_LAI_fPAR(),
             VODCA(),
         )
@@ -61,6 +53,11 @@ if __name__ == "__main__":
 
     selection = selection.select_variables(
         [
+            "CCI MERIS BA",
+            "CCI MODIS BA",
+            "GFED4 BA",
+            "GFED4s BA",
+            "MCD64CMQ BA",
             "AGBtree",
             "maximum temperature",
             "minimum temperature",
@@ -69,16 +66,12 @@ if __name__ == "__main__":
             "dry_day_period",
             "ShrubAll",
             "TreeAll",
-            # "pftBare",
             "pftCrop",
             "pftHerb",
-            "monthly burned area",
             "SIF",
             "popd",
-            # "Combined Flash Rate Monthly Climatology",
             "Fraction of Absorbed Photosynthetically Active Radiation",
-            # "Leaf Area Index",
-            # "Vegetation optical depth Ku-band (18.7 GHz - 19.35 GHz)",
+            "Leaf Area Index",
             "Vegetation optical depth X-band (10.65 GHz - 10.7 GHz)",
         ]
     )

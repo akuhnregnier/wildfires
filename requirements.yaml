@@ -8,6 +8,8 @@ dependencies:
   - cartopy
   - cdsapi
   - cf_units
+  - cloudpickle
+  - dill
   - fiona
   - flake8
   - gitpython

@@ -192,12 +192,6 @@ def data_processing(
         n_lon=raw_datasets.cubes[0].coord("longitude").points.shape[0]
     )
 
-    # Define a latitude mask which ignores data beyond 60 degrees, as GSMaP data does
-    # not extend to those latitudes.
-    lat_mask = ~polygon_mask(
-        [(180, -60), (-180, -60), (-180, 60), (180, 60), (180, -60)]
-    )
-
     # Apply masks.
 
     # Make a deep copy so that the original cubes are preserved.
@@ -205,14 +199,15 @@ def data_processing(
 
     masks_to_apply = [land_mask]
     if use_lat_mask:
-        masks_to_apply.append(lat_mask)
+        # Define a latitude mask which ignores data beyond 60 degrees, as GSMaP data does
+        # not extend to those latitudes.
+        masks_to_apply.append(~polygon_mask(
+            [(180, -60), (-180, -60), (-180, 60), (180, 60), (180, -60)]
+        ))
     if use_fire_mask:
         masks_to_apply.append(get_no_fire_mask())
 
-    for cube in masked_datasets.cubes:
-        cube.data.mask |= reduce(
-            np.logical_or, (match_shape(mask, cube.shape) for mask in masks_to_apply)
-        )
+    masked_datasets.apply_masks(*masks_to_apply)
 
     # Filling/processing/cleaning datasets.
 
@@ -258,16 +253,20 @@ def data_processing(
         np.hstack(data), columns=exog_datasets.pretty_variable_names
     )
 
+    # Apply transformations as specified before.
+
+    if verbose:
+        print("Names before:")
+        print(exog_data.columns)
+
+    # TODO: Support regular expressions or some way to select shifted datasets
+    # TODO: alongside unshifted datasets if required.
     if transformations is not None:
         for new_var, processing_func in transformations.items():
             exog_data[new_var] = processing_func(exog_data)
     if deletions is not None:
         for delete_var in deletions:
             del exog_data[delete_var]
-
-    if verbose:
-        print("Names before:")
-        print(exog_data.columns)
 
     # Carry out log transformation for select variables.
     if log_var_names is not None:
@@ -395,16 +394,19 @@ def GLM(
 
 
 def RF(
-    endog_data, exog_data, master_mask, model_name="RFv1", normal_coast_linewidth=0.5
+    endog_data, exog_data, master_mask, model_name="RFv1",
+    normal_coast_linewidth=0.5, plot=True,
+    **rf_kwargs
 ):
     results = {}
 
     regr = RandomForestRegressor(
-        n_estimators=100,
-        random_state=1,
-        n_jobs=get_ncpus(),
-        bootstrap=True,
-        max_depth=15,
+        n_estimators=rf_kwargs.pop("n_estimators", 100),
+        random_state=rf_kwargs.pop("random_state", 1),
+        n_jobs=rf_kwargs.pop("n_jobs", get_ncpus()),
+        bootstrap=rf_kwargs.pop("bootstrap", True),
+        max_depth=rf_kwargs.pop("max_depth", 15),
+        **rf_kwargs
     )
     results["regr"] = regr
     X_train, X_test, y_train, y_test = train_test_split(
@@ -414,36 +416,36 @@ def RF(
 
     results["R2_train"] = regr.score(X_train, y_train)
     results["R2_test"] = regr.score(X_test, y_test)
+    results["RF_importances"] = regr.feature_importances_
 
     print_importances(regr, exog_data)
 
     logger.info(f"{model_name} R2 train: {results['R2_train']}")
     logger.info(f"{model_name} R2 test: {results['R2_test']}")
 
-    ba_predicted = get_masked_array(regr.predict(exog_data), master_mask)
+    if plot:
+        ba_predicted = get_masked_array(regr.predict(exog_data), master_mask)
 
-    ba_data = get_masked_array(endog_data, master_mask)
+        ba_data = get_masked_array(endog_data, master_mask)
+        with TripleFigureSaver(model_name):
+            figs = map_model_output(
+                ba_predicted, ba_data, model_name, normal_coast_linewidth
+            )
 
-    with TripleFigureSaver(model_name):
-        figs = map_model_output(
-            ba_predicted, ba_data, model_name, normal_coast_linewidth
-        )
-
-    mpl.rcParams["figure.figsize"] = (20, 12)
-    mpl.rcParams["font.size"] = 18
-
-    with FigureSaver(f"pdp_{model_name}"):
-        fig, axes = partial_dependence_plot(
-            regr,
-            X_test,
-            X_test.columns,
-            n_cols=4,
-            grid_resolution=70,
-            coverage=0.05,
-            predicted_name="burned area",
-        )
-        plt.subplots_adjust(wspace=0.16)
-        _ = list(ax.axes.get_yaxis().set_ticks([]) for ax in axes)
+        mpl.rcParams["figure.figsize"] = (20, 12)
+        mpl.rcParams["font.size"] = 18
+        with FigureSaver(f"pdp_{model_name}"):
+            fig, axes = partial_dependence_plot(
+                regr,
+                X_test,
+                X_test.columns,
+                n_cols=4,
+                grid_resolution=70,
+                coverage=0.05,
+                predicted_name="burned area",
+            )
+            plt.subplots_adjust(wspace=0.16)
+            _ = list(ax.axes.get_yaxis().set_ticks([]) for ax in axes)
 
     return results
 
