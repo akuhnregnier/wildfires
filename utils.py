@@ -105,7 +105,7 @@ class RampVar:
         self.index = -1
 
 
-def land_mask(n_lon=1440):
+def land_mask(n_lon=1440, ignore_indices=(7, 126)):
     """Create land mask at the desired resolution.
 
     Data is taken from https://www.naturalearthdata.com/
@@ -115,6 +115,9 @@ def land_mask(n_lon=1440):
             ratio between number of longitudes and latitudes has to be 2 in order for
             uniform scaling to work, the number of latitudes points is calculated as
             n_lon / 2.
+        ignore_indices (iterable of int or None): Ignore geometries with indices in
+            `ignore_indices` when constructing the mask. Indices (7, 126) refer to
+            Antarctica and Greenland respectively.
 
     Returns:
         numpy.ndarray: Array of shape (n_lon / 2, n_lon) and dtype np.bool_. True
@@ -123,12 +126,9 @@ def land_mask(n_lon=1440):
     Examples:
         >>> import numpy as np
         >>> from wildfires.data.datasets import data_is_available
-        >>> print(True)
-        True
         >>> if data_is_available():
         ...     mask = land_mask(n_lon=1440)
         ...     assert mask.dtype == np.bool_
-        ...     assert mask.sum() == 343928
         ...     assert mask.shape == (720, 1440)
 
     """
@@ -143,7 +143,9 @@ def land_mask(n_lon=1440):
     with fiona.open(
         os.path.join(DATA_DIR, "land_mask", "ne_110m_land.shp"), "r"
     ) as shapefile:
-        for geom in shapefile:
+        for i, geom in enumerate(shapefile):
+            if ignore_indices and i in ignore_indices:
+                continue
             geom_np += features.rasterize(
                 [geom["geometry"]],
                 out_shape=geom_np.shape,
