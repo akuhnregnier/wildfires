@@ -19,14 +19,16 @@ from wildfires.utils import land_mask as get_land_mask
 if __name__ == "__main__":
     enable_logging()
 
-    FigureSaver.directory = os.path.expanduser(os.path.join("~", "tmp", "to_send2"))
+    FigureSaver.directory = os.path.expanduser(
+        os.path.join("~", "tmp", "observed_area")
+    )
     os.makedirs(FigureSaver.directory, exist_ok=True)
     FigureSaver.debug = True
 
     warnings.filterwarnings("ignore", ".*Collapsing a non-contiguous coordinate.*")
     warnings.filterwarnings("ignore", ".*DEFAULT_SPHERICAL_EARTH_RADIUS*")
 
-    thresholds = np.round(np.linspace(0.1, 0.96, 15), 3)
+    thresholds = np.round(np.linspace(0.1, 0.96, 15), 3)[::4]
 
     ba_var_names = ["CCI MODIS BA", "GFED4 BA", "GFED4s BA", "MCD64CMQ BA"]
     meris_var_names = ["CCI MERIS BA", "fraction of observed area"]
@@ -62,6 +64,10 @@ if __name__ == "__main__":
         # Apply the observed area mask.
         masked_datasets.apply_masks(obs_mask.data)
 
+        # Modify the weights to take into account the observed area fraction.
+        weights = iris.analysis.cartography.area_weights(meris_obs_dataset.cube)
+        weights *= meris_obs_dataset.cube.data.data
+
         for ba_dataset, dataset_name in zip(
             tqdm(masked_datasets, desc="Datasets", unit="dataset"),
             masked_datasets.pretty_dataset_names,
@@ -74,7 +80,7 @@ if __name__ == "__main__":
                 ba_dataset.cube.collapsed(
                     ("time", "latitude", "longitude"),
                     iris.analysis.MEAN,
-                    weights=iris.analysis.cartography.area_weights(ba_dataset.cube),
+                    weights=weights,
                 ).data
             )
 
