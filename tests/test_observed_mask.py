@@ -3,9 +3,9 @@ import iris
 import numpy as np
 import pytest
 
-from test_datasets import data_availability
 from wildfires.data.cube_aggregation import Datasets, prepare_selection
 from wildfires.data.datasets import CCI_BurnedArea_MERIS_4_1
+from wildfires.tests.test_datasets import data_availability
 
 
 @data_availability
@@ -73,6 +73,7 @@ def test_MERIS_observed_area_mask():
     assert np.all(from_partial.data == reference.data)
 
 
+@pytest.mark.slow
 @data_availability
 @pytest.mark.parametrize("thres", [0.1, 0.8, 0.9])
 def test_MERIS_obs_masked_dataset(thres):

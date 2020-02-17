@@ -119,3 +119,6 @@ cx1_files*/
 
 # Generated html files.
 *.html
+
+# Generated movies.
+*.mp4

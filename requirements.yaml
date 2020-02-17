@@ -9,6 +9,8 @@ dependencies:
   - cdsapi
   - cf_units
   - cloudpickle
+  - dask
+  - dask-jobqueue
   - dill
   - fiona
   - flake8

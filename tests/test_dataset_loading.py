@@ -36,12 +36,8 @@ from wildfires.data.datasets import (
     MOD15A2H_LAI_fPAR,
     Simard_canopyheight,
     Thurner_AGB,
-    data_is_available,
 )
-
-data_availability = pytest.mark.skipif(
-    not data_is_available(), reason="Data directory is unavailable."
-)
+from wildfires.tests.test_datasets import data_availability
 
 
 @data_availability
@@ -98,6 +94,7 @@ def test_CHELSA():
     assert inst.cubes
 
 
+@pytest.mark.slow
 @data_availability
 def test_CRU():
     try:
@@ -128,6 +125,7 @@ def test_Copernicus_SWI():
     assert inst.cubes
 
 
+@pytest.mark.slow
 @data_availability
 def test_ERA5_CAPEPrecip():
     try:
@@ -138,6 +136,7 @@ def test_ERA5_CAPEPrecip():
     assert inst.cubes
 
 
+@pytest.mark.slow
 @data_availability
 def test_ERA5_DryDayPeriod():
     try:
@@ -148,6 +147,7 @@ def test_ERA5_DryDayPeriod():
     assert inst.cubes
 
 
+@pytest.mark.slow
 @data_availability
 def test_ERA5_TotalPrecipitation():
     try:
@@ -238,6 +238,7 @@ def test_GPW_v4_pop_dens():
     assert inst.cubes
 
 
+@pytest.mark.slow
 @data_availability
 def test_GSMaP_dry_day_period():
     try:
@@ -248,6 +249,7 @@ def test_GSMaP_dry_day_period():
     assert inst.cubes
 
 
+@pytest.mark.slow
 @data_availability
 def test_GSMaP_precipitation():
     try:

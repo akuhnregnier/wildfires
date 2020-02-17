@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import traceback
 
 import cloudpickle
 from joblib import register_store_backend
@@ -17,8 +18,6 @@ from joblib._store_backends import (
     mkdirp,
     rm_subdirs,
 )
-
-import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +112,7 @@ class CloudpickleStoreBackend(StoreBackendBase, StoreBackendMixin):
             )
 
         logger.debug(f"cloudpickle loading filename '{filename}'.")
-        with open(filename, 'rb') as f:
+        with open(filename, "rb") as f:
             item = cloudpickle.load(f)
         return item
 
@@ -131,7 +130,7 @@ class CloudpickleStoreBackend(StoreBackendBase, StoreBackendMixin):
 
             def write_func(to_write, dest_filename):
                 # TODO: Pass options!!
-                with open(dest_filename, 'wb') as f:
+                with open(dest_filename, "wb") as f:
                     cloudpickle.dump(to_write, f, protocol=-1)
 
             self._concurrency_safe_write(item, filename, write_func)
@@ -172,4 +171,3 @@ def compare_metadata(dirs):
             print(strings[0][i - n : i + n])
             print(strings[1][i - n : i + n])
             break
-

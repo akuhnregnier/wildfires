@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import logging
 import os
 import pickle
@@ -16,7 +17,9 @@ from wildfires.utils import get_qstat_json
 
 logger = logging.getLogger(__name__)
 
-TMP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "cx1_files"))
+TMP_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "cx1_files")
+)
 os.makedirs(TMP_DIR, exist_ok=True)
 
 

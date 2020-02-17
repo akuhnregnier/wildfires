@@ -6,8 +6,8 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from iris.time import PartialDateTime
 
-from test_datasets import data_availability
 from wildfires.data.datasets import GPW_v4_pop_dens
+from wildfires.tests.test_datasets import data_availability
 
 
 @data_availability

@@ -32,7 +32,7 @@ from wildfires.data.datasets import *
 from wildfires.logging_config import LOGGING
 from wildfires.utils import get_masked_array, get_ncpus, get_unmasked
 from wildfires.utils import land_mask as get_land_mask
-from wildfires.utils import match_shape, polygon_mask
+from wildfires.utils import polygon_mask
 
 logger = logging.getLogger(__name__)
 
@@ -201,9 +201,9 @@ def data_processing(
     if use_lat_mask:
         # Define a latitude mask which ignores data beyond 60 degrees, as GSMaP data does
         # not extend to those latitudes.
-        masks_to_apply.append(~polygon_mask(
-            [(180, -60), (-180, -60), (-180, 60), (180, 60), (180, -60)]
-        ))
+        masks_to_apply.append(
+            ~polygon_mask([(180, -60), (-180, -60), (-180, 60), (180, 60), (180, -60)])
+        )
     if use_fire_mask:
         masks_to_apply.append(get_no_fire_mask())
 
@@ -394,9 +394,13 @@ def GLM(
 
 
 def RF(
-    endog_data, exog_data, master_mask, model_name="RFv1",
-    normal_coast_linewidth=0.5, plot=True,
-    **rf_kwargs
+    endog_data,
+    exog_data,
+    master_mask,
+    model_name="RFv1",
+    normal_coast_linewidth=0.5,
+    plot=True,
+    **rf_kwargs,
 ):
     results = {}
 
@@ -406,7 +410,7 @@ def RF(
         n_jobs=rf_kwargs.pop("n_jobs", get_ncpus()),
         bootstrap=rf_kwargs.pop("bootstrap", True),
         max_depth=rf_kwargs.pop("max_depth", 15),
-        **rf_kwargs
+        **rf_kwargs,
     )
     results["regr"] = regr
     X_train, X_test, y_train, y_test = train_test_split(

@@ -851,8 +851,9 @@ def cube_plotting(
         if "cbar_tick_size" in kwargs:
             cbar.ax.tick_params(labelsize=kwargs["cbar_tick_size"])
         if "cbar_label_size" in kwargs:
-            cbar.set_label(label=colorbar_kwargs["label"],
-            size=kwargs["cbar_label_size"])
+            cbar.set_label(
+                label=colorbar_kwargs["label"], size=kwargs["cbar_label_size"]
+            )
     if title:
         if isinstance(title, mpl.text.Text):
             title_text.set_text(title)
@@ -877,7 +878,7 @@ def partial_dependence_plot(
     predicted_name="Burned Area",
     norm_y_ticks=False,
     single_plots=False,
-    keep_y_ticks=False
+    keep_y_ticks=False,
 ):
     """Plot 1 dimensional partial dependence plots.
 
@@ -958,8 +959,7 @@ def partial_dependence_plot(
         for feature in features:
             fig, ax = plt.subplots()
             figs_axes.append((fig, ax))
-            ax.plot(quantile_data[feature],
-                    results[feature])
+            ax.plot(quantile_data[feature], results[feature])
             ax.set_xlabel(feature)
             ax.set_ylabel(predicted_name)
 

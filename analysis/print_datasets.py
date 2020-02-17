@@ -20,8 +20,23 @@ from wildfires.data.cube_aggregation import (
     get_all_datasets,
     prepare_selection,
 )
-from wildfires.data.datasets import *
-
+from wildfires.data.datasets import (
+    CHELSA,
+    HYDE,
+    MCD64CMQ_C6,
+    VODCA,
+    AvitabileThurnerAGB,
+    CCI_BurnedArea_MERIS_4_1,
+    CCI_BurnedArea_MODIS_5_1,
+    Copernicus_SWI,
+    ERA5_CAPEPrecip,
+    ERA5_DryDayPeriod,
+    ESA_CCI_Landcover_PFT,
+    GFEDv4,
+    GFEDv4s,
+    GlobFluo_SIF,
+    MOD15A2H_LAI_fPAR,
+)
 from wildfires.logging_config import LOGGING
 
 logger = logging.getLogger(__name__)
