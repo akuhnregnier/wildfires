@@ -758,52 +758,59 @@ def cube_plotting(
             if vmin is not None and vmax is not None:
                 extend = "both"
 
-        if extend == "neither":
-            n_colors = len(boundaries) - 1
-        elif extend == "min":
-            n_colors = len(boundaries)
-        elif extend == "max":
-            n_colors = len(boundaries)
-        elif extend == "both":
-            n_colors = len(boundaries) + 1
-        else:
-            raise ValueError(f"Unknown value for `extend` {repr(extend)}.")
+        raw_cmap = kwargs.get("cmap", "viridis")
 
-        # Allow manual flipping of colormap.
-        cmap_sample_lims = [0, 1]
-        try:
-            orig_cmap = plt.get_cmap(kwargs.get("cmap", "viridis"))
-        except ValueError:
-            raw_cmap = kwargs.get("cmap", "viridis")
-            logger.warning(f"Exception while trying to access cmap '{raw_cmap}'.")
-            if isinstance(raw_cmap, str) and "_r" in raw_cmap:
-                # Try to reverse the colormap manually, in case a reversed colormap
-                # was requested using the '_r' suffix, but this is not available.
-                raw_cmap = raw_cmap[:-2]
+        if isinstance(raw_cmap, str):
+            if extend == "neither":
+                n_colors = len(boundaries) - 1
+            elif extend == "min":
+                n_colors = len(boundaries)
+            elif extend == "max":
+                n_colors = len(boundaries)
+            elif extend == "both":
+                n_colors = len(boundaries) + 1
+            else:
+                raise ValueError(f"Unknown value for `extend` {repr(extend)}.")
+
+            # Allow manual flipping of colormap.
+            cmap_sample_lims = [0, 1]
+            try:
                 orig_cmap = plt.get_cmap(raw_cmap)
+            except ValueError:
+                logger.warning(f"Exception while trying to access cmap '{raw_cmap}'.")
+                if isinstance(raw_cmap, str) and "_r" in raw_cmap:
+                    # Try to reverse the colormap manually, in case a reversed colormap
+                    # was requested using the '_r' suffix, but this is not available.
+                    raw_cmap = raw_cmap[:-2]
+                    orig_cmap = plt.get_cmap(raw_cmap)
 
-                # Flip limits to achieve reversal effect.
-                cmap_sample_lims = [1, 0]
-                logger.warning(f"Manually reversing cmap '{raw_cmap}'.")
-            else:
-                raise
+                    # Flip limits to achieve reversal effect.
+                    cmap_sample_lims = [1, 0]
+                    logger.warning(f"Manually reversing cmap '{raw_cmap}'.")
+                else:
+                    raise
 
-        if n_colors > orig_cmap.N:
-            logger.warning(
-                f"Expected at most {orig_cmap.N} " f"colors, but got {n_colors}."
+            if n_colors > orig_cmap.N:
+                logger.warning(
+                    f"Expected at most {orig_cmap.N} " f"colors, but got {n_colors}."
+                )
+                if n_colors <= 20:
+                    orig_cmap = plt.get_cmap("tab20")
+                else:
+                    orig_cmap = plt.get_cmap("viridis")
+                logger.warning(f"Reverting colormap to {orig_cmap.name}.")
+
+            logger.debug(f"Boundaries:{boundaries}.")
+            cmap, norm = from_levels_and_colors(
+                boundaries,
+                orig_cmap(np.linspace(*cmap_sample_lims, n_colors)),
+                extend=extend,
             )
-            if n_colors <= 20:
-                orig_cmap = plt.get_cmap("tab20")
-            else:
-                orig_cmap = plt.get_cmap("viridis")
-            logger.warning(f"Reverting colormap to {orig_cmap.name}.")
-
-        logger.debug(f"Boundaries:{boundaries}.")
-        cmap, norm = from_levels_and_colors(
-            boundaries,
-            orig_cmap(np.linspace(*cmap_sample_lims, n_colors)),
-            extend=extend,
-        )
+        else:
+            cmap = raw_cmap
+            norm = mpl.colors.Normalize(
+                vmin=np.min(boundaries), vmax=np.max(boundaries)
+            )
 
         # This forces data points 'exactly' (very close) to the upper limit of the last
         # bin to be recognised as part of that bin, as opposed to out of bounds.

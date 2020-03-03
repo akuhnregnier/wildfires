@@ -11,6 +11,7 @@ from copy import deepcopy
 from joblib import Memory
 from tqdm import tqdm
 
+from wildfires.analysis.fire_season import thres_fire_season_stats
 from wildfires.analysis.plotting import *
 from wildfires.data.cube_aggregation import *
 from wildfires.data.datasets import *
@@ -21,7 +22,14 @@ memory = Memory(DATA_DIR)
 
 
 @memory.cache
-def get_mean_burned_area(thresholds):
+def get_mean_burned_area(thresholds, masks=None, climatology_masks=None):
+    """
+
+    Climatology masks define a mask for each point on the grid for each of the twelve
+    months. These individual-month masks then have to applied manually to the months
+    in the monthly dataset.
+
+    """
     ba_var_names = ["CCI MODIS BA", "GFED4 BA", "GFED4s BA", "MCD64CMQ BA"]
     meris_var_names = ["CCI MERIS BA", "fraction of observed area"]
     ba_datasets = Datasets(
@@ -36,8 +44,31 @@ def get_mean_burned_area(thresholds):
     meris_obs_dataset = monthly.select_variables(
         meris_var_names[1], inplace=False
     ).dataset
+
+    monthly_masks = [~get_land_mask()]
+    if masks is not None:
+        monthly_masks.extend(masks)
+
+    # Process climatological masks to match the original months to the target months.
+    # NOTE: The masking process here relies on using `which='monthly'` above, which
+    # should not be altered!
+    start = monthly[0].min_time
+    end = monthly[0].max_time
+
+    n_repetitions = end.year - start.year + 1
+
+    for mask in climatology_masks:
+        repeated_mask = np.vstack((mask,) * n_repetitions)
+
+        # Trim leftover months in case the first data point was not in January, and
+        # the last was not in December.
+        monthly_masks.append(
+            ~repeated_mask[start.month - 1 : repeated_mask.shape[0] - (12 - end.month)]
+        )
+        assert monthly_masks[-1].shape == monthly[0][0].shape
+
     monthly = monthly.select_variables(ba_var_names + meris_var_names[0:1]).apply_masks(
-        ~get_land_mask()
+        *monthly_masks
     )
 
     mean_bas = dict(
@@ -103,7 +134,23 @@ if __name__ == "__main__":
 
     thresholds = np.round(np.linspace(0.1, 0.96, 15), 3)
 
-    valid_counts, mean_bas, naive_mean_bas = get_mean_burned_area(thresholds)
+    # Normal case - only the land is ignored.
+    masks = None
+    climatology_masks = None
+
+    # Use a climatological mask.
+    season_output = thres_fire_season_stats(np.round(1e-3, 5))
+    gfedv4_index = [s[0] for s in season_output].index("GFEDv4")
+    climatology_masks = [season_output[gfedv4_index][4]]
+
+    valid_counts, mean_bas, naive_mean_bas = get_mean_burned_area(
+        thresholds, masks=masks, climatology_masks=climatology_masks
+    )
+
+    if masks is None and climatology_masks is None:
+        fire_season = False
+    else:
+        fire_season = True
 
     means_fits = {}
     naive_means_fits = {}
@@ -134,12 +181,16 @@ if __name__ == "__main__":
         pd.DataFrame(naive_means_fits).T[re_column_names].loc[means_fits.index]
     )
 
+    prefix = "fire_season_" if fire_season else ""
+
     for df, fname in zip(
         (means_fits, naive_means_fits), ("means_fits.csv", "naive_means_fits.csv")
     ):
-        df.to_csv(os.path.join(FigureSaver.directory, fname))
+        df.to_csv(os.path.join(FigureSaver.directory, prefix + fname))
 
-    with FigureSaver("mean_ba"):
+    mpl.rc("figure", figsize=(6.4, 4.8))
+
+    with FigureSaver(prefix + "mean_ba"):
         plt.figure()
         for i, dataset_name in enumerate(means_fits.index):
             mean_ba_vals = naive_mean_bas[dataset_name]
@@ -150,8 +201,8 @@ if __name__ == "__main__":
 
         plt.annotate(
             "naive",
-            xy=(0.48, 0.0018),
-            xytext=(0.6, 0.00155),
+            xy=(0.48, 0.0018) if not fire_season else (0.48, 0.017),
+            xytext=(0.6, 0.00155) if not fire_season else (0.6, 0.0155),
             arrowprops=dict(arrowstyle="simple"),
             bbox=dict(facecolor="none", edgecolor="black", boxstyle="round,pad=0.15"),
         )
@@ -160,7 +211,7 @@ if __name__ == "__main__":
         plt.ylabel("Mean Burned Area (1)")
         plt.show()
 
-    with FigureSaver("counts"):
+    with FigureSaver(prefix + "counts"):
         plt.figure()
         for i, dataset_name in enumerate(means_fits.index):
             valid_count_vals = valid_counts[dataset_name]
@@ -168,4 +219,5 @@ if __name__ == "__main__":
         plt.legend(loc="best")
         plt.xlabel("Threshold (1)")
         plt.ylabel("Valid Observations (1)")
+        plt.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
         plt.show()
