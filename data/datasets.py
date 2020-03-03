@@ -1063,7 +1063,7 @@ class Dataset(ABC):
                             # need to handle this.
                             if np.all(np.diff(new_cubes[i].coord(coord).points) < 0):
                                 # If they are monotonically decreasing we just need the flip them.
-                                logger.info(
+                                logger.debug(
                                     f"Inverting {coord}s for: {new_cubes[i].name()}."
                                 )
                                 lat_index = [

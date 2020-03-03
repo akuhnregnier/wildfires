@@ -6,6 +6,7 @@ import os
 import matplotlib as mpl
 import numpy as np
 from joblib import Memory
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 
 from wildfires.analysis.analysis import *
@@ -16,20 +17,7 @@ from wildfires.data.datasets import *
 from wildfires.joblib.cloudpickle_backend import register_backend
 from wildfires.logging_config import enable_logging
 
-FigureSaver.directory = os.path.expanduser(os.path.join("~", "tmp", "time_lags"))
-os.makedirs(FigureSaver.directory, exist_ok=True)
 logger = logging.getLogger(__name__)
-
-enable_logging()
-warnings.filterwarnings("ignore", ".*Collapsing a non-contiguous coordinate.*")
-warnings.filterwarnings("ignore", ".*DEFAULT_SPHERICAL_EARTH_RADIUS*")
-warnings.filterwarnings("ignore", ".*guessing contiguous bounds*")
-
-normal_coast_linewidth = 0.5
-mpl.rc("figure", figsize=(14, 6))
-mpl.rc("font", size=9.0)
-
-np.random.seed(1)
 
 register_backend()
 location = os.path.join(DATA_DIR, "joblib_cachedir")
@@ -39,7 +27,7 @@ memory = Memory(location, backend="cloudpickle", verbose=100)
 
 
 @memory.cache
-def get_data(shift_months=None):
+def get_data(shift_months=None, selection_variables=None):
     target_variable = "GFED4 BA"
 
     # Creation of new variables.
@@ -48,6 +36,9 @@ def get_data(shift_months=None):
     }
     # Variables to be deleted after the aforementioned transformations.
     deletions = ("Min Temp",)
+
+    # Variables required for the above.
+    required_variables = ["Max Temp", "Min Temp", target_variable]
 
     # Carry out transformations, replacing old variables in the process.
     # log_var_names = ["Temp Range", "Dry Day Period"]
@@ -81,34 +72,36 @@ def get_data(shift_months=None):
                     shift_dataset.get_temporally_shifted_dataset(months=-shift)
                 )
 
-    selection_variables = [
-        "AGB Tree",
-        "Max Temp",
-        "Min Temp",
-        "SWI(1)",
-        "CAPE x Precip",
-        "Dry Day Period",
-        "ShrubAll",
-        "TreeAll",
-        "pftCrop",
-        "pftHerb",
-        "GFED4 BA",
-        "SIF",
-        "popd",
-        "FAPAR",
-        "LAI",
-        "VOD Ku-band",
-    ]
-    if shift_months is not None:
-        for shift in shift_months:
-            selection_variables.extend(
-                [
-                    f"LAI {-shift} Month",
-                    f"FAPAR {-shift} Month",
-                    f"Dry Day Period {-shift} Month",
-                    f"VOD Ku-band {-shift} Month",
-                ]
-            )
+    if selection_variables is None:
+        selection_variables = [
+            "AGB Tree",
+            "Max Temp",
+            "Min Temp",
+            "SWI(1)",
+            "CAPE x Precip",
+            "Dry Day Period",
+            "ShrubAll",
+            "TreeAll",
+            "pftCrop",
+            "pftHerb",
+            "SIF",
+            "popd",
+            "FAPAR",
+            "LAI",
+            "VOD Ku-band",
+        ]
+        if shift_months is not None:
+            for shift in shift_months:
+                selection_variables.extend(
+                    [
+                        f"LAI {-shift} Month",
+                        f"FAPAR {-shift} Month",
+                        f"Dry Day Period {-shift} Month",
+                        f"VOD Ku-band {-shift} Month",
+                    ]
+                )
+
+    selection_variables = list(set(selection_variables).union(required_variables))
 
     selection = Datasets(selection_datasets).select_variables(selection_variables)
     (
@@ -139,21 +132,26 @@ def get_data(shift_months=None):
     )
 
 
-if __name__ == "__main__":
+def print_header(ncol=70, char="#", fill=""):
+    print(char * ncol)
+    name_str = np.array(list("#" * ncol))
+    n_fill = len(fill)
+    start_index = int((ncol / 2) - (n_fill / 2)) - 1
+    end_index = start_index + n_fill + 2
+    name_str[start_index:end_index] = list(f" {fill} ")
+    print("".join(name_str))
+    print(char * ncol)
+
+
+def rf_time_lag_grid_search():
     # Hyperparameter Optimisation Using CX1
     for shift_months, data_name in zip(
         (None, [1, 3, 6, 12, 24]), ("full_no_shift", "full_shift")
     ):
         logger.info(f"RF with data: {data_name}.")
-        ncol = 70
-        print("#" * ncol)
-        name_str = np.array(list("#" * ncol))
-        n_fill = len(data_name)
-        start_index = int((ncol / 2) - (n_fill / 2)) - 1
-        end_index = start_index + n_fill + 2
-        name_str[start_index:end_index] = list(f" {data_name} ")
-        print("".join(name_str))
-        print("#" * ncol)
+
+        print_header(fill=data_name)
+
         (
             endog_data,
             exog_data,
@@ -192,10 +190,10 @@ if __name__ == "__main__":
             print("RF n_jobs:", regr.n_jobs)
 
             print(regr)
-            y_pred = regr.predict(X_test)
+            regr.predict(X_test)
 
             # Carry out predictions on the training dataset to diagnose overfitting.
-            y_pred_train = regr.predict(X_train)
+            regr.predict(X_train)
 
             results = {}
             results["R2_train"] = regr.score(X_train, y_train)
@@ -247,3 +245,137 @@ if __name__ == "__main__":
 
         else:
             logger.info("No output found")
+
+
+if __name__ == "__main__":
+    enable_logging()
+
+    warnings.filterwarnings("ignore", ".*Collapsing a non-contiguous coordinate.*")
+    warnings.filterwarnings("ignore", ".*DEFAULT_SPHERICAL_EARTH_RADIUS*")
+    warnings.filterwarnings("ignore", ".*guessing contiguous bounds*")
+
+    normal_coast_linewidth = 0.5
+    mpl.rc("figure", figsize=(14, 6))
+    mpl.rc("font", size=9.0)
+
+    np.random.seed(1)
+
+    shift_months = [1, 3, 6, 12, 24]
+
+    selection_variables = (
+        "VOD Ku-band -3 Month",
+        "SIF",
+        "VOD Ku-band -1 Month",
+        "Dry Day Period -3 Month",
+        "FAPAR",
+        "pftHerb",
+        "LAI -1 Month",
+        "popd",
+        "Dry Day Period -24 Month",
+        "pftCrop",
+        "FAPAR -1 Month",
+        "FAPAR -24 Month",
+        "Max Temp",
+        "Dry Day Period -6 Month",
+        "VOD Ku-band -6 Month",
+        # Extra 5 split.
+        # "Dry Day Period -1 Month",
+        # "FAPAR -6 Month",
+        # "ShrubAll",
+        # "SWI(1)",
+        # "TreeAll",
+    )
+
+    (
+        endog_data,
+        exog_data,
+        master_mask,
+        filled_datasets,
+        masked_datasets,
+        land_mask,
+    ) = get_data(shift_months=shift_months, selection_variables=selection_variables)
+
+    n_vars = len(exog_data.columns)
+
+    data_name = f"clim_{n_vars}{'_shifted' if shift_months is not None else ''}"
+
+    FigureSaver.directory = os.path.expanduser(
+        os.path.join("~", "tmp", "time_lags", data_name)
+    )
+    os.makedirs(FigureSaver.directory, exist_ok=True)
+    FigureSaver.debug = True
+
+    # Define the training and test data.
+    X_train, X_test, y_train, y_test = train_test_split(
+        exog_data, endog_data, random_state=1, shuffle=True, test_size=0.3
+    )
+
+    # Define the parameter space.
+    parameters_RF = {
+        "n_estimators": 100,
+        "max_depth": None,
+        "min_samples_split": 2,
+        "min_samples_leaf": 3,
+        "max_features": "auto",
+        "bootstrap": True,
+        "random_state": 1,
+    }
+
+    regr = RandomForestRegressor(**parameters_RF, n_jobs=get_ncpus())
+
+    # Refit the model on all the data and store this as well.
+    regr.fit(X_train, y_train)
+
+    y_pred = regr.predict(X_test)
+
+    # Carry out predictions on the training dataset to diagnose overfitting.
+    y_pred_train = regr.predict(X_train)
+
+    print(regr)
+
+    results = {}
+    results["R2_train"] = regr.score(X_train, y_train)
+    results["R2_test"] = regr.score(X_test, y_test)
+
+    model_name = "RF"
+    print(f"{model_name} R2 train: {results['R2_train']}")
+    print(f"{model_name} R2 test: {results['R2_test']}")
+
+    importances = regr.feature_importances_
+    std = np.std([tree.feature_importances_ for tree in regr.estimators_], axis=0)
+
+    importances_df = pd.DataFrame(
+        {
+            "Name": exog_data.columns.values,
+            "Importance": importances,
+            "Importance STD": std,
+            "Ratio": np.array(std) / np.array(importances),
+        }
+    )
+    print(
+        "\n"
+        + str(
+            importances_df.sort_values("Importance", ascending=False).to_string(
+                index=False, float_format="{:0.3f}".format, line_width=200
+            )
+        )
+    )
+
+    print("VIFs")
+    print_vifs(exog_data)
+
+    with FigureSaver([f"pdp_{data_name}_{feature}" for feature in X_test.columns]):
+        fig_axes = partial_dependence_plot(
+            regr,
+            X_test,
+            X_test.columns,
+            n_cols=4,
+            grid_resolution=50,
+            coverage=0.6,
+            predicted_name="burned area",
+            single_plots=True,
+            log_x_scale=("Dry Day Period", "popd"),
+            X_train=X_train,
+            plot_range=False,
+        )
+        plt.subplots_adjust(wspace=0.16)

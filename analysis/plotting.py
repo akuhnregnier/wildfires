@@ -65,7 +65,7 @@ class FigureSaver:
 
     debug_options = {
         "bbox_inches": "tight",
-        "transparent": True,
+        "transparent": False,
         "rasterised": True,
         "filetype": "png",
         "dpi": 200,
@@ -865,6 +865,92 @@ def cube_plotting(
     return fig
 
 
+def get_pdp_data(
+    model,
+    X,
+    features,
+    grid_resolution=100,
+    percentiles=(0.0, 1.0),
+    coverage=1,
+    random_state=None,
+):
+    """Get data for 1 dimensional partial dependence plots.
+
+    Args:
+        model: A fitted model with a 'predict' method.
+        X (pandas.DataFrame): Dataframe containing the data over which the
+            partial dependence plots are generated.
+        features (list): A list of int or string with which to select
+            columns from X. The type must match the column labels.
+        grid_resolution (int): Number of points to plot between the
+            specified percentiles.
+        percentiles (tuple of float): Percentiles between which to plot the
+            pdp.
+        coverage (float): A float between 0 and 1 which dictates what
+            fraction of data is used to generate the plots.
+        random_state (int or None): Used to call np.random.seed(). This is
+            only used if coverage < 1. Supplying None causes the random
+            number generator to initialise itself using the system clock
+            (or using something similar which will not be constant from one
+            run to the next).
+
+    Returns:
+        4-tuple of pandas.DataFrame: Quantiles, average predictions, minimum
+            predictions and maximum predictions for each feature.
+
+    """
+    features = list(features)
+
+    quantiles = X[features].quantile(percentiles)
+    quantile_data = pd.DataFrame(
+        np.linspace(quantiles.iloc[0], quantiles.iloc[1], grid_resolution),
+        columns=features,
+    )
+
+    datasets = []
+    min_datasets = []
+    max_datasets = []
+
+    if not np.isclose(coverage, 1):
+        logger.debug("Selecting subset of data with coverage:{:}".format(coverage))
+        np.random.seed(random_state)
+
+        # Select a random subset of the data.
+        permuted_indices = np.random.permutation(np.arange(X.shape[0]))
+        permuted_indices = permuted_indices[: int(coverage * X.shape[0])]
+        X_selected = X.iloc[permuted_indices]
+    else:
+        logger.debug("Selecting all data.")
+        X_selected = X
+
+    for feature in tqdm(features):
+        series = quantile_data[feature]
+
+        # for each possible value of the selected feature, average over all
+        # possible combinations of the other features
+        averaged_predictions = []
+        min_predictions = []
+        max_predictions = []
+        calc_X = X_selected.copy()
+        for value in series:
+            calc_X[feature] = value
+            prediction = model.predict(calc_X)
+
+            averaged_predictions.append(np.mean(prediction))
+            min_predictions.append(np.min(prediction))
+            max_predictions.append(np.max(prediction))
+
+        datasets.append(np.array(averaged_predictions).reshape(-1, 1))
+        min_datasets.append(np.array(min_predictions).reshape(-1, 1))
+        max_datasets.append(np.array(max_predictions).reshape(-1, 1))
+
+    avg_results = pd.DataFrame(np.hstack(datasets), columns=features)
+    min_results = pd.DataFrame(np.hstack(min_datasets), columns=features)
+    max_results = pd.DataFrame(np.hstack(max_datasets), columns=features)
+
+    return quantile_data, avg_results, min_results, max_results
+
+
 def partial_dependence_plot(
     model,
     X,
@@ -879,6 +965,9 @@ def partial_dependence_plot(
     norm_y_ticks=False,
     single_plots=False,
     keep_y_ticks=False,
+    log_x_scale=None,
+    X_train=None,
+    plot_range=True,
 ):
     """Plot 1 dimensional partial dependence plots.
 
@@ -908,59 +997,79 @@ def partial_dependence_plot(
         single_plots (bool): If True, plot `n_features` plots instead of combining
             them.
         keep_y_ticks (bool): If True, do not turn off y-axis ticks.
+        log_x_scale (iterable): If given, features matching one of the supplied
+            strings will be logged (symlog) when plotting.
+        X_train (pandas.DataFrame): Similar to `X`. Is plotted using the same
+            transformations used for `X`, but using dotted lines. Can be used eg. for
+            comparison between train and test sets.
+        plot_range (bool): If True, plot the minimum and maximum predictions.
 
     Returns:
         fig, ax or ((fig1, ax1), (fig2, ax2), ...): Figure and axes holding the pdp
             (see `single_plots`).
 
     """
-    features = list(features)
-
-    quantiles = X[features].quantile(percentiles)
-    quantile_data = pd.DataFrame(
-        np.linspace(quantiles.iloc[0], quantiles.iloc[1], grid_resolution),
-        columns=features,
+    quantile_data, results, min_results, max_results = get_pdp_data(
+        model, X, features, grid_resolution, percentiles, coverage, random_state
     )
+    if X_train is not None:
+        (
+            train_quantile_data,
+            train_results,
+            train_min_results,
+            train_max_results,
+        ) = get_pdp_data(
+            model,
+            X_train,
+            features,
+            grid_resolution,
+            percentiles,
+            coverage,
+            random_state,
+        )
 
-    datasets = []
+    def pdp_axis_plot(ax, feature):
+        ax.plot(quantile_data[feature], results[feature], c="C0", zorder=3)
+        if plot_range:
+            ax.fill_between(
+                quantile_data[feature],
+                min_results[feature],
+                max_results[feature],
+                facecolor="C0",
+                zorder=1,
+                alpha=0.3,
+            )
 
-    if not np.isclose(coverage, 1):
-        logger.debug("Selecting subset of data with coverage:{:}".format(coverage))
-        np.random.seed(random_state)
+        if X_train is not None:
+            ax.plot(
+                train_quantile_data[feature],
+                train_results[feature],
+                linestyle="--",
+                c="C1",
+                zorder=2,
+            )
+            if plot_range:
+                ax.fill_between(
+                    train_quantile_data[feature],
+                    train_min_results[feature],
+                    train_max_results[feature],
+                    facecolor="C1",
+                    zorder=0,
+                    alpha=0.15,
+                )
 
-        # Select a random subset of the data.
-        permuted_indices = np.random.permutation(np.arange(X.shape[0]))
-        permuted_indices = permuted_indices[: int(coverage * X.shape[0])]
-    else:
-        logger.debug("Selecting all data.")
-        # Select all of the data.
-        permuted_indices = np.arange(X.shape[0])
+        ax.set_xlabel(feature)
 
-    X_selected = X.iloc[permuted_indices]
-
-    for feature in tqdm(features):
-        series = quantile_data[feature]
-
-        # for each possible value of the selected feature, average over all
-        # possible combinations of the other features
-        averaged_predictions = []
-        calc_X = X_selected.copy()
-        for value in series:
-            calc_X[feature] = value
-            averaged_predictions.append(np.mean(model.predict(calc_X)))
-
-        datasets.append(np.array(averaged_predictions).reshape(-1, 1))
-
-    datasets = np.hstack(datasets)
-    results = pd.DataFrame(datasets, columns=features)
+        if log_x_scale is not None:
+            if any(name in feature for name in log_x_scale):
+                ax.set_xscale("symlog")
 
     if single_plots:
         figs_axes = []
         for feature in features:
             fig, ax = plt.subplots()
             figs_axes.append((fig, ax))
-            ax.plot(quantile_data[feature], results[feature])
-            ax.set_xlabel(feature)
+            pdp_axis_plot(ax, feature)
             ax.set_ylabel(predicted_name)
 
         if not keep_y_ticks:
@@ -993,8 +1102,8 @@ def partial_dependence_plot(
             results /= results.to_numpy().max()
 
         for (i, (ax, feature)) in enumerate(zip(axes, features)):
-            ax.plot(quantile_data[feature], results[feature])
-            ax.set_xlabel(feature)
+            pdp_axis_plot(ax, feature)
+
             if i % n_cols == 0:
                 ax.set_ylabel(predicted_name)
 
@@ -1029,23 +1138,38 @@ def partial_dependence_plot(
 def sample_pdp():
     import string
 
+    np.random.seed(1)
+
     class A:
         def predict(self, X):
             # Prevent modification from persisting.
             X = X.copy()
-            X.iloc[:, 0] *= -1
+            X.iloc[:, 0] *= -(0.4 + np.mean(X.iloc[:, 0]) + X.iloc[0, 1])
+
             return np.sum(X, axis=1)
 
-    test_data = np.zeros((2, 18)) + np.array([[1], [2]])
+    test_data = np.zeros((2, 8)) + np.array([[1], [2]])
+
+    test_data += np.random.random(test_data.shape) - 0.5
+    test_data2 = test_data + 0.2 * (np.random.random(test_data.shape) - 0.5)
 
     model = A()
     X = pd.DataFrame(
         test_data, columns=list(string.ascii_lowercase)[: test_data.shape[1]]
     )
+    X2 = pd.DataFrame(
+        test_data2, columns=list(string.ascii_lowercase)[: test_data.shape[1]]
+    )
     features = list(string.ascii_lowercase[: test_data.shape[1]])
 
     fig, axes = partial_dependence_plot(
-        model, X, features, grid_resolution=2, norm_y_ticks=False, percentiles=(0, 1)
+        model,
+        X,
+        features,
+        grid_resolution=10,
+        norm_y_ticks=False,
+        percentiles=(0, 1),
+        X_train=X2,
     )
     plt.show()
 
@@ -1095,3 +1219,12 @@ def sample_region_plotting():
 
 if __name__ == "__main__":
     logging.config.dictConfig(LOGGING)
+
+    FigureSaver.directory = os.path.join(
+        os.path.expanduser("~"), "tmp", "plotting_test"
+    )
+    os.makedirs(FigureSaver.directory, exist_ok=True)
+    FigureSaver.debug = True
+
+    with FigureSaver("pdp_test"):
+        sample_pdp()
