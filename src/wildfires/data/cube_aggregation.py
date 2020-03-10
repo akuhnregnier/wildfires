@@ -24,7 +24,11 @@ import numpy as np
 from joblib import Memory, Parallel, delayed
 
 import wildfires.data.datasets as wildfire_datasets
-from wildfires.data.datasets import (
+
+from ..joblib.caching import CodeObj, wrap_decorator
+from ..logging_config import LOGGING
+from ..utils import get_ncpus, match_shape
+from .datasets import (
     DATA_DIR,
     data_is_available,
     dataset_times,
@@ -34,9 +38,16 @@ from wildfires.data.datasets import (
     get_monthly,
     get_monthly_mean_climatology,
 )
-from wildfires.joblib.caching import CodeObj, wrap_decorator
-from wildfires.logging_config import LOGGING
-from wildfires.utils import get_ncpus, match_shape
+
+__all__ = (
+    "IGNORED_DATASETS",
+    "Datasets",
+    "contains",
+    "datasets_cache",
+    "get_all_datasets",
+    "prepare_selection",
+    "print_datasets_dates",
+)
 
 logger = logging.getLogger(__name__)
 memory = Memory(location=DATA_DIR if data_is_available() else None, verbose=1)

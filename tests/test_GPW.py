@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 from datetime import datetime
 
 from dateutil.relativedelta import relativedelta
 from iris.time import PartialDateTime
 
 from wildfires.data.datasets import GPW_v4_pop_dens
-from wildfires.tests.test_datasets import data_availability
+
+from .utils import data_availability
 
 
 @data_availability

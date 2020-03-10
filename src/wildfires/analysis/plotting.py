@@ -15,12 +15,22 @@ import pandas as pd
 from matplotlib.colors import from_levels_and_colors
 from tqdm import tqdm
 
-from wildfires.data.datasets import dummy_lat_lon_cube
-from wildfires.logging_config import LOGGING
-from wildfires.utils import (
+from ..data import dummy_lat_lon_cube
+from ..logging_config import LOGGING
+from ..utils import (
     in_360_longitude_system,
     select_valid_subset,
     translate_longitude_system,
+)
+
+__all__ = (
+    "FigureSaver",
+    "cube_plotting",
+    "get_bin_edges",
+    "get_cubes_vmin_vmax",
+    "get_pdp_data",
+    "map_model_output",
+    "partial_dependence_plot",
 )
 
 logger = logging.getLogger(__name__)

@@ -37,7 +37,8 @@ from wildfires.data.datasets import (
     Simard_canopyheight,
     Thurner_AGB,
 )
-from wildfires.tests.test_datasets import data_availability
+
+from .utils import data_availability
 
 
 @data_availability

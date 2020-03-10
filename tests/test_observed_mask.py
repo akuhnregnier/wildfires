@@ -5,7 +5,8 @@ import pytest
 
 from wildfires.data.cube_aggregation import Datasets, prepare_selection
 from wildfires.data.datasets import CCI_BurnedArea_MERIS_4_1
-from wildfires.tests.test_datasets import data_availability
+
+from .utils import data_availability
 
 
 @data_availability

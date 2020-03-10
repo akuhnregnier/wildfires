@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-
 import numpy as np
 import pytest
 from dateutil.relativedelta import relativedelta
 from iris.time import PartialDateTime
 
 from wildfires.data.datasets import ERA5_DryDayPeriod
-from wildfires.tests.test_datasets import data_availability
+
+from .utils import data_availability
 
 
 @pytest.mark.slow

@@ -50,10 +50,9 @@ from numpy.testing import assert_allclose
 from pyhdf.SD import SD, SDC
 from tqdm import tqdm
 
-from wildfires.analysis.processing import fill_cube
-from wildfires.joblib.caching import CodeObj, wrap_decorator
-from wildfires.joblib.iris_backend import register_backend
-from wildfires.utils import (
+from ..joblib.caching import CodeObj, wrap_decorator
+from ..joblib.iris_backend import register_backend
+from ..utils import (
     get_bounds_from_centres,
     get_centres,
     in_360_longitude_system,
@@ -62,12 +61,82 @@ from wildfires.utils import (
     translate_longitude_system,
 )
 
+__all__ = (
+    "DATA_DIR",
+    "MM_PER_HR_THRES",
+    "M_PER_HR_THRES",
+    "AvitabileAGB",
+    "AvitabileThurnerAGB",
+    "CCI_BurnedArea_MERIS_4_1",
+    "CCI_BurnedArea_MODIS_5_1",
+    "CHELSA",
+    "CRU",
+    "CarvalhaisGPP",
+    "Copernicus_SWI",
+    "Dataset",
+    "ERA5_CAPEPrecip",
+    "ERA5_DryDayPeriod",
+    "ERA5_TotalPrecipitation",
+    "ESA_CCI_Fire",
+    "ESA_CCI_Landcover",
+    "ESA_CCI_Landcover_PFT",
+    "ESA_CCI_Soilmoisture",
+    "ESA_CCI_Soilmoisture_Daily",
+    "Error",
+    "GFEDv4",
+    "GFEDv4s",
+    "GPW_v4_pop_dens",
+    "GSMaP_dry_day_period",
+    "GSMaP_precipitation",
+    "GlobFluo_SIF",
+    "HYDE",
+    "LIS_OTD_lightning_climatology",
+    "LIS_OTD_lightning_time_series",
+    "Liu_VOD",
+    "MCD64CMQ_C6",
+    "MOD15A2H_LAI_fPAR",
+    "NonUniformCoordError",
+    "ObservedAreaError",
+    "Simard_canopyheight",
+    "Thurner_AGB",
+    "VODCA",
+    "cube_contains_coords",
+    "data_is_available",
+    "data_map_plot",
+    "dataset_cache",
+    "dataset_preprocessing",
+    "dataset_times",
+    "dummy_lat_lon_cube",
+    "fill_cube",
+    "fill_dataset",
+    "get_climatology",
+    "get_dataset_climatology_cubes",
+    "get_dataset_mean_cubes",
+    "get_dataset_monthly_cubes",
+    "get_mean",
+    "get_monthly",
+    "get_monthly_mean_climatology",
+    "homogenise_cube_attributes",
+    "homogenise_cube_mask",
+    "join_adjacent_intervals",
+    "lat_lon_dimcoords",
+    "lat_lon_match",
+    "load_cubes",
+    "monthly_average_in_dir",
+    "monthly_constraint",
+    "regions_GFED",
+    "regrid",
+    "regrid_dataset",
+    "translate_longitudes",
+)
+
+
 logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.expanduser("~"), "FIREDATA")
 
 
-repo_dir = os.path.join(os.path.dirname(__file__), os.pardir)
+repo_dir = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir)
 repo = Repo(repo_dir)
 
 # Above this mm/h threshold, a day is a 'wet day'.
@@ -101,6 +170,82 @@ class ObservedAreaError(Error):
 
 class NonUniformCoordError(Error):
     """Raised when a coordinate is neither monotonically increasing or decreasing."""
+
+
+def fill_cube(cube, mask):
+    """Process cube in-place by filling gaps using NN interpolation and also filtering.
+
+    The idea is to respect the masking of one variable (usually burned area) alone.
+    For all others, replace masked data using nearest-neighbour interpolation.
+    Thereafter, apply the aggregated mask `mask`, so that eg. only data over land and
+    within the latitude limits is considered. Latitude limits might be due to
+    limitations of GSMaP precipitation data, as well as limitations of the lightning
+    LIS/OTD dataset, for example.
+
+    Args:
+        cube (iris.cube.Cube): Cube to be filled.
+        mask (numpy.ndarray): Boolean mask typically composed of the land mask,
+            latitude mask and burned area mask like:
+                `mask=land_mask | lat_mask | burned_area_mask`.
+            This controls which data points remain after the processing, while the
+            mask internal to the cube's data controls where interpolation will take
+            place.
+
+    """
+    assert isinstance(cube.data, np.ma.core.MaskedArray) and isinstance(
+        cube.data.mask, np.ndarray
+    ), "Cube needs to have a full (non-sparse) data mask."
+
+    # Here, data gaps are filled, so that the maximum possible area of data
+    # (limited by where burned area data is available) is used for the analysis.
+    # Choose to fill the gaps using nearest-neighbour interpolation. To do this,
+    # define a mask which will tell the algorithm where to replace data.
+
+    logger.info("Filling: '{}'.".format(cube.name()))
+
+    # Interpolate data where (and if) it is masked.
+    fill_mask = cube.data.mask
+    if np.sum(fill_mask[~mask]):
+        orig_data = cube.data.data.copy()
+        logger.info(
+            "Filling {:} elements ({:} after final masking).".format(
+                np.sum(fill_mask), np.sum(fill_mask[~mask])
+            )
+        )
+        filled_data = cube.data.data[
+            tuple(
+                scipy.ndimage.distance_transform_edt(
+                    fill_mask, return_distances=False, return_indices=True
+                )
+            )
+        ]
+        assert np.all(np.isclose(cube.data.data[~fill_mask], orig_data[~fill_mask]))
+
+        selected_unfilled_data = orig_data[~mask]
+        selected_filled_data = filled_data[~mask]
+
+        logger.info(
+            "Min {:0.1e}/{:0.1e}, max {:0.1e}/{:0.1e} before/after "
+            "filling (for relevant regions)".format(
+                np.min(selected_unfilled_data),
+                np.min(selected_filled_data),
+                np.max(selected_unfilled_data),
+                np.max(selected_filled_data),
+            )
+        )
+    else:
+        # Prevent overwriting with previous loop's filled data if there is nothing
+        # to fill.
+        filled_data = cube.data.data
+
+    # Always apply global combined mask.
+    cube.data = np.ma.MaskedArray(filled_data, mask=mask)
+
+    # Check that there aren't any inf's or nan's in the data.
+    assert not np.any(np.isinf(cube.data.data[~cube.data.mask]))
+    assert not np.any(np.isnan(cube.data.data[~cube.data.mask]))
+
+    return cube
 
 
 def cube_contains_coords(cube, *coords):

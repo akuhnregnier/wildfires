@@ -12,8 +12,10 @@ from textwrap import dedent, indent
 
 import numpy as np
 
-from wildfires.logging_config import enable_logging
-from wildfires.utils import get_qstat_json
+from ..logging_config import enable_logging
+from ..utils import get_qstat_json
+
+__all__ = ("CX1Fit",)
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,8 @@ from iris.time import PartialDateTime
 import wildfires.data.datasets as wildfire_datasets
 from wildfires.data.cube_aggregation import Datasets
 from wildfires.data.datasets import dummy_lat_lon_cube
-from wildfires.tests.test_datasets import data_availability
+
+from .utils import data_availability
 
 # FIXME: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
 

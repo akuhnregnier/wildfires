@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Convert daily data files in given directory to a NetCDF file.
+
+The NetCDF file will be placed in the same directory and contain aggregated monthly
+data. The grads program is used to achieve this.
+
+"""
 import argparse
 import calendar
 import glob

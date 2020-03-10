@@ -1,5 +1,6 @@
 # wildfires
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blueviolet)](https://github.com/akuhnregnier/wildfires/blob/master/LICENSE)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/ambv/black)
 
 ## Development
