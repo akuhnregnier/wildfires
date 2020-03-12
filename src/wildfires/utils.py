@@ -105,7 +105,7 @@ class RampVar:
         self.index = -1
 
 
-def land_mask(n_lon=1440, ignore_indices=(7, 126)):
+def get_land_mask(n_lon=1440, ignore_indices=(7, 126)):
     """Create land mask at the desired resolution.
 
     Data is taken from https://www.naturalearthdata.com/
@@ -127,7 +127,7 @@ def land_mask(n_lon=1440, ignore_indices=(7, 126)):
         >>> import numpy as np
         >>> from wildfires.data.datasets import data_is_available
         >>> if data_is_available():
-        ...     mask = land_mask(n_lon=1440)
+        ...     mask = get_land_mask(n_lon=1440)
         ...     assert mask.dtype == np.bool_
         ...     assert mask.shape == (720, 1440)
 
