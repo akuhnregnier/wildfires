@@ -50,6 +50,8 @@ from numpy.testing import assert_allclose
 from pyhdf.SD import SD, SDC
 from tqdm import tqdm
 
+from era5analysis import MonthlyMeanMinMaxWorker, retrieval_processing, retrieve
+
 from ..joblib.caching import CodeObj, wrap_decorator
 from ..joblib.iris_backend import register_backend
 from ..utils import (
@@ -77,6 +79,7 @@ __all__ = (
     "ERA5_CAPEPrecip",
     "ERA5_DryDayPeriod",
     "ERA5_TotalPrecipitation",
+    "ERA5_Temperature",
     "ESA_CCI_Fire",
     "ESA_CCI_Landcover",
     "ESA_CCI_Landcover_PFT",
@@ -272,6 +275,8 @@ def homogenise_cube_attributes(cubes):
 
     for cube in cubes:
         cube.attributes = common_values
+
+    return cubes
 
 
 def monthly_average_in_dir(directory):
@@ -2872,6 +2877,51 @@ class CRU(Dataset):
 
         # NOTE: Measurement times are listed as being in the middle of the
         # month, requiring no further intervention.
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
+class ERA5_Temperature(Dataset):
+    _pretty = "ERA5 Temperature"
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, "ERA5", "temperature")
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+        files = sorted(
+            glob.glob(
+                os.path.join(self.dir, "**", "*_monthly_mean_min_max.nc"),
+                recursive=True,
+            )
+        )
+        if not files:
+            logger.info("No processed files found. Downloading and processing now.")
+            retrieval_processing(
+                retrieve(
+                    variable="2t",
+                    start=PartialDateTime(1990, 1, 1),
+                    end=PartialDateTime(2019, 1, 1),
+                    target_dir=self.dir,
+                ),
+                processing_class=MonthlyMeanMinMaxWorker,
+                n_threads=10,
+                soft_filesize_limit=700,
+            )
+            files = sorted(
+                glob.glob(
+                    os.path.join(self.dir, "**", "*_monthly_mean_min_max.nc"),
+                    recursive=True,
+                )
+            )
+            assert files
+
+        self.cubes = homogenise_cube_attributes(load_cubes(files)).merge()
+        self.write_cache()
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
