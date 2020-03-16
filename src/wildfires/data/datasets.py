@@ -2886,6 +2886,11 @@ class CRU(Dataset):
 
 class ERA5_Temperature(Dataset):
     _pretty = "ERA5 Temperature"
+    pretty_variable_names = {
+        "Mean 2 metre temperature": "Mean Temp",
+        "Min 2 metre temperature": "Min Temp",
+        "Max 2 metre temperature": "Max Temp",
+    }
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ERA5", "temperature")
