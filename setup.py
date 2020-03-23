@@ -39,5 +39,9 @@ setuptools.setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
+    entry_points="""
+        [console_scripts]
+        valid-ports=wildfires.ports:main
+      """,
     python_requires=">=3.6",
 )
