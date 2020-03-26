@@ -327,10 +327,14 @@ def _get_log_bin_edges(vmin, vmax, n_bins):
         if not float(vmax_log).is_integer():
             edges.append(vmax)
             vmax_log = math.floor(vmax_log)
+        # To ensure it is an integer (round() does not turn a numpy float into an int).
+        vmax_log = int(round(vmax_log))
 
         if not float(vmin_log).is_integer():
             edges.append(vmin)
             vmin_log = math.ceil(vmin_log)
+        # To ensure it is an integer (round() does not turn a numpy float into an int).
+        vmin_log = int(round(vmin_log))
 
         edges.extend(np.logspace(vmin_log, vmax_log, vmax_log - vmin_log + 1))
         return sorted(edges)

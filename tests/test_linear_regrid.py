@@ -54,10 +54,10 @@ def test_linear_downsampling(nlats, factor):
         dummy_lat_lon_cube(source_data),
         area_weighted=False,
         new_latitudes=get_centres(
-            np.linspace(-90, 90, (source_data.shape[0] / factor) + 1)
+            np.linspace(-90, 90, (source_data.shape[0] // factor) + 1)
         ),
         new_longitudes=get_centres(
-            np.linspace(-180, 180, (source_data.shape[1] / factor) + 1)
+            np.linspace(-180, 180, (source_data.shape[1] // factor) + 1)
         ),
     )
     assert np.all(np.isclose(simple_interp, regrid_cube.data))
