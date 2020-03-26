@@ -36,7 +36,14 @@ location = os.path.join(DATA_DIR, "joblib_fire_season_cache")
 memory = Memory(location)
 
 
-def get_fire_season(ba_data, thres, climatology=True, quiet=True, return_mask=False):
+def get_fire_season(
+    ba_data,
+    thres,
+    climatology=True,
+    quiet=True,
+    return_mask=False,
+    return_fraction=False,
+):
     """Determine the fire season from burned area data.
 
     The mask is respected by returning masked arrays that contain the original mask.
@@ -55,10 +62,12 @@ def get_fire_season(ba_data, thres, climatology=True, quiet=True, return_mask=Fa
         quiet (bool): If True, suppress progress meter.
         return_mask (bool): If True, return a boolean numpy array representing the
             significant fire clusters.
+        return_fraction (bool): If True, return an array containing the fraction of
+            times above the threshold which are contained within the main cluster.
 
     Returns:
-        indices, season_start, season_end, season_duration: Description of the fire season at
-            each location given by `indices`.
+        indices, season_start, season_end, season_duration: Description of the fire
+            season at each location given by `indices`.
 
     Examples:
         >>> import numpy as np
@@ -74,8 +83,10 @@ def get_fire_season(ba_data, thres, climatology=True, quiet=True, return_mask=Fa
         >>> data[[0, 4, 5, 6], 3, 0] = 1
         >>> data[[0, 4, 5, 6, -1], 3, 1] = 1
         >>> out = get_fire_season(data, 0.5, return_mask=True)
-        >>> for ((i, j), start, end, size) in zip(zip(*out[0]), *out[1:4]):
-        ...     print((i, j), f"{start:>2d} {end:>2d} {size:>2d}")
+        >>> for i, j in zip(*np.where(~out[0].mask)):
+        ...     print(
+        ...         (i, j), f"{out[0][i, j]:>2d} {out[1][i, j]:>2d} {out[2][i, j]:>2d}"
+        ...     )
         (0, 0) 11  0  2
         (0, 1) 10 11  2
         (1, 0)  0  1  2
@@ -93,7 +104,7 @@ def get_fire_season(ba_data, thres, climatology=True, quiet=True, return_mask=Fa
         >>> mask[-1, 2, 1] = 1
         >>> mask[[4, 5, 6], 3, 0] = 1
         >>> mask[[4, 5, 6], 3, 1] = 1
-        >>> np.all(mask == out[4])
+        >>> np.all(mask == out[3])
         True
 
     """
@@ -109,8 +120,8 @@ def get_fire_season(ba_data, thres, climatology=True, quiet=True, return_mask=Fa
     if return_mask:
         season_mask = np.zeros(ba_data.shape, dtype=np.bool_)
 
-    # Normalise burned areas.
-    ba_data /= np.max(ba_data)
+    # Normalise burned areas, dividing by the maximum burned area for each location.
+    ba_data /= np.max(ba_data, axis=0)
 
     # Find significant samples.
     ba_data = ba_data > thres
@@ -141,6 +152,11 @@ def get_fire_season(ba_data, thres, climatology=True, quiet=True, return_mask=Fa
     ends = []
     sizes = []
 
+    if return_fraction:
+        fractions = []
+
+    equal_cluster_errors = 0
+
     if climatology:
         # Iterate only over relevant areas.
         for xi, yi in zip(prog_func(indices[0]), indices[1]):
@@ -169,7 +185,8 @@ def get_fire_season(ba_data, thres, climatology=True, quiet=True, return_mask=Fa
                     for cluster_index in (cluster[0], cluster[-1])
                 )
                 if wrap_size == size:
-                    logger.warning("Equal cluster sizes detected. Ignoring both.")
+                    equal_cluster_errors += 1
+                    logger.debug("Equal cluster sizes detected. Ignoring both.")
                     continue
 
                 if wrap_size > size:
@@ -201,13 +218,36 @@ def get_fire_season(ba_data, thres, climatology=True, quiet=True, return_mask=Fa
 
             if return_mask:
                 season_mask[:, xi, yi] = cluster_selection
+
+            if return_fraction:
+                fractions.append(size / np.sum(cluster > 0))
+
+        if equal_cluster_errors:
+            logger.warning(
+                f"{equal_cluster_errors} equal cluster size(s) detected and ignored."
+            )
     else:
         raise NotImplementedError("Check back later.")
 
-    return_vals = [indices, starts, ends, sizes]
+    start_arr = np.ma.MaskedArray(
+        np.zeros(ba_data.shape[1:], dtype=np.int64), mask=True
+    )
+    end_arr = np.zeros_like(start_arr)
+    size_arr = np.zeros_like(start_arr)
+
+    start_arr[indices] = starts
+    end_arr[indices] = ends
+    size_arr[indices] = sizes
+
+    return_vals = [start_arr, end_arr, size_arr]
 
     if return_mask:
         return_vals.append(season_mask)
+
+    if return_fraction:
+        fract_arr = np.zeros_like(start_arr)
+        fract_arr[indices] = fractions
+        return_vals.append(fract_arr)
 
     return tuple(return_vals)
 
@@ -242,26 +282,22 @@ def thres_fire_season_stats(thres, min_time=None, max_time=None, which="climatol
     datasets = get_burned_area_datasets()
     outputs = []
     for dataset in tqdm(datasets):
-        indices, starts, ends, sizes, season_mask = get_fire_season(
-            dataset.cube.data, thres, quiet=False, return_mask=True
+        start_arr, end_arr, size_arr, season_mask, fract_arr = get_fire_season(
+            dataset.cube.data,
+            thres,
+            quiet=False,
+            return_mask=True,
+            return_fraction=True,
         )
-
-        start_arr = np.ma.MaskedArray(
-            np.zeros(dataset.cube.data.shape[1:], dtype=np.int64), mask=True
+        outputs.append(
+            (dataset.name, start_arr, end_arr, size_arr, season_mask, fract_arr)
         )
-        end_arr = np.zeros_like(start_arr)
-        size_arr = np.zeros_like(start_arr)
-        for ((i, j), start, end, size) in zip(zip(*indices), tqdm(starts), ends, sizes):
-            # Normal case: 'i <= j', wrap-around otherwise.
-            start_arr[i, j] = start
-            end_arr[i, j] = end
-            size_arr[i, j] = size
-
-        outputs.append((dataset.name, start_arr, end_arr, size_arr, season_mask))
     return outputs
 
 
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
     # Investigate how the threshold affects the estimates.
     # The threshold is a fraction, relative to the maximum BA.
     enable_logging()
@@ -273,7 +309,6 @@ if __name__ == "__main__":
 
     outputs = []
 
-    # Thresholds above ~0.2 simply reduce the extent and number of valid clusters.
     for thres in tqdm(np.round(np.geomspace(1e-4, 1e-1, 10), 5)):
         outputs.append(thres_fire_season_stats(thres))
 
