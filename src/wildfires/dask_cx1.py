@@ -23,7 +23,7 @@ class CX1PBSJob(PBSJob):
 
 class CX1Cluster(PBSCluster):
     @wraps(PBSCluster.__init__)
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, verbose_ssh=False, **kwargs):
         # First place any args into kwargs, then update relevant entries in kwargs to
         # enable operation on CX1.
         bound_args = signature(super().__init__).bind_partial(*args, **kwargs)
@@ -33,7 +33,15 @@ class CX1Cluster(PBSCluster):
         # as another 'kwargs' keyword argument instead of the arguments therein).
         mod_kwargs.update(mod_kwargs.pop("kwargs"))
 
+        if mod_kwargs.get("processes", 1) > 1:
+            raise ValueError(
+                "Only one worker process per job is supported (since worker ports have "
+                "to be known to be forwarded)."
+            )
+        mod_kwargs["processes"] = 1
+
         scheduler_port = get_ports()[0]
+        ssh_extra = "-vvv" if verbose_ssh else ""
         mod_kwargs.update(
             job_cls=CX1PBSJob,
             extra=list(mod_kwargs.get("extra", []))
@@ -76,7 +84,7 @@ class CX1Cluster(PBSCluster):
                 "exit $PORTCODE",
                 "fi",
                 "echo 'Running ssh'",
-                "ssh -vvv -N -T -L localhost:$LOCALSCHEDULERPORT:$SCHEDULERADDRESS -R localhost:$WORKERPORT:localhost:$WORKERPORT login-7 -o StrictHostKeyChecking=no -o BatchMode=yes -o ServerAliveInterval=120 -o ServerAliveCountMax=6 &",
+                f"ssh {ssh_extra} -N -T -L localhost:$LOCALSCHEDULERPORT:$SCHEDULERADDRESS -R localhost:$WORKERPORT:localhost:$WORKERPORT login-7 -o StrictHostKeyChecking=no -o BatchMode=yes -o ServerAliveInterval=120 -o ServerAliveCountMax=6 &",
                 "echo 'Finished running ssh, starting dask-worker now'",
                 "sleep 1",
                 "echo 'Local processes:'",
