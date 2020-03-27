@@ -791,7 +791,7 @@ def cube_plotting(
             try:
                 orig_cmap = plt.get_cmap(raw_cmap)
             except ValueError:
-                logger.warning(f"Exception while trying to access cmap '{raw_cmap}'.")
+                logger.debug(f"Exception while trying to access cmap '{raw_cmap}'.")
                 if isinstance(raw_cmap, str) and "_r" in raw_cmap:
                     # Try to reverse the colormap manually, in case a reversed colormap
                     # was requested using the '_r' suffix, but this is not available.
@@ -800,7 +800,7 @@ def cube_plotting(
 
                     # Flip limits to achieve reversal effect.
                     cmap_sample_lims = [1, 0]
-                    logger.warning(f"Manually reversing cmap '{raw_cmap}'.")
+                    logger.debug(f"Manually reversing cmap '{raw_cmap}'.")
                 else:
                     raise
 
