@@ -115,7 +115,10 @@ def get_fire_season(
     # later on.
     orig_mask = deepcopy(ba_data.mask)
 
-    prog_func = tqdm if not quiet else lambda x: x
+    def null_func(x, *args, **kwargs):
+        return x
+
+    prog_func = tqdm if not quiet else null_func
 
     if return_mask:
         season_mask = np.zeros(ba_data.shape, dtype=np.bool_)
@@ -159,8 +162,8 @@ def get_fire_season(
 
     if climatology:
         # Iterate only over relevant areas.
-        for xi, yi in zip(prog_func(indices[0]), indices[1]):
-            cluster = clusters[:, xi, yi]
+        for xy in prog_func(zip(*indices), total=len(indices[0])):
+            cluster = clusters[(slice(None),) + tuple(xy)]
             assert np.any(cluster)
             size = 0
             main_cluster_index = None
@@ -217,7 +220,7 @@ def get_fire_season(
             sizes.append(size)
 
             if return_mask:
-                season_mask[:, xi, yi] = cluster_selection
+                season_mask[(slice(None),) + tuple(xy)] = cluster_selection
 
             if return_fraction:
                 fractions.append(size / np.sum(cluster > 0))
@@ -235,9 +238,11 @@ def get_fire_season(
     end_arr = np.zeros_like(start_arr)
     size_arr = np.zeros_like(start_arr)
 
-    start_arr[indices] = starts
-    end_arr[indices] = ends
-    size_arr[indices] = sizes
+    valid_mask = np.any(season_mask, axis=0)
+
+    start_arr[valid_mask] = starts
+    end_arr[valid_mask] = ends
+    size_arr[valid_mask] = sizes
 
     return_vals = [start_arr, end_arr, size_arr]
 
@@ -246,7 +251,7 @@ def get_fire_season(
 
     if return_fraction:
         fract_arr = np.zeros_like(start_arr)
-        fract_arr[indices] = fractions
+        fract_arr[valid_mask] = fractions
         return_vals.append(fract_arr)
 
     return tuple(return_vals)
