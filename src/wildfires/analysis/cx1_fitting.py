@@ -12,6 +12,7 @@ from textwrap import dedent, indent
 
 import numpy as np
 
+from ..data import DATA_DIR
 from ..logging_config import enable_logging
 from ..utils import get_qstat_json
 
@@ -19,10 +20,7 @@ __all__ = ("CX1Fit",)
 
 logger = logging.getLogger(__name__)
 
-TMP_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "cx1_files")
-)
-os.makedirs(TMP_DIR, exist_ok=True)
+TMP_DIR = os.path.abspath(os.path.join(DATA_DIR, "cx1_files"))
 
 
 class CX1Fit:
@@ -91,6 +89,8 @@ class CX1Fit:
 
         # Check the directory for an existing run by comparing parameters.
         self.already_run = None
+
+        os.makedirs(TMP_DIR, exist_ok=True)
         parameter_files = glob(
             os.path.join(TMP_DIR, "**", "parameters_RUN*.pickle"), recursive=True
         )
