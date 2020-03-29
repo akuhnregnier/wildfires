@@ -11,7 +11,7 @@ import platform
 import socket
 from collections import Counter, namedtuple
 from copy import deepcopy
-from subprocess import CalledProcessError, check_output
+from subprocess import DEVNULL, CalledProcessError, check_output
 from time import time
 
 import fiona
@@ -442,7 +442,7 @@ def get_qstat_json():
         FileNotFoundError: If the command is not run on the hpc.
 
     """
-    raw_output = check_output(("qstat", "-f", "-F", "json")).decode()
+    raw_output = check_output(("qstat", "-f", "-F", "json"), stderr=DEVNULL).decode()
     # Filter out invalid json (unescaped double quotes).
     filtered_lines = [line for line in raw_output.split("\n") if '"""' not in line]
     filtered_output = "\n".join(filtered_lines)
@@ -461,8 +461,10 @@ def get_qstat_ncpus():
     except FileNotFoundError:
         logger.warning("Not running on hpc.")
         return None
-    except CalledProcessError:
-        logger.exception("Call to qstat failed.")
+    except CalledProcessError as process_error:
+        logger.warning(
+            f"Call to qstat failed with returncode {process_error.returncode}."
+        )
         return None
     jobs = out.get("Jobs")
     if jobs:
