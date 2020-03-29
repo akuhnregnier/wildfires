@@ -895,3 +895,11 @@ def get_bounds_from_centres(data):
     data_max = np.max(data)
     half_spacing = (data_max - data_min) / (2 * (len(data) - 1))
     return data_min - half_spacing, data_max + half_spacing
+
+
+def ensure_datetime(datetime_obj):
+    """If possible/needed, return a real datetime."""
+    try:
+        return datetime_obj._to_real_datetime()
+    except AttributeError:
+        return datetime_obj

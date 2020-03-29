@@ -54,6 +54,7 @@ from era5analysis import MonthlyMeanMinMaxWorker, retrieval_processing, retrieve
 from ..joblib.caching import CodeObj, wrap_decorator
 from ..joblib.iris_backend import register_backend
 from ..utils import (
+    ensure_datetime,
     get_bounds_from_centres,
     get_centres,
     in_360_longitude_system,
@@ -1350,7 +1351,9 @@ class Dataset(ABC):
     def min_time(self):
         temporal_cubes = self._temporal_cubes
         if temporal_cubes:
-            return max(cube.coord("time").cell(0).point for cube in temporal_cubes)
+            return ensure_datetime(
+                max(cube.coord("time").cell(0).point for cube in temporal_cubes)
+            )
         else:
             return "static"
 
@@ -1358,7 +1361,9 @@ class Dataset(ABC):
     def max_time(self):
         temporal_cubes = self._temporal_cubes
         if temporal_cubes:
-            return min(cube.coord("time").cell(-1).point for cube in temporal_cubes)
+            return ensure_datetime(
+                min(cube.coord("time").cell(-1).point for cube in temporal_cubes)
+            )
         else:
             return "static"
 
@@ -2007,7 +2012,7 @@ class Dataset(ABC):
             time_coord = cube.coord("time")
             time_coord.bounds = None
             shifted_dates = [
-                time_coord.cell(i).point - relativedelta(months=months)
+                ensure_datetime(time_coord.cell(i).point) - relativedelta(months=months)
                 for i in range(len(time_coord.points))
             ]
 
