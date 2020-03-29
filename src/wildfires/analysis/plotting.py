@@ -78,7 +78,7 @@ class FigureSaver:
         "transparent": False,
         "rasterised": True,
         "filetype": "png",
-        "dpi": 200,
+        "dpi": 350,
     }
 
     def __init__(self, filename=None, directory=None, debug=None, **kwargs):
