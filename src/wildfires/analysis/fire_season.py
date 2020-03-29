@@ -250,7 +250,7 @@ def get_fire_season(
         return_vals.append(season_mask)
 
     if return_fraction:
-        fract_arr = np.zeros_like(start_arr)
+        fract_arr = np.zeros_like(start_arr, dtype=np.float64)
         fract_arr[valid_mask] = fractions
         return_vals.append(fract_arr)
 
