@@ -20,7 +20,6 @@ TODO:
 """
 import glob
 import logging
-import logging.config
 import operator
 import os
 import re
@@ -74,6 +73,7 @@ __all__ = (
     "CHELSA",
     "CRU",
     "CarvalhaisGPP",
+    "CommitMatchError",
     "Copernicus_SWI",
     "Dataset",
     "ERA5_CAPEPrecip",
@@ -174,6 +174,10 @@ class ObservedAreaError(Error):
 
 class NonUniformCoordError(Error):
     """Raised when a coordinate is neither monotonically increasing or decreasing."""
+
+
+class CommitMatchError(Error):
+    """Raised when commit hashes of loaded cubes do not match."""
 
 
 def fill_cube(cube, mask):
@@ -1176,6 +1180,12 @@ class Dataset(ABC):
 
     @cubes.setter
     def cubes(self, new_cubes):
+        """Assign new cubes.
+
+        Raises:
+            NonUniformCoordError: If one or more coordinates are not uniform.
+
+        """
         # This might happen when assigning self.cubes to the result of
         # self.read_cache(), for example.
         # FIXME: Resolve this hack by changing the way the result of self.read_cache()
@@ -1459,13 +1469,12 @@ class Dataset(ABC):
         """Read from NetCDF file.
 
         Args:
-            target_filename (str): The filename that the data will be saved
-                to. Must end in '.nc', since the data is meant to be saved
-                as a NetCDF file.
+            target_filename (str): The filename that the data will be saved to. Must
+                end in '.nc', since the data is meant to be saved as a NetCDF file.
 
         Raises:
-            AssertionError: If the commit hashes of the cubes that are
-                loaded do not match.
+            CommitMatchError: If the commit hashes of the cubes that are loaded do not
+                match.
 
         """
         if os.path.isfile(target_filename):
@@ -1478,9 +1487,10 @@ class Dataset(ABC):
                 return
 
             commit_hashes = [cube.attributes["commit"] for cube in cubes]
-            assert (
-                len(set(commit_hashes)) == 1
-            ), "Cubes should all stem from the same commit."
+
+            if not len(set(commit_hashes)) == 1:
+                raise CommitMatchError("Cubes do not stem from the same commit.")
+
             logger.debug("Returning cubes from:'{:}'".format(target_filename))
             return cubes
         else:
@@ -1816,13 +1826,13 @@ class Dataset(ABC):
                 "monthly", average observed fraction to monthly data before applying
                 the threshold.
 
+        Returns:
+            iris.cube.Cube: Cube containing the Boolean mask.
+
         Raises:
             ObservedAreaError: If the `_observed_area` attribute is not defined, or
                 the cube specified therein does not match one of the supported units
                 (1,).
-
-        Returns:
-            iris.cube.Cube: Cube containing the Boolean mask.
 
         """
         assert (

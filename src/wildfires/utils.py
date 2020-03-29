@@ -228,6 +228,10 @@ def pack_input(var, single_type=str, elements=2, fill_source=0):
             `output` at index `elements - i`. If `fill_source[-i]` is None, None
             will be inserted. Surplus `fill_source` items will be trimmed starting
             from the left (thus the -i index notation above).
+
+    Returns:
+        tuple: tuple with `elements` items.
+
     Raises:
         ValueError: If `var` is an iterable of `single_type` and contains more than
             `elements` items.
@@ -237,9 +241,6 @@ def pack_input(var, single_type=str, elements=2, fill_source=0):
         IndexError: If `len(fill_source)` < (`elements` - len(`var`)).
         IndexError: If `fill_source[-i]` is an int and
             `fill_source[-i]` >= `elements` - i.
-
-    Returns:
-        tuple: tuple with `elements` items.
 
     Examples:
         >>> pack_input("testing")
@@ -365,13 +366,13 @@ def get_unmasked(array, strict=True):
             only accept masked arrays.
         strict (bool): See above.
 
+    Returns:
+        numpy.ndarray: Flattened, unmasked data.
+
     Raises:
         TypeError: If `strict` and `array` is of type `numpy.ndarray`. Regardless of
             `strict`, types other than `numpy.ma.core.MaskedArray` and `numpy.ndarray`
             will also raise a TypeError.
-
-    Returns:
-        numpy.ndarray: Flattened, unmasked data.
 
     """
     accepted_types = [np.ma.core.MaskedArray]

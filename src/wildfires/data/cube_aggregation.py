@@ -373,13 +373,13 @@ class Datasets:
                 variable names, eg. for display on figures. If "all", get tuples
                 containing both (ie. tuples of tuples of str).
 
+        Returns:
+            dict: Mapping from the chosen dataset(s) to the variable(s) contained
+            therein.
+
         Raises:
             AttributeError: If `variable_format` does not match one of the known
                 formats "raw", "pretty", or "all".
-
-        Returns:
-            dict: Mapping from the chosen dataset(s) to the variable(s) contained
-                therein.
 
         """
         logger.debug("state() called with Datasets '{}'".format(id(self)))
@@ -564,11 +564,11 @@ class Datasets:
                 True, a deep copy will be made which will also copy the underlying
                 data.
 
-        Raises:
-            KeyError: If a dataset is not found.
-
         Returns:
             `Datasets`: A copy of a subset of the original selection.
+
+        Raises:
+            KeyError: If a dataset is not found.
 
         """
         if isinstance(names, str):
@@ -600,11 +600,11 @@ class Datasets:
                 True, a deep copy will be made which will also copy the underlying
                 data.
 
-        Raises:
-            KeyError: If a dataset is not found.
-
         Returns:
             `Datasets`: A (copy of a) subset of the original selection.
+
+        Raises:
+            KeyError: If a dataset is not found.
 
         """
         if isinstance(names, str):
@@ -638,6 +638,9 @@ class Datasets:
             strict (bool, optional): If True (default) expect to select as many
                 variables as given in `names`.
 
+        Returns:
+            `Datasets`: A copy of a subset of the original selection.
+
         Raises:
             ValueError: If raw and pretty names are not unique across all stored
                 variable names (raw and pretty) for all datasets. In this case, select
@@ -645,9 +648,6 @@ class Datasets:
             KeyError: If a variable is not found in the database.
             ValueError: If strict and if the number of output variables does not match
                 the number of input variables.
-
-        Returns:
-            `Datasets`: A copy of a subset of the original selection.
 
         """
         if isinstance(names, str):
@@ -694,14 +694,14 @@ class Datasets:
                 True, a deep copy will be made which will also copy the underlying
                 data.
 
+        Returns:
+            `Datasets`: A (copy of a) subset of the original selection.
+
         Raises:
             ValueError: If raw and pretty names are not unique across all stored
                 variable names (raw and pretty) for all datasets. In this case, select
                 variables using a dictionary instead of an iterable.
             KeyError: If a variable is not found in the database.
-
-        Returns:
-            `Datasets`: A (copy of a) subset of the original selection.
 
         """
         if isinstance(names, str):
