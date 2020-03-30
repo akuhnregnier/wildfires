@@ -1,5 +1,10 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Program that is called from several nodes to coordinate worker port numbers.
+
+Note that the port and lock files are not removed automatically upon finishing, and so
+should be cleaned up by a coordinating process (most likely the Cluster init).
+
+"""
 import json
 import logging
 import os
@@ -33,6 +38,87 @@ def print_output(ports, forwarding=True):
     for port in ports[1:]:
         output += (f"-L localhost:{port}:localhost:{port}",)
     print(" ".join(output))
+
+
+def handle_output(worker_ports, job_id, hostname, log_func, forwarding):
+    if worker_ports[job_id]["exit"]:
+        # We have been told to exit by another worker on our host, who will also take
+        # care of the necessary port forwarding.
+        log_func("Told to exit (0).")
+        log_func(
+            "Printing local port only as local port forwarding "
+            "is handled by another worker."
+        )
+        print_output(worker_ports[job_id]["port"], forwarding=forwarding)
+    else:
+        # Tell other workers on the same host to exit after us.
+        for worker_data in worker_ports.values():
+            if worker_data["hostname"] == hostname:
+                worker_data["exit"] = True
+
+        log_func("Printing ports to forward.")
+        print_output(
+            [str(worker_ports[job_id]["port"])]
+            + [
+                str(worker_data["port"])
+                for worker_data in worker_ports.values()
+                if worker_data["hostname"] != hostname and worker_data["port"] != -2
+            ],
+            forwarding=forwarding,
+        )
+
+
+def reset_ready_flags(worker_ports):
+    """Make sure that all workers are reset to a non-ready state.
+
+    This is useful since when new data is added, we have to ensure that other
+    workers look at this data.
+
+    """
+    for worker_data in worker_ports.values():
+        worker_data["ready"] = False
+
+
+def check_ports(worker_ports, job_id, hostname, log_func):
+    if any(worker_data["port"] == -1 for worker_data in worker_ports.values()):
+        # If any port was unavailable.
+        log_func("Encountered invalid port(s).")
+        if worker_ports[job_id]["port"] == -1:
+            log_func("Our own port is invalid.")
+            # If our own port is invalid, select a different port (it is very unlikely
+            # to receive the same port twice from `get_ports()`).
+            worker_ports[job_id]["port"] = get_ports()[0]
+
+            # Notify other workers that all ports need to be re-checked.
+            reset_ready_flags(worker_ports)
+    else:
+        # If all ports are available (on other nodes), check that they work for us.
+        for worker, worker_data in worker_ports.items():
+            port = worker_data["port"]
+            if port == -2:
+                # Skip the scheduler.
+                continue
+            try:
+                log_func(f"Checking port {port}.")
+                socket.socket().bind(("localhost", port))
+            except OSError:
+                # Port is already in use.
+                log_func(
+                    f"Port {port} from {worker} was already in use. "
+                    "Marking as invalid."
+                )
+                worker_data["port"] = -1
+        if any(worker_data["port"] == -1 for worker_data in worker_ports.values()):
+            # If any invalid ports were detected above, mark all
+            # workers as not ready.
+            reset_ready_flags(worker_ports)
+        else:
+            # Since everything went well above, all ports are available on this host.
+            for worker_data in worker_ports.values():
+                if worker_data["hostname"] == hostname:
+                    worker_data["ready"] = True
+
+    return worker_ports[job_id]["port"]
 
 
 def sync_worker_ports(
@@ -85,8 +171,6 @@ def sync_worker_ports(
             space delimited port numbers as outlined above.
 
     """
-    if n_workers < 1:
-        sys.exit(2)
     start = time()
     # The scheduler will have its own entry.
     n_expected = n_workers + 1
@@ -97,22 +181,18 @@ def sync_worker_ports(
         job_id = os.environ["PBS_JOBID"].split(".")[0]
 
     # The hostname is important as ports only need to be forwarded once per host,
-    # since intra-host communication should be possible regardless.
+    # since intra-host communication should be possible without port forwarding.
     hostname = socket.gethostname()
 
     def log_func(msg):
         """Log at the info level while including unique worker identification."""
-        logger.info(f"{job_id} -- {hostname}: {msg.rstrip('.')}.")
+        logger.info(f"{job_id}/{hostname}: {msg.rstrip('.')}.")
 
-    def reset_ready_flags(worker_ports):
-        """Make sure that all workers are reset to a non-ready state.
-
-        This is useful since when new data is added, we have to ensure that other
-        workers look at this data.
-
-        """
-        for worker_data in worker_ports.values():
-            worker_data["ready"] = False
+    if n_workers < 1:
+        log_func(
+            f"An invalid value for `n_workers` was supplied: {n_workers}. Exit (2)."
+        )
+        sys.exit(2)
 
     log_func("Starting port number sync.")
 
@@ -138,7 +218,7 @@ def sync_worker_ports(
                 # sure that our own info is present and wait.
                 log_func(
                     f"Found {n_present} {'entries' if n_present != 1 else 'entry'}, "
-                    "but expected {n_expected}."
+                    f"but expected {n_expected}."
                 )
                 # Make sure other workers are aware of the change in information.
                 reset_ready_flags(worker_ports)
@@ -148,132 +228,37 @@ def sync_worker_ports(
                     "hostname": hostname,
                     "ready": False,
                     "exit": False,
-                    "exited": False,
                 }
 
             elif n_present == n_expected:
+                # All workers have reported something.
                 log_func(f"Found {n_expected} entries as expected.")
-                # If all workers have reported something, first check if another
-                # worker on the same host as us has already checked the ports. In this
-                # case, our own 'ready' status should have been set to True and we do
-                # not need to do anything.
-                if worker_ports[job_id]["ready"]:
-                    if all(
-                        worker_data["ready"] for worker_data in worker_ports.values()
-                    ):
-                        # If every process has checked the ports we are ready to
-                        # return the results.
-                        assert (
-                            own_proposed_port == worker_ports[job_id]["port"]
-                        ), "Our proposed port should match our stored port."
-                        log_func(f"All host are ready. Our port:{own_proposed_port}.")
-                        # To output our results, print a list of ports that need to be
-                        # forwarded, ie. all ports which are not on our host.
 
-                        if not scheduler:
-                            if worker_ports[job_id]["exit"]:
-                                # We have been told to exit by another worker on our
-                                # host, who will also take care of the necessary port
-                                # forwarding.
-                                log_func("Told to exit (0).")
-                                log_func(
-                                    "Printing local port only as local port forwarding "
-                                    "is handled by another worker."
-                                )
-                                print_output(own_proposed_port, forwarding=forwarding)
-                            else:
-                                # Tell other workers on the same host to exit after us.
-                                for worker_data in worker_ports.values():
-                                    if worker_data["hostname"] == hostname:
-                                        worker_data["exit"] = True
+                if all(worker_data["ready"] for worker_data in worker_ports.values()):
+                    # If every host has checked the ports, we are ready to wrap up.
+                    assert (
+                        own_proposed_port == worker_ports[job_id]["port"]
+                    ), "Our proposed port should match our stored port."
 
-                                log_func("Printing ports to forward.")
-                                print_output(
-                                    [str(own_proposed_port)]
-                                    + [
-                                        str(worker_data["port"])
-                                        for worker_data in worker_ports.values()
-                                        if worker_data["hostname"] != hostname
-                                        and worker_data["port"] != -2
-                                    ],
-                                    forwarding=forwarding,
-                                )
+                    log_func(f"All host are ready. Our port:{own_proposed_port}.")
 
-                        # Tell other workers that we have finished.
-                        worker_ports[job_id]["exited"] = True
-                        if all(
-                            worker_data["exited"]
-                            for worker_data in worker_ports.values()
-                        ):
-                            # Since everyone will have exited once we exit, delete the
-                            # port file to prepare for the next cluster.
-                            log_func(
-                                "Every other worker has already exited. Deleting port "
-                                "file."
-                            )
-                            os.remove(port_file)
-                        else:
-                            # Tell other workers who should exit, and that we have now
-                            # finished.
-                            with open(port_file, "w") as f:
-                                json.dump(worker_ports, f, indent=2, sort_keys=True)
-
-                        sys.exit(0)
+                    if not scheduler:
+                        # Print ports in a format determined by `forwarding`.
+                        handle_output(
+                            worker_ports, job_id, hostname, log_func, forwarding
+                        )
+                    sys.exit(0)
+                elif worker_ports[job_id]["ready"]:
+                    # If we are 'ready', a worker on our host has already checked the
+                    # ports locally. Other hosts are not ready yet, however.
                     log_func("Our host is ready. Waiting for other hosts.")
                 else:
                     log_func("Checking ports.")
                     # Check for invalid ports first, which should be corrected before
                     # we proceed to check ports.
-                    if any(
-                        worker_data["port"] == -1
-                        for worker_data in worker_ports.values()
-                    ):
-                        log_func("Encountered invalid port(s).")
-                        if worker_ports[job_id]["port"] == -1:
-                            assert (
-                                not scheduler
-                            ), "This should not happen if we are the scheduler."
-                            log_func("Our own port is invalid.")
-                            # If our own port is invalid, select a different port.
-                            new_proposed_port = get_ports()[0]
-                            assert (
-                                own_proposed_port != new_proposed_port
-                            ), "The new port should not be the same as the old one."
-                            own_proposed_port = new_proposed_port
-
-                            # Notify other workers and update our own port.
-                            reset_ready_flags(worker_ports)
-                            worker_ports[job_id]["port"] = own_proposed_port
-                    else:
-                        # Otherwise check that the given ports work for us.
-                        for worker, worker_data in worker_ports.items():
-                            port = worker_data["port"]
-                            if port == -2:
-                                # Skip the scheduler.
-                                continue
-                            try:
-                                log_func(f"Checking port {port}.")
-                                socket.socket().bind(("localhost", port))
-                            except OSError:
-                                # Port is already in use.
-                                log_func(
-                                    f"Port {port} from {worker} was already in use. "
-                                    "Marking as invalid."
-                                )
-                                worker_data["port"] = -1
-                        if any(
-                            worker_data["port"] == -1
-                            for worker_data in worker_ports.values()
-                        ):
-                            # If any invalid ports were detected above, mark all
-                            # workers as not ready.
-                            reset_ready_flags(worker_ports)
-                        else:
-                            # If everything went well above, that means that all ports
-                            # work for us (and any other worker on the same host).
-                            for worker_data in worker_ports.values():
-                                if worker_data["hostname"] == hostname:
-                                    worker_data["ready"] = True
+                    own_proposed_port = check_ports(
+                        worker_ports, job_id, hostname, log_func
+                    )
             else:
                 log_func(
                     f"Found {n_present} entries, but expected {n_expected} at most. "
