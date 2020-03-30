@@ -12,6 +12,7 @@ from sklearn.model_selection import train_test_split
 from ..data import *
 from ..joblib.cloudpickle_backend import register_backend
 from ..logging_config import enable_logging
+from ..qstat import get_ncpus
 from .analysis import *
 from .cx1_fitting import CX1Fit
 from .plotting import *

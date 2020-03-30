@@ -42,6 +42,7 @@ setuptools.setup(
     entry_points="""
         [console_scripts]
         valid-ports=wildfires.ports:main
+        sync-worker-ports=wildfires.sync_worker_ports:main
       """,
     python_requires=">=3.6",
 )

@@ -27,7 +27,8 @@ import wildfires.data.datasets as wildfire_datasets
 
 from ..joblib.caching import CodeObj, wrap_decorator
 from ..logging_config import LOGGING
-from ..utils import get_ncpus, match_shape
+from ..qstat import get_ncpus
+from ..utils import match_shape
 from .datasets import (
     DATA_DIR,
     data_is_available,

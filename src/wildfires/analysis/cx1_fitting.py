@@ -14,7 +14,7 @@ import numpy as np
 
 from ..data import DATA_DIR
 from ..logging_config import enable_logging
-from ..utils import get_qstat_json
+from ..qstat import get_qstat_json
 
 __all__ = ("CX1Fit",)
 

@@ -17,13 +17,8 @@ from sklearn.model_selection import train_test_split
 
 from ..data import *
 from ..logging_config import LOGGING
-from ..utils import (
-    get_land_mask,
-    get_masked_array,
-    get_ncpus,
-    get_unmasked,
-    polygon_mask,
-)
+from ..qstat import get_ncpus
+from ..utils import get_land_mask, get_masked_array, get_unmasked, polygon_mask
 from .plotting import (
     FigureSaver,
     cube_plotting,

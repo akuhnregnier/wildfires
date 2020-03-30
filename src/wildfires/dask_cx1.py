@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
-import atexit
 import json
 import logging
 import os
-import sys
+import shlex
+import socket
 from functools import wraps
 from inspect import signature
 from operator import eq, ge
+from random import choice
+from string import ascii_lowercase
+from subprocess import check_call
 
 from dask.distributed import Client
 from dask.utils import parse_bytes
@@ -15,21 +18,49 @@ from joblib import parallel_backend
 from dask_jobqueue.pbs import PBSCluster, PBSJob, pbs_format_bytes_ceil
 
 from .ports import get_ports
-from .utils import get_ncpus
+from .qstat import get_ncpus
 
 logger = logging.getLogger(__name__)
 
 SCHEDULER_DIR = os.path.expanduser(os.path.join("~", "schedulers"))
 
-DEFAULTS = {"cores": 1, "memory": "6GB", "walltime": "10:00:00"}
+DEFAULTS = {"cores": 1, "memory": "1.1GiB", "walltime": "01:00:00"}
 
 
-class Dask_CX1_Error(Exception):
+class DaskCX1Error(Exception):
     """Base class for exceptions in the dask_cx1 module."""
 
 
-class FoundSchedulerError(Dask_CX1_Error):
+class FoundSchedulerError(DaskCX1Error):
     """Raised when no scheduler matching the requested specifications could be found."""
+
+
+class WorkerPortError(DaskCX1Error):
+    """Raised when an error while determining worker port numbers."""
+
+
+def get_client(**specs):
+    """Try to connect to an existing Dask scheduler with the supplied specs.
+
+    Args:
+        specs: Worker resource specifications, eg. cores=10, memory="8GB". The
+            scheduler's cluster will have access to a certain number of such workers,
+            where each worker will have access to `cores` number of threads.
+
+    Returns:
+        distributed.client.Client: Client used to connect to the scheduler.
+
+    Raises:
+        FoundSchedulerError: If no matching scheduler could be found.
+
+    """
+    logger.info(f"Trying to find Dask scheduler with minimum specs {specs}.")
+    scheduler_file = get_scheduler_file(**specs)
+    if scheduler_file is not None:
+        logger.info(f"Found scheduler at {scheduler_file}.")
+        return Client(scheduler_file=scheduler_file)
+    else:
+        raise FoundSchedulerError(f"No scheduler with minimum specs {specs} found.")
 
 
 def get_parallel_backend(loky_fallback=True, **specs):
@@ -128,12 +159,12 @@ def get_scheduler_file(match="above", **specs):
                 requested_value = parse_bytes(requested_value)
                 stored_value = parse_bytes(stored_value)
 
-            if not comp(requested_value, stored_value):
+            if not comp(stored_value, requested_value):
                 # Try the next scheduler file.
                 break
         else:
             # If all comparisons succeeded, return the scheduler file.
-            return scheduler_file
+            return os.path.join(SCHEDULER_DIR, scheduler_file)
 
 
 class CX1PBSJob(PBSJob):
@@ -154,6 +185,9 @@ class CX1Cluster(PBSCluster):
     def __init__(self, *args, verbose_ssh=False, **kwargs):
         # This will be overwritten later, and will be used to get a constant filename.
         self._scheduler_file = None
+
+        # This where the scheduler is run, and thus where ports have to be forwarded to.
+        hostname = socket.gethostname()
 
         # First place any args into kwargs, then update relevant entries in kwargs to
         # enable operation on CX1.
@@ -178,8 +212,47 @@ class CX1Cluster(PBSCluster):
         )
         mod_kwargs["walltime"] = mod_kwargs.get("walltime", DEFAULTS["walltime"])
 
+        # Get the number of workers.
+        n_workers = mod_kwargs["n_workers"]
+        if not n_workers > 0:
+            logger.warning(f"Expected a positive number of workers, got {n_workers}.")
+
         scheduler_port = get_ports()[0]
-        ssh_extra = "-vvv" if verbose_ssh else ""
+        ssh_opts = " ".join(
+            (
+                "-o StrictHostKeyChecking=no",
+                "-o BatchMode=yes",
+                "-o ServerAliveInterval=120",
+                "-o ServerAliveCountMax=6",
+            )
+            + ("-vvv",)
+            if verbose_ssh
+            else ()
+        )
+
+        # TODO: Determine all_worker_ports in a cross-worker way!!
+
+        sched_forward = f"-L localhost:$LOCALSCHEDULERPORT:localhost:{scheduler_port}"
+
+        valid_ports_exec = (
+            "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/valid-ports"
+        )
+
+        file_id = "".join(choice(ascii_lowercase) for i in range(20))
+
+        self.port_file = os.path.join(
+            os.path.expanduser("~"), "worker_dir", file_id + "_ports.json"
+        )
+        self.lock_file = os.path.join(
+            os.path.expanduser("~"), "worker_dir", ".lock_" + file_id
+        )
+
+        sync_worker_ports_exec = (
+            "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/"
+            f"sync-worker-ports --port-file {self.port_file} "
+            f"--lock-file {self.lock_file}"
+        )
+
         mod_kwargs.update(
             job_cls=CX1PBSJob,
             extra=list(mod_kwargs.get("extra", []))
@@ -187,48 +260,25 @@ class CX1Cluster(PBSCluster):
             # NOTE: Simple ssh, NOT autossh is used below, since using autossh
             # resulted in the connection being dropped repeatedly as it was
             # overzealously restarted.
-            env_extra=(
-                f"PYTHON={sys.executable}",
-                f"SCHEDULERADDRESS='localhost:{scheduler_port}'",
-                "echo 'Getting ports'",
-                "read LOCALSCHEDULERPORT <<< $(/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/valid-ports 1)",
-                'echo "local scheduler port:$LOCALSCHEDULERPORT"',
-                # For the worker port, extra care needs to be taken since this port
-                # needs to be the same on the worker and scheduler node. So we need to
-                # check that the port is unused on both!
-                "WORKERPORT=$($PYTHON << EOF",
-                "from subprocess import call",
-                "from wildfires.ports import get_ports",
-                "port_found = False",
-                "cycles = 0",
-                # Check if the local port would also work on the remote, ie. scheduler
-                # node. Check for return code 1 which rules out some ssh error codes.
-                "while True:",
-                "   port = get_ports()[0]",
-                '   if call(["ssh", "-o BatchMode=yes", "login-7", f"nc -z localhost {port}"]) == 1:',
-                "       print(port)",
-                "       break",
-                "   cycles += 1",
-                "   if cycles > 20:",
-                '       raise RuntimeError("No valid port could be found.")',
-                "EOF",
-                ")",
-                "PORTCODE=$?",
-                "if [ $PORTCODE -eq 0 ]",
-                "then",
-                'echo "worker port:$WORKERPORT"',
-                "else",
-                'echo "Could not get worker port." >&2',
-                "exit $PORTCODE",
-                "fi",
-                "echo 'Running ssh'",
-                f"ssh {ssh_extra} -N -T -L localhost:$LOCALSCHEDULERPORT:$SCHEDULERADDRESS -R localhost:$WORKERPORT:localhost:$WORKERPORT login-7 -o StrictHostKeyChecking=no -o BatchMode=yes -o ServerAliveInterval=120 -o ServerAliveCountMax=6 &",
-                "echo 'Finished running ssh, starting dask-worker now'",
-                "sleep 1",
-                "echo 'Local processes:'",
-                "pgrep -afu ahk114",
+            env_extra=f"""
+echo 'Getting ports'
+read LOCALSCHEDULERPORT <<< $({valid_ports_exec} 1)
+echo "local scheduler port:$LOCALSCHEDULERPORT"
+# For the worker port, extra care needs to be taken since this port needs to be the
+# same on the worker and scheduler node. So we need to check that the port is unused
+# on both! The same goes for the other worker ports, since those need to be forwarded
+# as well to enable inter-worker communication.
+read WORKERPORT SSH_FORWARDS <<< $({sync_worker_ports_exec} -w {n_workers})
+echo 'Running ssh'
+ssh -NT {ssh_opts} $SSH_FORWARDS {sched_forward} {hostname} &
+echo 'Finished running ssh, starting dask-worker now'
+sleep 1
+echo 'Local processes:'
+pgrep -afu ahk114
+""".strip().split(
+                "\n"
             )
-            + tuple(mod_kwargs.get("env_extra", ())),
+            + list(mod_kwargs.get("env_extra", ())),
             scheduler_options=dict(
                 mod_kwargs.get("scheduler_options", ())
                 if mod_kwargs.get("scheduler_options", ()) is not None
@@ -248,15 +298,36 @@ class CX1Cluster(PBSCluster):
         with open(self.scheduler_file, "w") as f:
             json.dump(info, f, indent=2)
 
-        atexit.register(self.__cleanup)
+        # In order for the above worker port forwarding to work, we need to start a
+        # scheduler process which will check if the ports suggested by the workers are
+        # available on the host running the scheduler. This will keep running until
+        # all workers have received proper port forwarding instructions or something
+        # fails.
+        if n_workers > 0:
+            logger.info("Starting worker port synchronisation.")
+            worker_ret_code = check_call(
+                shlex.split(f"{sync_worker_ports_exec} -w {n_workers} --scheduler")
+            )
+            if worker_ret_code:
+                raise WorkerPortError(
+                    "Worker port determination failed with error code {worker_ret_code}."
+                )
+        # Since scale() is called in the superclass init(s), only redefine it here to
+        # warn users about the lack of dynamic scaling ability.
+        self.scale = self.__scale
 
     def __cleanup(self):
         os.remove(self.scheduler_file)
+        # If the cluster creation process was interrupted or encountered an error,
+        # these files would remain.
+        if os.path.isfile(self.port_file):
+            os.remove(self.port_file)
+        if os.path.isfile(self.lock_file):
+            os.remove(self.lock_file)
 
     @wraps(PBSCluster.close)
     def close(self, *args, **kwargs):
         self.__cleanup()
-        atexit.unregister(self.__cleanup)
         super().close(*args, **kwargs)
 
     @property
@@ -270,3 +341,15 @@ class CX1Cluster(PBSCluster):
             ), f"Scheduler file {fname} is already present."
             self._scheduler_file = os.path.join(SCHEDULER_DIR, fname)
         return self._scheduler_file
+
+    def __scale(self, *args, **kwargs):
+        raise NotImplementedError(
+            "Please supply `n_workers` upon cluster initialisation. "
+            "This is because worker ports have to be forwarded in advance."
+        )
+
+    def adapt(self, *args, **kwargs):
+        raise NotImplementedError(
+            "Please supply `n_workers` upon cluster initialisation."
+            "This is because worker ports have to be forwarded in advance."
+        )
