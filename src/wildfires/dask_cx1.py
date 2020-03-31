@@ -4,12 +4,13 @@ import logging
 import os
 import shlex
 import socket
+import sys
 from functools import wraps
 from inspect import signature
 from operator import eq, ge
 from random import choice
 from string import ascii_lowercase
-from subprocess import check_call
+from subprocess import Popen
 
 from dask.distributed import Client
 from dask.utils import parse_bytes
@@ -25,6 +26,11 @@ logger = logging.getLogger(__name__)
 SCHEDULER_DIR = os.path.expanduser(os.path.join("~", "schedulers"))
 
 DEFAULTS = {"cores": 1, "memory": "1.1GiB", "walltime": "01:00:00"}
+
+cluster_size_error_msg = (
+    "Since forwarding of worker ports may fail, workers added after the initial "
+    "timeout may not behave as expected."
+)
 
 
 class DaskCX1Error(Exception):
@@ -220,28 +226,25 @@ class CX1Cluster(PBSCluster):
         scheduler_port = get_ports()[0]
         ssh_opts = " ".join(
             (
+                "-NT",
                 "-o StrictHostKeyChecking=no",
                 "-o BatchMode=yes",
                 "-o ServerAliveInterval=120",
                 "-o ServerAliveCountMax=6",
             )
-            + ("-vvv",)
-            if verbose_ssh
-            else ()
+            + (("-vvv",) if verbose_ssh else ())
         )
-
-        # TODO: Determine all_worker_ports in a cross-worker way!!
-
-        sched_forward = f"-L localhost:$LOCALSCHEDULERPORT:localhost:{scheduler_port}"
 
         valid_ports_exec = (
             "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/valid-ports"
         )
 
         file_id = "".join(choice(ascii_lowercase) for i in range(20))
+        self.scheduler_stdout_file = open(f"scheduler_stdout_{file_id}.log", "w")
+        self.scheduler_stderr_file = open(f"scheduler_stderr_{file_id}.log", "w")
 
         self.port_file = os.path.join(
-            os.path.expanduser("~"), "worker_dir", file_id + "_ports.json"
+            os.path.expanduser("~"), "worker_dir", f"ports_{file_id}.json"
         )
         self.lock_file = os.path.join(
             os.path.expanduser("~"), "worker_dir", ".lock_" + file_id
@@ -250,7 +253,7 @@ class CX1Cluster(PBSCluster):
         sync_worker_ports_exec = (
             "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/"
             f"sync-worker-ports --port-file {self.port_file} "
-            f"--lock-file {self.lock_file}"
+            f"--lock-file {self.lock_file} --timeout 120"
         )
 
         mod_kwargs.update(
@@ -261,19 +264,54 @@ class CX1Cluster(PBSCluster):
             # resulted in the connection being dropped repeatedly as it was
             # overzealously restarted.
             env_extra=f"""
-echo 'Getting ports'
+JOBID="${{PBS_JOBID%%.*}}"
+echo $(date): JOBID $JOBID on host $(hostname).
+echo $(date): Getting ports.
 read LOCALSCHEDULERPORT <<< $({valid_ports_exec} 1)
-echo "local scheduler port:$LOCALSCHEDULERPORT"
-# For the worker port, extra care needs to be taken since this port needs to be the
-# same on the worker and scheduler node. So we need to check that the port is unused
-# on both! The same goes for the other worker ports, since those need to be forwarded
-# as well to enable inter-worker communication.
-read WORKERPORT SSH_FORWARDS <<< $({sync_worker_ports_exec} -w {n_workers})
-echo 'Running ssh'
-ssh -NT {ssh_opts} $SSH_FORWARDS {sched_forward} {hostname} &
-echo 'Finished running ssh, starting dask-worker now'
+#
+echo $(date): "Forwarding local scheduler port $LOCALSCHEDULERPORT to {hostname}."
+ssh {ssh_opts} -L localhost:$LOCALSCHEDULERPORT:localhost:{scheduler_port} {hostname} &
+#
+# For the worker ports, extra care needs to be taken since these need to be the same
+# on the worker and scheduler node. So we need to check that the port is unused on
+# both! The same goes for the other worker ports, since those need to be forwarded as
+# well to enable inter-worker communication.
+#
+# The sync-worker-ports executable is responsible for ssh forwarding of worker
+# ports.
+#
+WORKERPORTFILE=${{JOBID}}_worker_port
+echo $(date): Starting worker port sync in background.
+echo $(date): Expecting worker port at file $WORKERPORTFILE.
+{sync_worker_ports_exec} --output-file $WORKERPORTFILE &
+#
+# Wait for the worker sync program to write the worker port to the file.
+#
+echo $(date): Waiting for worker port.
+WORKERPORT=$({sys.executable}<<EOF
+import os
+from time import sleep
+while not os.path.isfile("$WORKERPORTFILE"):
+    sleep(1)
+with open("$WORKERPORTFILE") as f:
+    print(f.read().strip())
+EOF
+)
+#
+echo $(date): Got worker port $WORKERPORT.
+#
+# If the port is -1, this indicates an error.
+#
+if [[ $WORKERPORT == "-1" ]]; then
+    echo Exiting, as an error occurred during port forwarding.
+    exit 1
+fi
+#
+echo $(date): Removing worker port file $WORKERPORTFILE.
+rm "$WORKERPORTFILE"
+echo $(date): Finished running ssh, starting dask-worker now.
 sleep 1
-echo 'Local processes:'
+echo $(date): Local processes:
 pgrep -afu ahk114
 """.strip().split(
                 "\n"
@@ -301,23 +339,22 @@ pgrep -afu ahk114
         # In order for the above worker port forwarding to work, we need to start a
         # scheduler process which will check if the ports suggested by the workers are
         # available on the host running the scheduler. This will keep running until
-        # all workers have received proper port forwarding instructions or something
-        # fails.
-        if n_workers > 0:
-            logger.info("Starting worker port synchronisation.")
-            worker_ret_code = check_call(
-                shlex.split(f"{sync_worker_ports_exec} -w {n_workers} --scheduler")
-            )
-            if worker_ret_code:
-                raise WorkerPortError(
-                    "Worker port determination failed with error code {worker_ret_code}."
-                )
-        # Since scale() is called in the superclass init(s), only redefine it here to
-        # warn users about the lack of dynamic scaling ability.
-        self.scale = self.__scale
+        # the cluster shuts down.
+        logger.info("Starting worker port synchronisation.")
+        logger.info(
+            f"Logging output to {scheduler_stdout_file.name} and "
+            f"{scheduler_stderr_file.name}."
+        )
+        self.worker_sync_proc = Popen(
+            shlex.split(f"{sync_worker_ports_exec} --scheduler"),
+            stdout=self.scheduler_stdout_file,
+            stderr=self.scheduler_stderr_file,
+        )
 
     def __cleanup(self):
         os.remove(self.scheduler_file)
+        self.scheduler_stdout_file.close()
+        self.scheduler_stderr_file.close()
         # If the cluster creation process was interrupted or encountered an error,
         # these files would remain.
         if os.path.isfile(self.port_file):
@@ -342,14 +379,12 @@ pgrep -afu ahk114
             self._scheduler_file = os.path.join(SCHEDULER_DIR, fname)
         return self._scheduler_file
 
-    def __scale(self, *args, **kwargs):
-        raise NotImplementedError(
-            "Please supply `n_workers` upon cluster initialisation. "
-            "This is because worker ports have to be forwarded in advance."
-        )
+    @wraps(PBSCluster.scale)
+    def scale(self, *args, **kwargs):
+        logger.warning(cluster_size_error_msg)
+        super().scale(*args, **kwargs)
 
+    @wraps(PBSCluster.adapt)
     def adapt(self, *args, **kwargs):
-        raise NotImplementedError(
-            "Please supply `n_workers` upon cluster initialisation."
-            "This is because worker ports have to be forwarded in advance."
-        )
+        logger.warning(cluster_size_error_msg)
+        super().adapt(*args, **kwargs)

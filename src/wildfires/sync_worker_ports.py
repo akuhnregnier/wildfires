@@ -5,12 +5,15 @@ Note that the port and lock files are not removed automatically upon finishing, 
 should be cleaned up by a coordinating process (most likely the Cluster init).
 
 """
+import atexit
 import json
 import logging
 import os
+import shlex
 import socket
 import sys
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+from subprocess import Popen
 from time import sleep, time
 
 import fasteners
@@ -22,50 +25,102 @@ from .ports import get_ports
 logger = logging.getLogger(__name__)
 
 
-def print_output(ports, forwarding=True):
-    """Print forwarding instructions or space delimited port numbers."""
+def format_ports(ports):
     if isinstance(ports, str):
-        ports = [ports]
+        return [ports]
     elif isinstance(ports, int):
-        ports = [str(ports)]
+        return [str(ports)]
     else:
-        ports = [str(port) for port in ports]
-
-    if not forwarding:
-        return print(" ".join(ports))
-
-    output = (ports[0], f"-R localhost:{ports[0]}:localhost:{ports[0]}")
-    for port in ports[1:]:
-        output += (f"-L localhost:{port}:localhost:{port}",)
-    print(" ".join(output))
+        return [str(port) for port in ports]
 
 
-def handle_output(worker_ports, job_id, hostname, log_func, forwarding):
-    if worker_ports[job_id]["exit"]:
-        # We have been told to exit by another worker on our host, who will also take
-        # care of the necessary port forwarding.
-        log_func("Told to exit (0).")
-        log_func(
-            "Printing local port only as local port forwarding "
-            "is handled by another worker."
+def handle_output(
+    worker_ports,
+    job_id,
+    hostname,
+    log_func,
+    ssh_opts=("-NT",),
+    debug=False,
+    output_file=None,
+):
+    ssh_command = ()
+    # The remote hostname that ports are forwarded to.
+    scheduler_hostname = worker_ports["workers"]["scheduler"]["hostname"]
+
+    if not hasattr(handle_output, "finished_output"):
+        # Only output this information the first time around.
+        handle_output.finished_output = True
+        if output_file:
+            log_func(
+                f"Writing worker port: {worker_ports['workers'][job_id]['port']},"
+                f"to file: {output_file}."
+            )
+            with open(output_file, "w") as f:
+                f.write(str(worker_ports["workers"][job_id]["port"]) + "\n")
+        else:
+            log_func(
+                f"Printing worker port: {worker_ports['workers'][job_id]['port']}."
+            )
+            print(worker_ports["workers"][job_id]["port"])
+
+    if hostname != scheduler_hostname and (
+        str(worker_ports["workers"][job_id]["port"])
+        not in worker_ports["hostnames"][hostname]["remote_forwards"]
+    ):
+        # Our port has not been forwarded yet.
+        # We are also not on the same host as the scheduler (in which case the port
+        # forwarding would be counterproductive).
+
+        # Create the remote forwarding command.
+        ssh_command += (
+            "-R "
+            + ":".join((f"localhost:{worker_ports['workers'][job_id]['port']}",) * 2),
         )
-        print_output(worker_ports[job_id]["port"], forwarding=forwarding)
-    else:
-        # Tell other workers on the same host to exit after us.
-        for worker_data in worker_ports.values():
-            if worker_data["hostname"] == hostname:
-                worker_data["exit"] = True
+        # Register this new remote forward.
+        worker_ports["hostnames"][hostname]["remote_forwards"].append(
+            str(worker_ports["workers"][job_id]["port"])
+        )
 
-        log_func("Printing ports to forward.")
-        print_output(
-            [str(worker_ports[job_id]["port"])]
-            + [
-                str(worker_data["port"])
-                for worker_data in worker_ports.values()
+    # Which ports belong to workers on other nodes.
+    ext_ports = set(
+        format_ports(
+            [
+                worker_data["port"]
+                for worker_data in worker_ports["workers"].values()
                 if worker_data["hostname"] != hostname and worker_data["port"] != -2
-            ],
-            forwarding=forwarding,
+            ]
         )
+    )
+
+    # Which of those ports have not been forwarded yet on our host.
+    assert ext_ports.issuperset(
+        worker_ports["hostnames"][hostname]["local_forwards"]
+    ), "All ports that are locally forwarded should be accounted for."
+    new_ports = ext_ports.difference(
+        worker_ports["hostnames"][hostname]["local_forwards"]
+    )
+
+    if hostname != scheduler_hostname and new_ports:
+        # Create the local forwarding command(s).
+        for port in new_ports:
+            ssh_command += ("-L " + ":".join((f"localhost:{port}",) * 2),)
+        # Also register the new local forward(s).
+        worker_ports["hostnames"][hostname]["local_forwards"].extend(new_ports)
+
+    if ssh_command:
+        # Add any options.
+        ssh_command = ("ssh",) + ssh_opts + ssh_command
+
+        # Add the remote hostname that ports will be forwarded to.
+        ssh_command += (scheduler_hostname,)
+
+        ssh_command = shlex.split(" ".join(ssh_command))
+        log_func(f"Running ssh command: {ssh_command}.")
+        if debug:
+            return print(ssh_command)
+        return Popen(ssh_command)
+
+    log_func("No new ports to forward.")
 
 
 def reset_ready_flags(worker_ports):
@@ -74,61 +129,124 @@ def reset_ready_flags(worker_ports):
     This is useful since when new data is added, we have to ensure that other
     workers look at this data.
 
+    Once the timeout has expired, states should be locked in place, so flags will no
+    longer be reset!
+
     """
-    for worker_data in worker_ports.values():
+    for worker_data in worker_ports["workers"].values():
         worker_data["ready"] = False
 
 
-def check_ports(worker_ports, job_id, hostname, log_func):
-    if any(worker_data["port"] == -1 for worker_data in worker_ports.values()):
-        # If any port was unavailable.
+def check_ports(
+    worker_ports, job_id, hostname, log_func, timeout_exceeded, output_file=None
+):
+    # The remote hostname that ports are forwarded to.
+    scheduler_hostname = worker_ports["workers"]["scheduler"]["hostname"]
+
+    if hostname == scheduler_hostname:
+        host_forwarded_ports = set.union(
+            *(
+                set(host_data["local_forwards"] + host_data["remote_forwards"])
+                for host_data in worker_ports["hostnames"].values()
+            )
+        )
+    else:
+        host_forwarded_ports = set(
+            worker_ports["hostnames"][hostname]["local_forwards"]
+            + worker_ports["hostnames"][hostname]["remote_forwards"]
+        )
+
+    # If we have already forwarded ports and are therefore unable to change these.
+    if not timeout_exceeded(worker_ports):
+        locked_state = False
+    else:
+        # If our port is being forwarded, then we are no longer able to change it.
+        locked_state = worker_ports["workers"][job_id]["port"] in host_forwarded_ports
+
+    if (
+        any(
+            worker_data["port"] == -1
+            for worker_data in worker_ports["workers"].values()
+        )
+        and not locked_state
+    ):
+        # If any port was unavailable, and we are not in a locked state.
         log_func("Encountered invalid port(s).")
-        if worker_ports[job_id]["port"] == -1:
+        if worker_ports["workers"][job_id]["port"] == -1:
             log_func("Our own port is invalid.")
             # If our own port is invalid, select a different port (it is very unlikely
             # to receive the same port twice from `get_ports()`).
-            worker_ports[job_id]["port"] = get_ports()[0]
+            worker_ports["workers"][job_id]["port"] = get_ports()[0]
 
             # Notify other workers that all ports need to be re-checked.
             reset_ready_flags(worker_ports)
     else:
         # If all ports are available (on other nodes), check that they work for us.
-        for worker, worker_data in worker_ports.items():
+        for worker, worker_data in worker_ports["workers"].items():
             port = worker_data["port"]
             if port == -2:
                 # Skip the scheduler.
+                continue
+            elif str(port) in host_forwarded_ports:
+                # Skip ports that have already been forwarded.
                 continue
             try:
                 log_func(f"Checking port {port}.")
                 socket.socket().bind(("localhost", port))
             except OSError:
                 # Port is already in use.
+
+                if worker != job_id and str(port) in set(
+                    worker_ports["hostnames"][worker_data["hostname"]]["local_forwards"]
+                    + worker_ports["hostnames"][worker_data["hostname"]][
+                        "remote_forwards"
+                    ]
+                ):
+                    # The worker is not us, and the port in question is already being
+                    # forwarded on that host and thus cannot be changed.
+                    log_func(
+                        f"Port {port} from {worker} was already in use. However, port "
+                        "forwarding has already taken place, meaning we cannot "
+                        "continue, as the necessary port forwarding necessary to join "
+                        "the cluster cannot be performed on this node. Exit (1)"
+                    )
+                    if output_file:
+                        log_func(f"Writing worker port: -1 to file: {output_file}.")
+                        with open(output_file, "w") as f:
+                            f.write("-1\n")
+                    else:
+                        log_func(f"Printing worker port: -1.")
+                        print(-1)
+                    sys.exit(1)
+
                 log_func(
-                    f"Port {port} from {worker} was already in use. "
-                    "Marking as invalid."
+                    f"Port {port} from {worker} was already in use. Marking as invalid."
                 )
                 worker_data["port"] = -1
-        if any(worker_data["port"] == -1 for worker_data in worker_ports.values()):
+        if any(
+            worker_data["port"] == -1
+            for worker_data in worker_ports["workers"].values()
+        ):
             # If any invalid ports were detected above, mark all
             # workers as not ready.
             reset_ready_flags(worker_ports)
         else:
             # Since everything went well above, all ports are available on this host.
-            for worker_data in worker_ports.values():
+            for worker_data in worker_ports["workers"].values():
                 if worker_data["hostname"] == hostname:
                     worker_data["ready"] = True
 
-    return worker_ports[job_id]["port"]
+    return worker_ports["workers"][job_id]["port"]
 
 
 def sync_worker_ports(
-    n_workers,
     port_file=os.path.join(os.path.expanduser("~"), "worker_dir", "ports.json"),
     lock_file=os.path.join(os.path.expanduser("~"), "worker_dir", ".lock"),
-    timeout=1200,
+    initial_timeout=300,
     poll_interval=10,
     scheduler=False,
-    forwarding=True,
+    debug=False,
+    output_file=None,
 ):
     """To be called from multiple workers to coordinate worker port numbers.
 
@@ -138,42 +256,48 @@ def sync_worker_ports(
 
         This relies on a shared filesystem!
 
-    Prints space delimited port numbers (integers) or forwarding instructions,
-    depending on the value of `forwarding`.
+    During the initial timeout (relative to the start of the first instance) worker
+    port numbers are negotiated between active workers such that all used ports are open
+    on all involved nodes.
 
-    The first number is the local port number, which has to be forwarded to the
-    scheduler via remote port forwarding.
+    After the timeout, each process prints its own worker port number to stdout and
+    initiates the needed port forwarding commands.
+
+    The local worker port number has to be forwarded to the scheduler via remote port
+    forwarding.
 
     The other ports (if any) have to be forwarded to the scheduler via local port
     forwarding.
 
-    The program will only print ports to be locally forwarded once per host.
+    The program will only forward ports once per host.
 
     Args:
-        n_workers (int): The number of workers to coordinate. This does not include
-            the scheduler process.
         port_file (str): Path to the file used to store each worker's desired worker
             port and other information required for this process.
         lock_file (str): Path to the shared lock file, which will be used to
             coordinate access to `port_file`.
-        timeout (float): Timeout in seconds before the port synchronisation is aborted.
-            This should then lead to the job (and the whole cluster) failing since
-            any worker failing this process makes it impossible to know which ports to
-            forward.
+        initial_timeout (float): Timeout in seconds before the port synchronisation is
+            concluded. After the timeout, any additional workers will be tied into the
+            cluster if the existing ports are available on the new node and rejected
+            otherwise. The shortest timeout wins.
         poll_interval (float): Interval in seconds between file read operations.
         scheduler (bool): If True, this process should be on the scheduler node. In a
             set of processes running this program, only one should be run with
             `scheduler=True`. The scheduler will not suggest any ports and only report
             whether the ports suggested by the workers (run with `scheduler=False`)
             are usable on the scheduler node.
-        forwarding (bool): If True, print the local worker port and then the
-            forwarding instructions separated by a space. Otherwise, simply print
-            space delimited port numbers as outlined above.
+        debug (bool): If True, only print out ssh commands instead of executing them.
+        output_file (str): Path to the file where the worker port will be written to.
+            If not supplied, the worker port will be printed to stdout instead.
 
     """
     start = time()
-    # The scheduler will have its own entry.
-    n_expected = n_workers + 1
+
+    def timeout_exceeded(worker_ports):
+        if not worker_ports["timeout_exceeded"]:
+            worker_ports["timeout_exceeded"] = (time() - start) > initial_timeout
+        return worker_ports["timeout_exceeded"]
+
     if scheduler:
         job_id = "scheduler"
     else:
@@ -188,11 +312,17 @@ def sync_worker_ports(
         """Log at the info level while including unique worker identification."""
         logger.info(f"{job_id}/{hostname}: {msg.rstrip('.')}.")
 
-    if n_workers < 1:
-        log_func(
-            f"An invalid value for `n_workers` was supplied: {n_workers}. Exit (2)."
-        )
-        sys.exit(2)
+    def read_worker_ports():
+        if os.path.isfile(port_file):
+            with open(port_file) as f:
+                return json.load(f)
+        else:
+            log_func(f"Port file {port_file} was not found (should only happen once).")
+            return {"timeout_exceeded": False, "workers": {}, "hostnames": {}}
+
+    def write_worker_ports(worker_ports):
+        with open(port_file, "w") as f:
+            json.dump(worker_ports, f, indent=2, sort_keys=True)
 
     log_func("Starting port number sync.")
 
@@ -202,94 +332,118 @@ def sync_worker_ports(
     else:
         own_proposed_port = -2
 
-    while (time() - start) < timeout:
+    ssh_procs = []
+
+    def kill_procs(procs):
+        for proc in procs:
+            proc.kill()
+
+    # Kill any ssh (forwarding) processes when the interpreter exits.
+    atexit.register(kill_procs, ssh_procs)
+
+    while True:
+        # Wait for the next cycle, allowing other processes to access the file.
+        sleep(poll_interval)
+
         # Read the file or create an empty dictionary if this is the first process to
         # ever acquire the lock.
         log_func("Waiting to acquire lock.")
         with fasteners.InterProcessLock(lock_file):
-            if os.path.isfile(port_file):
-                with open(port_file) as f:
-                    worker_ports = json.load(f)
-            else:
-                worker_ports = {}
-            n_present = len(worker_ports)
-            if n_present < n_expected:
-                # If fewer than `n_expected` entries have been added to the file, make
-                # sure that our own info is present and wait.
-                log_func(
-                    f"Found {n_present} {'entries' if n_present != 1 else 'entry'}, "
-                    f"but expected {n_expected}."
-                )
-                # Make sure other workers are aware of the change in information.
-                reset_ready_flags(worker_ports)
+            # Make sure that our own info is present and wait.
+            worker_ports = read_worker_ports()
+            if job_id not in worker_ports["workers"]:
+                log_func("Our entry is not present, adding it now.")
                 # Add our own info.
-                worker_ports[job_id] = {
+                worker_ports["workers"][job_id] = {
                     "port": own_proposed_port,
                     "hostname": hostname,
                     "ready": False,
-                    "exit": False,
                 }
+                # Make sure other workers are aware of the change in information.
+                reset_ready_flags(worker_ports)
 
-            elif n_present == n_expected:
-                # All workers have reported something.
-                log_func(f"Found {n_expected} entries as expected.")
+                if hostname not in worker_ports["hostnames"]:
+                    # Keep track of which forwards have been executed on each host.
+                    worker_ports["hostnames"][hostname] = {
+                        "remote_forwards": [],
+                        "local_forwards": [],
+                    }
+            elif all(
+                worker_data["ready"] for worker_data in worker_ports["workers"].values()
+            ) and timeout_exceeded(worker_ports):
+                # If every host has checked the ports and the initial sync timeout has
+                # passed, we are ready to start issuing forwarding commands.
+                assert (
+                    own_proposed_port == worker_ports["workers"][job_id]["port"]
+                ), "Our proposed port should match our stored port."
 
-                if all(worker_data["ready"] for worker_data in worker_ports.values()):
-                    # If every host has checked the ports, we are ready to wrap up.
-                    assert (
-                        own_proposed_port == worker_ports[job_id]["port"]
-                    ), "Our proposed port should match our stored port."
-
-                    log_func(f"All host are ready. Our port:{own_proposed_port}.")
-
-                    if not scheduler:
-                        # Print ports in a format determined by `forwarding`.
-                        handle_output(
-                            worker_ports, job_id, hostname, log_func, forwarding
-                        )
-                    sys.exit(0)
-                elif worker_ports[job_id]["ready"]:
-                    # If we are 'ready', a worker on our host has already checked the
-                    # ports locally. Other hosts are not ready yet, however.
-                    log_func("Our host is ready. Waiting for other hosts.")
-                else:
-                    log_func("Checking ports.")
-                    # Check for invalid ports first, which should be corrected before
-                    # we proceed to check ports.
-                    own_proposed_port = check_ports(
-                        worker_ports, job_id, hostname, log_func
-                    )
-            else:
                 log_func(
-                    f"Found {n_present} entries, but expected {n_expected} at most. "
-                    "Exiting with code 3."
+                    f"All {len(worker_ports['workers'])} workers are ready. "
+                    f"Our port:{own_proposed_port}."
                 )
-                sys.exit(3)
+                if not scheduler:
+                    # Print ports in a format determined by `forwarding`.
+                    ssh_proc = handle_output(
+                        worker_ports,
+                        job_id,
+                        hostname,
+                        log_func,
+                        debug=debug,
+                        output_file=output_file,
+                    )
+                    if ssh_proc is not None:
+                        ssh_procs.append(ssh_proc)
+            elif worker_ports["workers"][job_id]["ready"]:
+                # We are 'ready', but other hosts are not.
+                # Any worker on our host has already checked the ports locally.
+                log_func("Our host is ready. Waiting for other hosts or timeout.")
+            else:
+                # If we are not ready, check the ports on our host.
+                log_func("Checking ports.")
+                own_proposed_port = check_ports(
+                    worker_ports,
+                    job_id,
+                    hostname,
+                    log_func,
+                    timeout_exceeded,
+                    output_file=output_file,
+                )
+
+            # Ensure integrity of the port numbers. These checks should always
+            # succeed no matter the state of the program.
+            all_ports = set(
+                [
+                    str(worker_data["port"])
+                    for worker_data in worker_ports["workers"].values()
+                    if worker_data["port"] != -2
+                ]
+            )
+
+            forwarded_port_sets = [
+                set(forward_data["local_forwards"] + forward_data["remote_forwards"])
+                for forward_data in worker_ports["hostnames"].values()
+            ]
+
+            assert all(
+                len(port_set) <= len(all_ports) for port_set in forwarded_port_sets
+            ), "The number of forwarded ports should not exceed the number of workers."
+
+            assert all(
+                all_ports.issuperset(port_set) for port_set in forwarded_port_sets
+            ), "Only existing port numbers should be forwarded."
+
+            # NOTE: Checking the reverse (all forwarded ports should exist on the
+            # workers) is troublesome, since the list of forwarded ports is due to
+            # change as individual nodes initiate forwarding in turn.
 
             # Finally, write the updated information.
-            with open(port_file, "w") as f:
-                json.dump(worker_ports, f, indent=2, sort_keys=True)
-
-        # Wait for the next poll.
-        sleep(poll_interval)
-
-    log_func("Timeout exceeded. Exiting with code 1.")
-    sys.exit(1)
+            write_worker_ports(worker_ports)
 
 
 def main():
     enable_logging()
     parser = ArgumentParser(
         description=__doc__, formatter_class=ArgumentDefaultsHelpFormatter
-    )
-    parser.add_argument(
-        "-w",
-        "--workers",
-        type=int,
-        help=(
-            "The number of workers to coordinate. This does not include the scheduler "
-            "process."
-        ),
     )
     parser.add_argument(
         "-p",
@@ -312,12 +466,13 @@ def main():
     parser.add_argument(
         "-t",
         "--timeout",
-        default=1200,
+        default=300,
         type=float,
         help=(
-            "Timeout in seconds before the port synchronisation is aborted. This should "
-            "then lead to the job (and the whole cluster) failing since any worker failing "
-            "this process makes it impossible to know which ports to forward."
+            "Timeout in seconds before the port synchronisation is concluded. After "
+            "the timeout, any additional workers will be added to the cluster if the "
+            "existing ports are available on the new node, but rejected otherwise. "
+            "The shortest timeout wins."
         ),
     )
     parser.add_argument(
@@ -334,22 +489,29 @@ def main():
         help="Identify this process as the scheduler.",
     )
     parser.add_argument(
-        "-r",
-        "--raw",
+        "--debug",
         action="store_true",
-        help="Do not print forwarding instructions, but space delimited port numbers.",
+        help="Only print out ssh commands instead of executing them.",
+    )
+    parser.add_argument(
+        "--output-file",
+        nargs="?",
+        help=(
+            "Path to the file where the worker port will be written to. If not "
+            "supplied, the worker port will be printed to stdout instead."
+        ),
     )
 
     args = parser.parse_args()
 
     sync_worker_ports(
-        args.workers,
         args.port_file,
         args.lock_file,
         args.timeout,
         args.poll_interval,
         args.scheduler,
-        not args.raw,
+        args.debug,
+        args.output_file,
     )
 
 
