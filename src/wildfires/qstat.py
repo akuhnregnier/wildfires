@@ -66,12 +66,12 @@ def get_qstat_ncpus():
             if "exec_host" not in job:
                 # Skip this job if it has no 'exec_host' attribute to compare against.
                 continue
-            exec_host = job["exec_host"]
+            exec_host = job["exec_host"].split("/")[0]
             logger.debug(
                 f"Comparing hostname '{current_hostname}' to job exec host "
                 f"'{exec_host}'."
             )
-            if current_hostname in exec_host:
+            if exec_host in current_hostname:
                 # Other keys include 'mem' (eg. '32gb'), 'mpiprocs'
                 # and 'walltime' (eg. '08:00:00').
                 resources = job["Resource_List"]
