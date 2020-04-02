@@ -169,7 +169,7 @@ def polygon_mask(coordinates, n_lon=1440):
 
     Returns:
         numpy.ndarray: Array of shape (n_lon / 2, n_lon) and dtype np.bool_. True
-            inside the specified polygon, False otherwise.
+        inside the specified polygon, False otherwise.
 
     Examples:
         >>> import numpy as np
@@ -197,6 +197,36 @@ def polygon_mask(coordinates, n_lon=1440):
 
     geom_np = geom_np.astype(np.bool_)
     return geom_np
+
+
+def box_mask(lats, lons, n_lon=1440):
+    """Mask based on a rasterized box from specified coordinates.
+
+    Args:
+        lats (2-iterable of float): Minimum and maximum latitudes. Latitudes are
+            specified in the interval  [-90, 90].
+        lons (2-iterable of float): Minimum and maximum latitudes. Longitudes are
+            specified in the interval [-180, 180].
+        n_lon (int): The number of longitude points of the final mask array. As the
+            ratio between number of longitudes and latitudes has to be 2 in order for
+            uniform scaling to work, the number of latitudes points is calculated as
+            n_lon / 2.
+
+    Returns:
+        numpy.ndarray: Array of shape (n_lon / 2, n_lon) and dtype np.bool_. True
+        inside the specified limits, False otherwise.
+
+    """
+    # Go around the box clockwise.
+    coordinates = [
+        (lons[0], lats[0]),
+        (lons[1], lats[0]),
+        (lons[1], lats[1]),
+        (lons[0], lats[1]),
+    ]
+    # Make sure the last point matches the first point.
+    coordinates.append(coordinates[0])
+    return polygon_mask(coordinates, n_lon=n_lon)
 
 
 def pack_input(var, single_type=str, elements=2, fill_source=0):
