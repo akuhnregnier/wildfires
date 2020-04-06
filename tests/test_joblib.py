@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import os
+import atexit
+import shutil
+from tempfile import mkdtemp
 
 import cf_units
 import iris
@@ -13,7 +15,10 @@ from wildfires.joblib.iris_backend import register_backend
 
 register_backend()
 
-memory = Memory(location=os.environ.get("TMPDIR", "/tmp"), backend="iris", verbose=100)
+cache_dir = mkdtemp("joblib")
+# Make sure the temporary cache directory gets removed after.
+atexit.register(shutil.rmtree, cache_dir)
+memory = Memory(location=cache_dir, backend="iris", verbose=100)
 # memory = Memory(
 #     location=os.environ.get("TMPDIR", "/tmp"), backend="local2", verbose=100
 # )
