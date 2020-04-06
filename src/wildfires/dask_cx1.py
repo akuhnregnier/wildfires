@@ -65,8 +65,7 @@ def get_client(**specs):
     if scheduler_file is not None:
         logger.info(f"Found scheduler at {scheduler_file}.")
         return Client(scheduler_file=scheduler_file)
-    else:
-        raise FoundSchedulerError(f"No scheduler with minimum specs {specs} found.")
+    raise FoundSchedulerError(f"No scheduler with minimum specs {specs} found.")
 
 
 def get_parallel_backend(loky_fallback=True, **specs):
@@ -240,20 +239,14 @@ class CX1Cluster(PBSCluster):
         )
 
         file_id = "".join(choice(ascii_lowercase) for i in range(20))
-        self.scheduler_stdout_file = open(f"scheduler_stdout_{file_id}.log", "w")
-        self.scheduler_stderr_file = open(f"scheduler_stderr_{file_id}.log", "w")
-
-        self.port_file = os.path.join(
-            os.path.expanduser("~"), "worker_dir", f"ports_{file_id}.json"
-        )
-        self.lock_file = os.path.join(
-            os.path.expanduser("~"), "worker_dir", ".lock_" + file_id
-        )
+        self.sync_stdout_file = open(f"sync_stdout_{file_id}.log", "w")
+        self.sync_stderr_file = open(f"sync_stderr_{file_id}.log", "w")
+        self.port_file = os.path.join(os.getcwd(), f"port_sync_{file_id}.db")
 
         sync_worker_ports_exec = (
             "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/"
-            f"sync-worker-ports --port-file {self.port_file} "
-            f"--lock-file {self.lock_file} --timeout 120"
+            f"sync-worker-ports --data-file {self.port_file} "
+            f"--initial-timeout 120 --poll-interval 10 --ssh-opts='{ssh_opts}'"
         )
 
         mod_kwargs.update(
@@ -342,25 +335,21 @@ pgrep -afu ahk114
         # the cluster shuts down.
         logger.info("Starting worker port synchronisation.")
         logger.info(
-            f"Logging output to {scheduler_stdout_file.name} and "
-            f"{scheduler_stderr_file.name}."
+            f"Logging output to {self.sync_stdout_file.name} and "
+            f"{self.sync_stderr_file.name}."
         )
         self.worker_sync_proc = Popen(
-            shlex.split(f"{sync_worker_ports_exec} --scheduler"),
-            stdout=self.scheduler_stdout_file,
-            stderr=self.scheduler_stderr_file,
+            shlex.split(
+                f"{sync_worker_ports_exec} --scheduler --output-file scheduler_output"
+            ),
+            stdout=self.sync_stdout_file,
+            stderr=self.sync_stderr_file,
         )
 
     def __cleanup(self):
         os.remove(self.scheduler_file)
-        self.scheduler_stdout_file.close()
-        self.scheduler_stderr_file.close()
-        # If the cluster creation process was interrupted or encountered an error,
-        # these files would remain.
-        if os.path.isfile(self.port_file):
-            os.remove(self.port_file)
-        if os.path.isfile(self.lock_file):
-            os.remove(self.lock_file)
+        self.sync_stdout_file.close()
+        self.sync_stderr_file.close()
 
     @wraps(PBSCluster.close)
     def close(self, *args, **kwargs):

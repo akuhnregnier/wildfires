@@ -1,22 +1,48 @@
 # -*- coding: utf-8 -*-
-"""Program that is called from several nodes to coordinate worker port numbers.
+"""To be called from from several nodes to coordinate worker port numbers.
 
-Note that the port and lock files are not removed automatically upon finishing, and so
+Identical arguments must be used for each set of workers to coordinate.
+
+NOTE:
+
+    This relies on a shared filesystem!
+
+During the initial timeout (relative to the start of the first instance) worker
+port numbers are negotiated between active workers such that all used ports are open
+on all involved nodes.
+
+After the timeout, each process prints its own worker port number to stdout and
+initiates the needed port forwarding commands.
+
+The local worker port number has to be forwarded to the scheduler via remote port
+forwarding.
+
+The other ports (if any) have to be forwarded to the scheduler via local port
+forwarding.
+
+The program will only forward ports once per host.
+
+Note that the database file is not removed automatically upon finishing, and so
 should be cleaned up by a coordinating process (most likely the Cluster init).
 
 """
 import atexit
-import json
 import logging
+import math
 import os
 import shlex
 import socket
+import sqlite3
 import sys
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+from collections import OrderedDict, defaultdict, namedtuple
+from functools import reduce
+from operator import add
+from sched import scheduler
+from sqlite3 import IntegrityError, OperationalError
 from subprocess import Popen
-from time import sleep, time
-
-import fasteners
+from textwrap import dedent, wrap
+from time import monotonic, time
 
 from wildfires.logging_config import enable_logging
 
@@ -25,494 +51,1035 @@ from .ports import get_ports
 logger = logging.getLogger(__name__)
 
 
-def format_ports(ports):
-    if isinstance(ports, str):
-        return [ports]
-    elif isinstance(ports, int):
-        return [str(ports)]
+class PortSyncError(Exception):
+    """Base class for exceptions raised while syncing worker ports."""
+
+
+class RemoteForwardOutputError(PortSyncError):
+    """Raised when a port has already been remote-forwarded by not previously output."""
+
+
+class ChangedPortsError(PortSyncError):
+    """Raised when ports changed during a check."""
+
+
+class SchedulerError(PortSyncError):
+    """Raised when a scheduling error is encountered."""
+
+
+def multiline(s, strip_all_indents=False):
+    if strip_all_indents:
+        return " ".join([dedent(sub) for sub in s.strip().split("\n")])
     else:
-        return [str(port) for port in ports]
+        return dedent(s).strip().replace("\n", " ")
 
 
-def handle_output(
-    worker_ports,
-    job_id,
-    hostname,
-    log_func,
-    ssh_opts=("-NT",),
-    debug=False,
-    output_file=None,
-):
-    ssh_command = ()
-    # The remote hostname that ports are forwarded to.
-    scheduler_hostname = worker_ports["workers"]["scheduler"]["hostname"]
+class Scheduler:
+    def __init__(self, interval, action, args=None, kwargs=None, max_iter=math.inf):
+        """Scheduler for repeated execution of an action.
 
-    if not hasattr(handle_output, "finished_output"):
-        # Only output this information the first time around.
-        handle_output.finished_output = True
-        if output_file:
-            log_func(
-                f"Writing worker port: {worker_ports['workers'][job_id]['port']},"
-                f"to file: {output_file}."
+        Args:
+            interval (float): Interval between actions in seconds.
+            action (callable): Action.
+            args (tuple): Positional arguments.
+            kwargs (dictionary): Keyword arguments.
+            max_iter (int or float): Maximum number of iterations.
+
+        """
+        self.scheduler = scheduler()
+
+        self.interval = interval
+        self.action = action
+        self.args = args if args is not None else ()
+        self.kwargs = kwargs if kwargs is not None else {}
+        self.max_iter = max_iter
+
+        self.first_time = None
+        self.iterations = 0
+        self.n_intervals = 0
+        self.next_event = None
+
+    def run(self):
+        """Start running the action."""
+        self.scheduler.enter(0, 0, self._execute_action)
+        self.scheduler.run()
+        return self
+
+    def _execute_action(self):
+        """Execute the action and schedule the next execution."""
+        if self.first_time is None:
+            # Keep track of when the first execution was.
+            self.first_time = monotonic()
+
+        # Actually execute the action.
+        self.action(*self.args, **self.kwargs)
+        self.iterations += 1
+
+        # Schedule the next action.
+
+        # Number of intervals needed to get to the next timestep. This relies on the
+        # fact that that the actual time taken to get here is longer than
+        # `self.interval`. Note that a small offset is applied to account for events
+        # which finished just before the start of a new interval.
+        # If the time to the next interval is too short, the next scheduled time could
+        # have passed by the time we call `enterabs()`. The required offset needed to
+        # circumvent this is machine and load dependent.
+        next_intervals = math.ceil(
+            ((monotonic() + 5e-4) - self.first_time) / self.interval
+        )
+        interval_diff = next_intervals - self.n_intervals
+
+        if interval_diff != 1:
+            # Warn, and fix number of intervals.
+            fixed_interval_diff = max((1, interval_diff))
+            logger.error(
+                f"n_intervals {interval_diff} encountered at iteration "
+                f"{self.iterations}. Choosing {fixed_interval_diff}. "
+                f"Consider increasing the interval (currently {self.interval:0.2e} s)."
             )
-            with open(output_file, "w") as f:
-                f.write(str(worker_ports["workers"][job_id]["port"]) + "\n")
-        else:
-            log_func(
-                f"Printing worker port: {worker_ports['workers'][job_id]['port']}."
+            interval_diff = fixed_interval_diff
+
+        next_time = self.first_time + (self.n_intervals + interval_diff) * self.interval
+
+        if next_time <= monotonic():
+            raise SchedulerError(
+                f"Next iteration scheduled for a time in the past. "
+                f"Consider increasing the interval (currently {self.interval:0.2e} s)."
             )
-            print(worker_ports["workers"][job_id]["port"])
 
-    if hostname != scheduler_hostname and (
-        str(worker_ports["workers"][job_id]["port"])
-        not in worker_ports["hostnames"][hostname]["remote_forwards"]
-    ):
-        # Our port has not been forwarded yet.
-        # We are also not on the same host as the scheduler (in which case the port
-        # forwarding would be counterproductive).
+        self.n_intervals = next_intervals
 
-        # Create the remote forwarding command.
-        ssh_command += (
-            "-R "
-            + ":".join((f"localhost:{worker_ports['workers'][job_id]['port']}",) * 2),
-        )
-        # Register this new remote forward.
-        worker_ports["hostnames"][hostname]["remote_forwards"].append(
-            str(worker_ports["workers"][job_id]["port"])
-        )
-
-    # Which ports belong to workers on other nodes.
-    ext_ports = set(
-        format_ports(
-            [
-                worker_data["port"]
-                for worker_data in worker_ports["workers"].values()
-                if worker_data["hostname"] != hostname and worker_data["port"] != -2
-            ]
-        )
-    )
-
-    # Which of those ports have not been forwarded yet on our host.
-    assert ext_ports.issuperset(
-        worker_ports["hostnames"][hostname]["local_forwards"]
-    ), "All ports that are locally forwarded should be accounted for."
-    new_ports = ext_ports.difference(
-        worker_ports["hostnames"][hostname]["local_forwards"]
-    )
-
-    if hostname != scheduler_hostname and new_ports:
-        # Create the local forwarding command(s).
-        for port in new_ports:
-            ssh_command += ("-L " + ":".join((f"localhost:{port}",) * 2),)
-        # Also register the new local forward(s).
-        worker_ports["hostnames"][hostname]["local_forwards"].extend(new_ports)
-
-    if ssh_command:
-        # Add any options.
-        ssh_command = ("ssh",) + ssh_opts + ssh_command
-
-        # Add the remote hostname that ports will be forwarded to.
-        ssh_command += (scheduler_hostname,)
-
-        ssh_command = shlex.split(" ".join(ssh_command))
-        log_func(f"Running ssh command: {ssh_command}.")
-        if debug:
-            return print(ssh_command)
-        return Popen(ssh_command)
-
-    log_func("No new ports to forward.")
-
-
-def reset_ready_flags(worker_ports):
-    """Make sure that all workers are reset to a non-ready state.
-
-    This is useful since when new data is added, we have to ensure that other
-    workers look at this data.
-
-    Once the timeout has expired, states should be locked in place, so flags will no
-    longer be reset!
-
-    """
-    for worker_data in worker_ports["workers"].values():
-        worker_data["ready"] = False
-
-
-def check_ports(
-    worker_ports, job_id, hostname, log_func, timeout_exceeded, output_file=None
-):
-    # The remote hostname that ports are forwarded to.
-    scheduler_hostname = worker_ports["workers"]["scheduler"]["hostname"]
-
-    if hostname == scheduler_hostname:
-        host_forwarded_ports = set.union(
-            *(
-                set(host_data["local_forwards"] + host_data["remote_forwards"])
-                for host_data in worker_ports["hostnames"].values()
+        if self.iterations < self.max_iter:
+            self.next_event = self.scheduler.enterabs(
+                next_time, 0, self._execute_action
             )
-        )
-    else:
-        host_forwarded_ports = set(
-            worker_ports["hostnames"][hostname]["local_forwards"]
-            + worker_ports["hostnames"][hostname]["remote_forwards"]
-        )
 
-    # If we have already forwarded ports and are therefore unable to change these.
-    if not timeout_exceeded(worker_ports):
-        locked_state = False
-    else:
-        # If our port is being forwarded, then we are no longer able to change it.
-        locked_state = worker_ports["workers"][job_id]["port"] in host_forwarded_ports
-
-    if (
-        any(
-            worker_data["port"] == -1
-            for worker_data in worker_ports["workers"].values()
-        )
-        and not locked_state
-    ):
-        # If any port was unavailable, and we are not in a locked state.
-        log_func("Encountered invalid port(s).")
-        if worker_ports["workers"][job_id]["port"] == -1:
-            log_func("Our own port is invalid.")
-            # If our own port is invalid, select a different port (it is very unlikely
-            # to receive the same port twice from `get_ports()`).
-            worker_ports["workers"][job_id]["port"] = get_ports()[0]
-
-            # Notify other workers that all ports need to be re-checked.
-            reset_ready_flags(worker_ports)
-    else:
-        # If all ports are available (on other nodes), check that they work for us.
-        for worker, worker_data in worker_ports["workers"].items():
-            port = worker_data["port"]
-            if port == -2:
-                # Skip the scheduler.
-                continue
-            elif str(port) in host_forwarded_ports:
-                # Skip ports that have already been forwarded.
-                continue
-            try:
-                log_func(f"Checking port {port}.")
-                socket.socket().bind(("localhost", port))
-            except OSError:
-                # Port is already in use.
-
-                if worker != job_id and str(port) in set(
-                    worker_ports["hostnames"][worker_data["hostname"]]["local_forwards"]
-                    + worker_ports["hostnames"][worker_data["hostname"]][
-                        "remote_forwards"
-                    ]
-                ):
-                    # The worker is not us, and the port in question is already being
-                    # forwarded on that host and thus cannot be changed.
-                    log_func(
-                        f"Port {port} from {worker} was already in use. However, port "
-                        "forwarding has already taken place, meaning we cannot "
-                        "continue, as the necessary port forwarding necessary to join "
-                        "the cluster cannot be performed on this node. Exit (1)"
-                    )
-                    if output_file:
-                        log_func(f"Writing worker port: -1 to file: {output_file}.")
-                        with open(output_file, "w") as f:
-                            f.write("-1\n")
-                    else:
-                        log_func(f"Printing worker port: -1.")
-                        print(-1)
-                    sys.exit(1)
-
-                log_func(
-                    f"Port {port} from {worker} was already in use. Marking as invalid."
-                )
-                worker_data["port"] = -1
-        if any(
-            worker_data["port"] == -1
-            for worker_data in worker_ports["workers"].values()
-        ):
-            # If any invalid ports were detected above, mark all
-            # workers as not ready.
-            reset_ready_flags(worker_ports)
-        else:
-            # Since everything went well above, all ports are available on this host.
-            for worker_data in worker_ports["workers"].values():
-                if worker_data["hostname"] == hostname:
-                    worker_data["ready"] = True
-
-    return worker_ports["workers"][job_id]["port"]
+    def cancel(self):
+        """Cease to continually execute `action`."""
+        if self.next_event is not None:
+            self.scheduler.cancel(self.next_event)
 
 
-def sync_worker_ports(
-    port_file=os.path.join(os.path.expanduser("~"), "worker_dir", "ports.json"),
-    lock_file=os.path.join(os.path.expanduser("~"), "worker_dir", ".lock"),
-    initial_timeout=300,
-    poll_interval=10,
-    scheduler=False,
-    debug=False,
-    output_file=None,
-):
-    """To be called from multiple workers to coordinate worker port numbers.
+class LoggerAdapter(logging.LoggerAdapter):
+    def __init__(self, logger, name, hostname):
+        super(LoggerAdapter, self).__init__(logger, {})
 
-    Identical arguments must be used for each set of workers to coordinate.
+        self.worker_name = name
+        self.hostname = hostname
 
-    NOTE:
+    def process(self, msg, kwargs):
+        return f"\n[{self.worker_name}:{self.hostname}] {msg}", kwargs
 
-        This relies on a shared filesystem!
 
-    During the initial timeout (relative to the start of the first instance) worker
-    port numbers are negotiated between active workers such that all used ports are open
-    on all involved nodes.
+_arg_tuple = namedtuple("Arg", ["type", "help", "default"])
 
-    After the timeout, each process prints its own worker port number to stdout and
-    initiates the needed port forwarding commands.
 
-    The local worker port number has to be forwarded to the scheduler via remote port
-    forwarding.
+def arg_tuple(type_string, help_string, default_value):
+    """Get a descriptive argument namedtuple with concatenated help string."""
+    # Apply `multiline` to the help strings.
+    help_string = multiline(help_string, strip_all_indents=True)
+    return _arg_tuple(type_string, help_string, default_value)
 
-    The other ports (if any) have to be forwarded to the scheduler via local port
-    forwarding.
 
-    The program will only forward ports once per host.
+# Type, help and default values for PortSync arguments.
+port_sync_args = OrderedDict(
+    data_file=arg_tuple(
+        "str",
+        """Path to the file used to store each worker's desired worker port and other
+        information required for this process.""",
+        os.path.join(os.path.expanduser("~"), "worker_dir", "port_sync.db"),
+    ),
+    initial_timeout=arg_tuple(
+        "float",
+        """Timeout in seconds before the port synchronisation is concluded. After the
+        timeout, any additional workers will be tied into the cluster if the existing
+        ports are available on the new node and rejected otherwise. The shortest
+        timeout wins.""",
+        300,
+    ),
+    poll_interval=arg_tuple(
+        "float", "Interval in seconds between file read operations.", 10
+    ),
+    scheduler=arg_tuple(
+        "bool",
+        """If True, this process should be on the scheduler node. In a set of
+        processes running this program, only one should be run with `scheduler=True`.
+        The scheduler will not suggest any ports and only report whether the ports
+        suggested by the workers (run with `scheduler=False`) are usable on the
+        scheduler node.""",
+        False,
+    ),
+    debug=arg_tuple(
+        "bool", "If True, only print out SSH commands instead of executing them.", False
+    ),
+    output_file=arg_tuple(
+        "str",
+        """Path to the file where the worker port will be written to. If not supplied,
+        the worker port will be printed to stdout instead.""",
+        None,
+    ),
+    ssh_opts=arg_tuple(
+        "iterable of str", "A series of SSH command line options.", ("-NT",)
+    ),
+    hostname=arg_tuple("str", "If given, override automatic hostname detection.", None),
+    port=arg_tuple("int", "If given, override automatic port determination.", None),
+    keepalive_intervals=arg_tuple(
+        "int",
+        """The number of intervals for which a worker's counter may stay constant
+        before it is cleared.""",
+        2,
+    ),
+)
 
-    Args:
-        port_file (str): Path to the file used to store each worker's desired worker
-            port and other information required for this process.
-        lock_file (str): Path to the shared lock file, which will be used to
-            coordinate access to `port_file`.
-        initial_timeout (float): Timeout in seconds before the port synchronisation is
-            concluded. After the timeout, any additional workers will be tied into the
-            cluster if the existing ports are available on the new node and rejected
-            otherwise. The shortest timeout wins.
-        poll_interval (float): Interval in seconds between file read operations.
-        scheduler (bool): If True, this process should be on the scheduler node. In a
-            set of processes running this program, only one should be run with
-            `scheduler=True`. The scheduler will not suggest any ports and only report
-            whether the ports suggested by the workers (run with `scheduler=False`)
-            are usable on the scheduler node.
-        debug (bool): If True, only print out ssh commands instead of executing them.
-        output_file (str): Path to the file where the worker port will be written to.
-            If not supplied, the worker port will be printed to stdout instead.
-
-    """
-    start = time()
-
-    def timeout_exceeded(worker_ports):
-        if not worker_ports["timeout_exceeded"]:
-            worker_ports["timeout_exceeded"] = (time() - start) > initial_timeout
-        return worker_ports["timeout_exceeded"]
-
-    if scheduler:
-        job_id = "scheduler"
-    else:
-        # This will be the unique worker identifier.
-        job_id = os.environ["PBS_JOBID"].split(".")[0]
-
-    # The hostname is important as ports only need to be forwarded once per host,
-    # since intra-host communication should be possible without port forwarding.
-    hostname = socket.gethostname()
-
-    def log_func(msg):
-        """Log at the info level while including unique worker identification."""
-        logger.info(f"{job_id}/{hostname}: {msg.rstrip('.')}.")
-
-    def read_worker_ports():
-        if os.path.isfile(port_file):
-            with open(port_file) as f:
-                return json.load(f)
-        else:
-            log_func(f"Port file {port_file} was not found (should only happen once).")
-            return {"timeout_exceeded": False, "workers": {}, "hostnames": {}}
-
-    def write_worker_ports(worker_ports):
-        with open(port_file, "w") as f:
-            json.dump(worker_ports, f, indent=2, sort_keys=True)
-
-    log_func("Starting port number sync.")
-
-    if not scheduler:
-        own_proposed_port = get_ports()[0]
-        log_func(f"Proposing port {own_proposed_port}.")
-    else:
-        own_proposed_port = -2
-
-    ssh_procs = []
-
-    def kill_procs(procs):
-        for proc in procs:
-            proc.kill()
-
-    # Kill any ssh (forwarding) processes when the interpreter exits.
-    atexit.register(kill_procs, ssh_procs)
-
-    while True:
-        # Wait for the next cycle, allowing other processes to access the file.
-        sleep(poll_interval)
-
-        # Read the file or create an empty dictionary if this is the first process to
-        # ever acquire the lock.
-        log_func("Waiting to acquire lock.")
-        with fasteners.InterProcessLock(lock_file):
-            # Make sure that our own info is present and wait.
-            worker_ports = read_worker_ports()
-            if job_id not in worker_ports["workers"]:
-                log_func("Our entry is not present, adding it now.")
-                # Add our own info.
-                worker_ports["workers"][job_id] = {
-                    "port": own_proposed_port,
-                    "hostname": hostname,
-                    "ready": False,
-                }
-                # Make sure other workers are aware of the change in information.
-                reset_ready_flags(worker_ports)
-
-                if hostname not in worker_ports["hostnames"]:
-                    # Keep track of which forwards have been executed on each host.
-                    worker_ports["hostnames"][hostname] = {
-                        "remote_forwards": [],
-                        "local_forwards": [],
-                    }
-            elif all(
-                worker_data["ready"] for worker_data in worker_ports["workers"].values()
-            ) and timeout_exceeded(worker_ports):
-                # If every host has checked the ports and the initial sync timeout has
-                # passed, we are ready to start issuing forwarding commands.
-                assert (
-                    own_proposed_port == worker_ports["workers"][job_id]["port"]
-                ), "Our proposed port should match our stored port."
-
-                log_func(
-                    f"All {len(worker_ports['workers'])} workers are ready. "
-                    f"Our port:{own_proposed_port}."
-                )
-                if not scheduler:
-                    # Print ports in a format determined by `forwarding`.
-                    ssh_proc = handle_output(
-                        worker_ports,
-                        job_id,
-                        hostname,
-                        log_func,
-                        debug=debug,
-                        output_file=output_file,
-                    )
-                    if ssh_proc is not None:
-                        ssh_procs.append(ssh_proc)
-            elif worker_ports["workers"][job_id]["ready"]:
-                # We are 'ready', but other hosts are not.
-                # Any worker on our host has already checked the ports locally.
-                log_func("Our host is ready. Waiting for other hosts or timeout.")
-            else:
-                # If we are not ready, check the ports on our host.
-                log_func("Checking ports.")
-                own_proposed_port = check_ports(
-                    worker_ports,
-                    job_id,
-                    hostname,
-                    log_func,
-                    timeout_exceeded,
-                    output_file=output_file,
-                )
-
-            # Ensure integrity of the port numbers. These checks should always
-            # succeed no matter the state of the program.
-            all_ports = set(
+width = 88
+tab = 4
+args_help = ""
+for (name, (arg_type, arg_help, _)) in port_sync_args.items():
+    arg_help = f"{name} ({arg_type}): {arg_help}"
+    parts = wrap(arg_help, width - tab)
+    lines = [" " * tab + parts[0]]
+    if len(parts) > 1:
+        lines.append(
+            "\n".join(
                 [
-                    str(worker_data["port"])
-                    for worker_data in worker_ports["workers"].values()
-                    if worker_data["port"] != -2
+                    " " * 2 * tab + wrapped
+                    for wrapped in wrap(" ".join(parts[1:]), width - 2 * tab)
                 ]
             )
+        )
+    args_help = args_help + "\n" + "\n".join(lines)
 
-            forwarded_port_sets = [
-                set(forward_data["local_forwards"] + forward_data["remote_forwards"])
-                for forward_data in worker_ports["hostnames"].values()
-            ]
+port_sync_doc = __doc__ + f"Args:{args_help}\n"
 
-            assert all(
-                len(port_set) <= len(all_ports) for port_set in forwarded_port_sets
-            ), "The number of forwarded ports should not exceed the number of workers."
 
-            assert all(
-                all_ports.issuperset(port_set) for port_set in forwarded_port_sets
-            ), "Only existing port numbers should be forwarded."
+class PortSync:
+    __doc__ = port_sync_doc
 
-            # NOTE: Checking the reverse (all forwarded ports should exist on the
-            # workers) is troublesome, since the list of forwarded ports is due to
-            # change as individual nodes initiate forwarding in turn.
+    def __init__(
+        self,
+        data_file=port_sync_args["data_file"].default,
+        initial_timeout=port_sync_args["initial_timeout"].default,
+        poll_interval=port_sync_args["poll_interval"].default,
+        scheduler=port_sync_args["scheduler"].default,
+        debug=port_sync_args["debug"].default,
+        output_file=port_sync_args["output_file"].default,
+        ssh_opts=port_sync_args["ssh_opts"].default,
+        hostname=port_sync_args["hostname"].default,
+        port=port_sync_args["port"].default,
+        keepalive_intervals=port_sync_args["keepalive_intervals"].default,
+    ):
+        self.start_time = time()
 
-            # Finally, write the updated information.
-            write_worker_ports(worker_ports)
+        self.initial_timeout = initial_timeout
+        self.poll_interval = poll_interval
+        self.is_scheduler = scheduler
+        self.debug = debug
+        if not self.debug:
+            if output_file is None:
+                raise ValueError("An output file needs to be supplied.")
+            else:
+                output_file = os.path.expanduser(output_file)
+        self.output_file = output_file
+        if not all(isinstance(opt, str) for opt in ssh_opts):
+            raise ValueError(f"All SSH options must be strings. Got {repr(ssh_opts)}.")
+        self.ssh_opts = ssh_opts
+
+        self.output_already = False
+        self._locked_port = False
+
+        # This will be the unique (worker) identifier.
+        self.name = (
+            "scheduler" if self.is_scheduler else os.environ["PBS_JOBID"].split(".")[0]
+        )
+
+        # The hostname is important as ports only need to be forwarded once per host,
+        # since intra-host communication should be possible without port forwarding.
+        self.hostname = hostname if hostname is not None else socket.gethostname()
+
+        # TODO: Need to configure this logger to make this work.
+        # logger = logging.getLogger(self.__class__.__name__)
+        self.logger = LoggerAdapter(logger, self.name, self.hostname)
+
+        print("Starting")
+        self.logger.info("Starting port number sync.")
+
+        if not os.path.isfile(data_file):
+            self.logger.info(f"Database file {data_file} was not found.")
+        self.con = sqlite3.connect(data_file, timeout=10)
+        # Create the necessary tables.
+        # Using foreign key constraints, ensure that local and remote forwarding
+        # entries have corresponding pre-existing worker name and port entries in the
+        # 'workers' table.
+        self.con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS timeout_exceeded (
+                exceeded BOOLEAN UNIQUE
+            );
+            CREATE TABLE IF NOT EXISTS workers (
+                name VARCHAR NOT NULL UNIQUE,
+                hostname VARCHAR NOT NULL,
+                port INTEGER NOT NULL UNIQUE,
+                ready BOOLEAN,
+                invalid_port BOOLEAN,
+                counter INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS local_forwards (
+                name VARCHAR NOT NULL,
+                port INTEGER NOT NULL,
+                FOREIGN KEY(name) REFERENCES workers (name),
+                FOREIGN KEY(port) REFERENCES workers (port)
+            );
+            CREATE TABLE IF NOT EXISTS remote_forwards (
+                -- Each worker only remote-forwards their own port.
+                name VARCHAR NOT NULL UNIQUE,
+                port INTEGER NOT NULL UNIQUE,
+                FOREIGN KEY(name) REFERENCES workers (name),
+                FOREIGN KEY(port) REFERENCES workers (port)
+            );
+
+            -- Triggers to abort a transaction (raising sqlite3.IntegrityError) in
+            -- case a duplicate local or remote forwarding command would be
+            -- attempted on the same host (race condition).
+
+            CREATE TRIGGER IF NOT EXISTS validate_existing_local_forwards
+            BEFORE INSERT ON local_forwards
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE (ABORT, "Duplicate local port forwarding attempted.")
+                WHERE EXISTS (
+                    SELECT hostname
+                    FROM workers
+                    WHERE name = NEW.name AND hostname IN (
+                        SELECT hostname
+                        FROM workers
+                        INNER JOIN local_forwards USING (name)
+                        WHERE local_forwards.port = NEW.port
+                    )
+                );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS validate_existing_remote_forwards
+            BEFORE INSERT ON remote_forwards
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE (ABORT, "Duplicate remote port forwarding attempted.")
+                WHERE EXISTS (
+                    SELECT hostname
+                    FROM workers
+                    WHERE name = NEW.name AND hostname IN (
+                        SELECT hostname
+                        FROM workers
+                        INNER JOIN remote_forwards USING (name)
+                        WHERE remote_forwards.port = NEW.port
+                    )
+                );
+            END;
+
+            -- Triggers to prevent invalidated ports from being forwarded
+            -- (sqlite3.IntegrityError).
+
+            CREATE TRIGGER IF NOT EXISTS no_invalid_port_local_forward
+            BEFORE INSERT ON local_forwards
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE (ABORT, "Attempted local forward of invalid port.")
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM workers
+                    WHERE port = NEW.port AND invalid_port = 1
+                );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS no_invalid_port_remote_forward
+            BEFORE INSERT ON remote_forwards
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE (ABORT, "Attempted remote forward of invalid port.")
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM workers
+                    WHERE port = NEW.port AND invalid_port = 1
+                );
+            END;
+
+
+            -- Trigger to prevent already forwarded ports from being invalidated
+            -- (sqlite3.IntegrityError).
+
+            CREATE TRIGGER IF NOT EXISTS no_forwarded_port_invalidation
+            BEFORE UPDATE OF invalid_port ON workers
+            FOR EACH ROW
+            WHEN NEW.invalid_port = 1
+            BEGIN
+                SELECT RAISE (ABORT, "Attempted invalidation of forwarded port.")
+                WHERE NEW.port IN (
+                    SELECT port
+                    FROM local_forwards
+                    UNION
+                    SELECT port
+                    FROM remote_forwards
+                );
+            END;
+
+            -- Trigger to prevent already invalidated ports from being added
+            -- (sqlite3.IntegrityError).
+
+            CREATE TRIGGER IF NOT EXISTS no_invalid_port_addition
+            BEFORE INSERT ON workers
+            FOR EACH ROW
+            WHEN NEW.invalid_port = 1
+            BEGIN
+                SELECT RAISE (ABORT, "Attempted addition of invalid port.")
+                WHERE 1;
+            END;
+
+            -- Enable foreign key constraints.
+            PRAGMA foreign_keys = ON;"""
+        )
+
+        def squeeze_row(cursor, row):
+            """If there is only one column, only return that column's value."""
+            if len(row) == 1:
+                return row[0]
+            return row
+
+        self.con.row_factory = squeeze_row
+
+        # Determine our port.
+        if self.is_scheduler:
+            if port is not None:
+                self.logger.warning(
+                    f"Worker `port` {port} supplied despite running as scheduler."
+                )
+            initial_port = -2
+            # The scheduler is responsible for clearing unresponsive workers, and so
+            # needs to keep track of all workers' counters.
+            def get_zero():
+                return 0
+
+            self.counters = {}
+            self.missed_counts = defaultdict(get_zero)
+            self.keepalive_intervals = keepalive_intervals
+        else:
+            if port is None:
+                self.logger.debug(
+                    "No custom port supplied. Choosing one automatically."
+                )
+                initial_port = None
+            else:
+                self.logger.debug(f"Custom port {port} supplied.")
+                initial_port = port
+
+        self.logger.debug("Inserting initial entry.")
+
+        for _ in range(100):
+            # Try for 100 times at most to set a new, unique port.
+            try:
+                with self.con:
+                    self.con.execute(
+                        "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            self.name,
+                            self.hostname,
+                            initial_port
+                            if initial_port is not None
+                            else get_ports()[0],
+                            False,
+                            False,
+                            0,
+                        ),
+                    )
+                    # Notify other workers that they need to re-check ports.
+                    self.notify()
+                break  # Stop trying to get a new port.
+            except IntegrityError as integrity_error:
+                if str(integrity_error) == "UNIQUE constraint failed: workers.port":
+                    self.logger.debug("Encountered port number clash.")
+                else:
+                    # Do not intercept other errors.
+                    raise
+        else:
+            # No break encountered - the new port was always already present.
+            self.abort("Could not find a suitable unique port. Exit (1).")
+
+        self.logger.info(f"Proposing port {self.port}.")
+
+        self.ssh_procs = []
+        atexit.register(self.kill_procs)
+        self.scheduler = Scheduler(self.poll_interval, self._sync_iteration)
+
+    @property
+    def port(self):
+        return self.con.execute(
+            "SELECT port FROM workers WHERE name = ?", (self.name,)
+        ).fetchone()
+
+    def run(self):
+        """Start synchronisation."""
+        self.scheduler.run()
+
+    def _sync_iteration(self):
+        """A synchronisation iteration which is looped using a scheduler."""
+        if self.is_scheduler:
+            # Check the worker counters to detect inactive workers.
+            for worker_id, counter in self.con.execute(
+                "SELECT name, counter FROM workers WHERE name != 'scheduler'"
+            ):
+                if worker_id in self.counters:
+                    if counter == self.counters[worker_id]:
+                        # The counter has not changed - a dead worker?
+                        self.missed_counts[worker_id] += 1
+                        if self.missed_counts[worker_id] > self.keepalive_intervals:
+                            # The worker is unresponsive - assume it is dead.
+                            self.clear(worker_id)
+                    else:
+                        # Record the new counter value and reset the missed counts.
+                        self.counters[worker_id] = counter
+                        self.missed_counts[worker_id] = 0
+                else:
+                    self.counters[worker_id] = counter
+        if (
+            all(self.con.execute("SELECT ready FROM workers"))
+            and self.timeout_exceeded()
+        ):
+            # If every host has checked the ports and the initial sync timeout has
+            # passed, we are ready to start issuing forwarding commands.
+            self.logger.info(
+                f"All {self.n_workers} workers are ready. Our port: {self.port}."
+            )
+            # Print ports.
+            self.output()
+        elif all(
+            self.con.execute("SELECT ready FROM workers WHERE name = ?", (self.name,))
+        ):
+            # Any worker on our host has already checked the ports locally.
+            self.logger.info("Our host is ready. Waiting for other hosts or timeout.")
+        else:
+            # If we are not ready, check the ports on our host.
+            self.logger.info("Checking ports.")
+            self.check_ports()
+
+        # Signal that we are still alive.
+        self.increment_counter()
+
+    def check_ports(self):
+        # TODO: Include dynamic removal of workers - replicate any lost local port
+        # forwarding on other workers?
+        if not self.locked_port and self.any_invalid_ports():
+            # If we are still able to change our port, and if any port was unavailable.
+            self.logger.warning("Encountered invalid port(s).")
+            if self.port_is_invalid():
+                self.logger.warning("Our own port is invalid.")
+                self.get_new_port()
+        else:
+            # If all ports are available on other nodes, check that they work on ours.
+            # ignoring the scheduler (since it doesn't have a real worker port).
+            try:
+                self._check_ports_locally()
+            except OperationalError as operational_error:
+                if str(operational_error) == "database is locked":
+                    self.logger.warning("The database was locked for too long.")
+                else:
+                    # Only handle the locked database error.
+                    raise
+
+    def output(self):
+        """Handle outputting worker port and issuing SSH commands.
+
+        Race conditions should be handled by database triggers where applicable.
+
+        """
+        if self.is_scheduler:
+            return
+
+        ssh_command = self.remote_forwarding() + self.local_forwarding()
+
+        if ssh_command:
+            # If there is any forwarding to carry out.
+
+            # Add any options and the remote hostname that ports will be forwarded to.
+            ssh_command = (
+                ("ssh",) + self.ssh_opts + ssh_command + (self.scheduler_hostname,)
+            )
+            self.logger.info(f"Running ssh command: {ssh_command}.")
+            self.ssh_procs.append(Popen(ssh_command))
+        else:
+            self.logger.debug("No new ports to forward.")
+
+    def _check_ports_locally(self):
+        """Check that ports work on our host.
+
+        The scheduler is ignored since it doesn't have a real worker port.
+
+        Raises:
+            sqlite3.OperationalError: If another worker locked the database for too
+                long while checking their own ports.
+
+        """
+        checked_ports = set()
+        with self.con:
+            # Lock the database while we check our ports to avoid other workers
+            # checking the same ports concurrently on our host.
+            # NOTE: This assumes all workers on the same node agree.
+            self.con.execute("BEGIN EXCLUSIVE")
+            for worker_id, port in self.con.execute(
+                "SELECT name, port FROM workers WHERE name != 'scheduler'"
+            ):
+                checked_ports.add(port)
+                self._port_available(worker_id, port)
+
+            if not self.any_invalid_ports():
+                try:
+                    with self.con:
+                        # Tell other workers that we have checked ports on our host.
+                        self.con.execute(
+                            "UPDATE workers SET ready = True WHERE hostname = ?",
+                            (self.hostname,),
+                        )
+                        if (
+                            set(
+                                self.con.execute(
+                                    "SELECT port FROM workers WHERE name != 'scheduler'"
+                                )
+                            )
+                            != checked_ports
+                        ):
+                            # XXX: With exclusive locking, this should never happen.
+                            # We need to roll back the transaction, since we did not
+                            # check all current ports  (ports may have been modified
+                            # while we carried out our checks).
+                            raise ChangedPortsError()
+                except ChangedPortsError:
+                    self.logger.debug("Ports changed during our availability check.")
+                    self.notify(hostname=self.hostname)
+
+    def _port_available(self, worker_id, port):
+        """Check if a port is available on our host."""
+
+        if port in self.host_forwarded_ports:
+            # Skip ports that have already been forwarded on our host.
+            self.logger.debug(f"Port {port} is already forwarded on this host.")
+            return
+
+        try:
+            self.logger.info(f"Checking port {port}.")
+            socket.socket().bind(("localhost", port))
+        except OSError:
+            # Port is already in use.
+            if port in self.all_forwarded_ports:
+                # TODO: In addition to terminating ourselves, also terminate other
+                # workers on our node.
+                self.abort(
+                    multiline(
+                        f"""
+                        Port {port} from {worker_id} was forwarded on other hosts (but
+                        not ours), but is unavailable on our host. Since we cannot
+                        change the port (it is already forwarded) we must retire
+                        workers on our host as connection to the cluster is now
+                        impossible. Exit (1)."""
+                    )
+                )
+
+            self.logger.warning(f"Port {port} from {worker_id} is unavailable.")
+            # Note that if the port has been changed since (another process
+            # marked the port as invalid before and it has been changed as a
+            # response) this will have no effect due to the 'WHERE' clause.
+            with self.con:
+                self.con.execute(
+                    "UPDATE workers SET invalid_port = True WHERE port = ?", (port,)
+                )
+
+    def remote_forwarding(self):
+        """Create remote-forwarding command if needed.
+
+        Returns:
+            tuple: Remote-forwarding command.
+
+        """
+        ssh_command = ()
+        if self.hostname == self.scheduler_hostname:
+            # If we are on the same host as the scheduler, port forwarding would be
+            # counterproductive.
+            return ssh_command
+
+        if not all(
+            self.con.execute(
+                "SELECT EXISTS(SELECT * FROM remote_forwards WHERE port = ?)",
+                (self.port,),
+            )
+        ):
+            # Our port has not been remote-forwarded (or output) yet.
+            if self.output_already:
+                raise RemoteForwardOutputError(
+                    "Our port has been remote-forwarded already, but not output."
+                )
+            try:
+                # Register this new remote forward in the database.
+                with self.con:
+                    self.con.execute(
+                        "INSERT INTO remote_forwards VALUES (?, ?)",
+                        (self.name, self.port),
+                    )
+                # Create the remote forwarding command.
+                ssh_command = ("-R " + ":".join((f"localhost:{self.port}",) * 2),)
+
+                # Output worker port.
+                self.logger.info(
+                    f"Writing worker port {self.port} to file {self.output_file}."
+                )
+                if self.debug:
+                    print("Port:", self.port)
+                else:
+                    with open(self.output_file, "w") as f:
+                        f.write(str(self.port) + "\n")
+
+                self.output_already = True
+
+            except IntegrityError as integrity_error:
+                # This could happen if another process on the same node was already
+                # carrying out the identical transaction at the time we requested the
+                # transaction. If unchecked, this would lead to identical SSH
+                # forwarding commands being issued, which the TRIGGER avoids.
+                # NOTE: In this case (remote forwarding) each worker carries out their
+                # own forwarding, so this should never happen. The same is not true
+                # for local forwarding, which happens on a first come, first served
+                # basis and therefore has to be coordinated like this (or only one
+                # worker per host could be made responsible for it).
+                self.logger.error(
+                    f"Possible race condition intercepted: {integrity_error}"
+                )
+        return ssh_command
+
+    def local_forwarding(self):
+        """Create local-forwarding command if needed.
+
+        Returns:
+            tuple: Local-forwarding command.
+
+        """
+        ssh_command = ()
+
+        if self.hostname == self.scheduler_hostname:
+            # If we are on the same host as the scheduler, port forwarding would be
+            # counterproductive.
+            return ssh_command
+
+        # Determine ports which belong to workers on other nodes (but never the
+        # scheduler, since it doesn't have a real port). Ports are guaranteed to be
+        # unique due to the uniqueness constraint on the port column.
+        ext_ports = set(
+            self.con.execute(
+                "SELECT port FROM workers WHERE hostname != ? AND name != 'scheduler'",
+                (self.hostname,),
+            )
+        )
+
+        # The foreign key constraints ensure that all ports (and worker names) found
+        # in the 'local_forwards' and 'remote_forwards' tables are already recorded in
+        # the 'workers' table.
+        existing_local_forwards = set(
+            self.con.execute(
+                """
+                SELECT local_forwards.port
+                FROM local_forwards INNER JOIN workers USING(name)
+                WHERE workers.hostname = ?""",
+                (self.hostname,),
+            )
+        )
+
+        assert ext_ports.issuperset(
+            existing_local_forwards
+        ), "All local forwards should be associated with workers on other nodes."
+
+        # Which of those ports have not been forwarded yet on our host.
+        new_ports = ext_ports.difference(existing_local_forwards)
+        for new_port in new_ports:
+            # There are matching ports that have not been locally forwarded yet.
+            try:
+                # Register the new local forward in the database.
+                with self.con:
+                    self.con.execute(
+                        "INSERT INTO local_forwards VALUES (?, ?)",
+                        (self.name, new_port),
+                    )
+                # Create the corresponding local forwarding command.
+                ssh_command += ("-L " + ":".join((f"localhost:{new_port}",) * 2),)
+            except IntegrityError as integrity_error:
+                # See the remote forwarding case above.
+                self.logger.error(
+                    f"Possible race condition intercepted: {integrity_error}"
+                )
+        return ssh_command
+
+    def increment_counter(self):
+        """Increment our keepalive-counter."""
+        with self.con:
+            # Fetch counter.
+            current_counter = self.con.execute(
+                "SELECT counter FROM workers WHERE name = ?", (self.name,)
+            ).fetchone()
+            # Increment and write back.
+            self.con.execute(
+                "UPDATE workers SET counter = ? WHERE name = ?",
+                (current_counter + 1, self.name),
+            )
+
+    def clear(self, name=None):
+        """To be called when this worker exits upon encountering an error.
+
+        Remove all rows relevant to the specified worker.
+        If our own worker is cleared, also stop the synchronisation loop.
+
+        Args:
+            name (str): Name of the worker to clear. Defaults to `self.name`.
+
+        """
+        if name is None:
+            name = self.name
+            port = self.port
+        else:
+            port = self.con.execute(
+                "SELECT port FROM workers WHERE name = ?", (name,)
+            ).fetchone()
+        self.logger.warning(f"Clearing worker {name} with port {port}.")
+        with self.con:
+            self.con.execute(
+                f"DELETE FROM local_forwards WHERE name = ? OR port = ?", (name, port)
+            )
+            for table in ("remote_forwards", "workers"):
+                self.con.execute(f"DELETE FROM {table} WHERE name = ?", (name,))
+
+        if name == self.name:
+            # Cancel the repeated execution of the synchronisation loop.
+            self.scheduler.cancel()
+
+    @property
+    def locked_port(self):
+        """If our port is being forwarded, then we are no longer able to change it."""
+        # TODO: What happens when our port goes from forwarded -> not-forwarded?
+        # Eg. when the worker responsible for forwarding dies.
+        if not self._locked_port:
+            if self.timeout_exceeded():
+                # Optimisation - we save a query if the timeout has not expired yet.
+                self._locked_port = self.port in self.all_forwarded_ports
+        return self._locked_port
+
+    def port_is_locked(self, port=None):
+        """Check if `port` is locked.
+
+        If `port` is being forwarded, we are no longer able to change it.
+
+        Args:
+            port (int): Port to check. If None (default), check our own port.
+
+        Returns:
+            bool: Whether the port is locked.
+
+        """
+        if port is None:
+            return self.locked_port
+        if self.timeout_exceeded():
+            # Optimisation - we save a query if the timeout has not expired yet.
+            return port in self.all_forwarded_ports
+        return False
+
+    def get_new_port(self):
+        """Select a different port."""
+        for _ in range(100):
+            # Try for 100 times at most to set a new, unique port.
+            try:
+                with self.con:
+                    self.con.execute(
+                        "UPDATE workers SET port = ?, invalid_port = False WHERE name = ?",
+                        (get_ports()[0], self.name),
+                    )
+                    # Notify other workers that they need to re-check ports.
+                    self.notify()
+                break  # Stop trying to get a new port.
+            except IntegrityError as integrity_error:
+                if str(integrity_error) == "UNIQUE constraint failed: workers.port":
+                    self.logger.debug("Encountered port number clash.")
+                else:
+                    # Do not intercept other errors.
+                    raise
+        else:
+            # No break encountered - the new port was always already present.
+            self.abort("Could not find a suitable unique port. Exit (1).")
+
+    @property
+    def all_forwarded_ports(self):
+        """All ports that are being forwarded across all workers.
+
+        Returns:
+            set: All (globally) forwarded ports.
+
+        """
+        return set(
+            list(self.con.execute("SELECT port FROM local_forwards"))
+            + list(self.con.execute("SELECT port FROM remote_forwards"))
+        )
+
+    @property
+    def host_forwarded_ports(self):
+        """The ports that are being forwarded on our host.
+
+        If we are the scheduler, then this is equivalent to `self.all_forwarded_ports`
+        since all ports are forwarded to the scheduler.
+
+        """
+        if self.hostname == self.scheduler_hostname:
+            return self.all_forwarded_ports
+        return set(
+            reduce(
+                add,
+                (
+                    list(
+                        self.con.execute(
+                            f"""
+                            SELECT {forward_tab}.port
+                            FROM {forward_tab} INNER JOIN workers USING(name)
+                            WHERE workers.hostname = ?""",
+                            (self.hostname,),
+                        )
+                    )
+                    for forward_tab in ("local_forwards", "remote_forwards")
+                ),
+            )
+        )
+
+    @property
+    def scheduler_hostname(self):
+        """The remote hostname that ports are forwarded to."""
+        return self.con.execute(
+            "SELECT hostname FROM workers WHERE name = 'scheduler'"
+        ).fetchone()
+
+    @property
+    def n_workers(self):
+        return self.con.execute("SELECT COUNT(*) FROM workers").fetchone()
+
+    def any_invalid_ports(self):
+        return any(self.con.execute("SELECT invalid_port FROM workers"))
+
+    def port_is_invalid(self, port=None):
+        """Check if port is invalid.
+
+        Args:
+            port (int): Port to check. If None (default), check our own port.
+
+        Returns:
+            bool: Whether the port is invalid.
+
+        """
+        if port is None:
+            port = self.port
+        return any(
+            self.con.execute("SELECT invalid_port FROM workers WHERE port = ?", (port,))
+        )
+
+    def notify(self, hostname=None):
+        """Notify other workers that our state has changed by resetting everyone."""
+        with self.con:
+            if hostname is None:
+                self.logger.info("Notifying other workers.")
+                self.con.execute("UPDATE workers SET ready = False")
+            else:
+                self.logger.info(f"Notifying other workers on {hostname}.")
+                self.con.execute(
+                    "UPDATE workers SET ready = False WHERE hostname = ?", (hostname,)
+                )
+        self.logger.debug("Finished notifying other workers.")
+
+    def kill_procs(self):
+        for proc in self.ssh_procs:
+            proc.kill()
+
+    def timeout_exceeded(self):
+        if self.con.execute("SELECT exceeded FROM timeout_exceeded").fetchone() is None:
+            if (time() - self.start_time) > self.initial_timeout:
+                # We have now surpassed the initial timeout, so we need to write
+                # this back to the database.
+                with self.con:
+                    self.con.execute("INSERT INTO timeout_exceeded VALUES (True)")
+                return True
+            return False
+        return True
+
+    def abort(self, msg=None):
+        """Abort and signal the error to the job submission script."""
+        self.logger.critical("Encountered error. Exit (1)." if msg is None else msg)
+        if self.debug:
+            print("Port:", -1)
+        else:
+            with open(self.output_file, "w") as f:
+                f.write("-1\n")
+        self.clear()
+        sys.exit(1)
 
 
 def main():
-    enable_logging()
     parser = ArgumentParser(
         description=__doc__, formatter_class=ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        "-p",
-        "--port-file",
-        default=os.path.join(os.path.expanduser("~"), "worker_dir", "ports.json"),
-        help=(
-            "Path to the file used to store each worker's desired worker port and "
-            "other information required for this process."
-        ),
-    )
-    parser.add_argument(
-        "-l",
-        "--lock-file",
-        default=os.path.join(os.path.expanduser("~"), "worker_dir", ".lock"),
-        help=(
-            "Path to the shared lock file, which will be used to coordinate access "
-            "to `port_file`."
-        ),
+        "-d",
+        "--data-file",
+        default=port_sync_args["data_file"].default,
+        help=port_sync_args["data_file"].help,
     )
     parser.add_argument(
         "-t",
-        "--timeout",
-        default=300,
+        "--initial-timeout",
         type=float,
-        help=(
-            "Timeout in seconds before the port synchronisation is concluded. After "
-            "the timeout, any additional workers will be added to the cluster if the "
-            "existing ports are available on the new node, but rejected otherwise. "
-            "The shortest timeout wins."
-        ),
+        default=port_sync_args["initial_timeout"].default,
+        help=port_sync_args["initial_timeout"].help,
     )
     parser.add_argument(
         "-i",
         "--poll-interval",
-        default=10,
         type=float,
-        help="Interval in seconds between file read operations.",
+        default=port_sync_args["poll_interval"].default,
+        help=port_sync_args["poll_interval"].help,
     )
     parser.add_argument(
-        "-s",
-        "--scheduler",
-        action="store_true",
-        help="Identify this process as the scheduler.",
+        "-s", "--scheduler", action="store_true", help=port_sync_args["scheduler"].help
     )
     parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Only print out ssh commands instead of executing them.",
+        "--debug", action="store_true", help=port_sync_args["debug"].help
     )
     parser.add_argument(
-        "--output-file",
+        "--output-file", nargs="?", help=port_sync_args["output_file"].help
+    )
+    parser.add_argument(
+        "--ssh-opts",
         nargs="?",
-        help=(
-            "Path to the file where the worker port will be written to. If not "
-            "supplied, the worker port will be printed to stdout instead."
-        ),
+        default=" ".join(port_sync_args["ssh_opts"].default),
+        help=port_sync_args["ssh_opts"].help,
     )
-
+    parser.add_argument("--hostname", nargs="?", help=port_sync_args["ssh_opts"].help)
+    parser.add_argument("--port", type=int, nargs="?", help=port_sync_args["port"].help)
+    parser.add_argument(
+        "--keepalive-intervals",
+        type=int,
+        nargs="?",
+        help=port_sync_args["keepalive_intervals"].help,
+    )
     args = parser.parse_args()
 
-    sync_worker_ports(
-        args.port_file,
-        args.lock_file,
-        args.timeout,
+    enable_logging(level=logging.DEBUG if args.debug else logging.INFO)
+
+    PortSync(
+        args.data_file,
+        args.initial_timeout,
         args.poll_interval,
         args.scheduler,
         args.debug,
         args.output_file,
-    )
+        tuple(shlex.split(args.ssh_opts)),
+        args.hostname,
+        args.port,
+        args.keepalive_intervals,
+    ).run()
 
 
 if __name__ == "__main__":
