@@ -132,11 +132,15 @@ class Scheduler:
         interval_diff = next_intervals - self.n_intervals
 
         if interval_diff != 1:
+            if interval_diff < 1:
+                logger.error(
+                    f"Calculated {interval_diff} required intervals "
+                    f"at iteration {self.iterations}."
+                )
             # Warn, and fix number of intervals.
             fixed_interval_diff = max((1, interval_diff))
             logger.error(
-                f"n_intervals {interval_diff} encountered at iteration "
-                f"{self.iterations}. Choosing {fixed_interval_diff}. "
+                f"Need {fixed_interval_diff} intervals at iteration {self.iterations}."
                 f"Consider increasing the interval (currently {self.interval:0.2e} s)."
             )
             interval_diff = fixed_interval_diff
@@ -311,7 +315,9 @@ class PortSync:
 
         if not os.path.isfile(data_file):
             self.logger.info(f"Database file {data_file} was not found.")
-        self.con = sqlite3.connect(data_file, timeout=10)
+        self.con = sqlite3.connect(data_file, timeout=40)
+        # TODO: Is this strictly necessary?
+        atexit.register(self.con.close)
         # Create the necessary tables.
         # Using foreign key constraints, ensure that local and remote forwarding
         # entries have corresponding pre-existing worker name and port entries in the
@@ -524,48 +530,55 @@ class PortSync:
 
     def _sync_iteration(self):
         """A synchronisation iteration which is looped using a scheduler."""
-        if self.is_scheduler:
-            # Check the worker counters to detect inactive workers.
-            for worker_id, counter in self.con.execute(
-                "SELECT name, counter FROM workers WHERE name != 'scheduler'"
-            ):
-                if worker_id in self.counters:
-                    if counter == self.counters[worker_id]:
-                        # The counter has not changed - a dead worker?
-                        self.missed_counts[worker_id] += 1
-                        if self.missed_counts[worker_id] > self.keepalive_intervals:
-                            # The worker is unresponsive - assume it is dead.
-                            self.clear(worker_id)
+        try:
+            if self.is_scheduler:
+                # Check the worker counters to detect inactive workers.
+                for worker_id, counter in self.con.execute(
+                    "SELECT name, counter FROM workers WHERE name != 'scheduler'"
+                ):
+                    if worker_id in self.counters:
+                        if counter == self.counters[worker_id]:
+                            # The counter has not changed - a dead worker?
+                            self.missed_counts[worker_id] += 1
+                            if self.missed_counts[worker_id] > self.keepalive_intervals:
+                                # The worker is unresponsive - assume it is dead.
+                                self.clear(worker_id)
+                        else:
+                            # Record the new counter value and reset the missed counts.
+                            self.counters[worker_id] = counter
+                            self.missed_counts[worker_id] = 0
                     else:
-                        # Record the new counter value and reset the missed counts.
                         self.counters[worker_id] = counter
-                        self.missed_counts[worker_id] = 0
-                else:
-                    self.counters[worker_id] = counter
-            self.print_status()
-        if (
-            all(self.con.execute("SELECT ready FROM workers"))
-            and self.timeout_exceeded()
-        ):
-            # If every host has checked the ports and the initial sync timeout has
-            # passed, we are ready to start issuing forwarding commands.
-            self.logger.info(
-                f"All {self.n_workers} workers are ready. Our port: {self.port}."
-            )
-            # Print ports.
-            self.output()
-        elif all(
-            self.con.execute("SELECT ready FROM workers WHERE name = ?", (self.name,))
-        ):
-            # Any worker on our host has already checked the ports locally.
-            self.logger.info("Our host is ready. Waiting for other hosts or timeout.")
-        else:
-            # If we are not ready, check the ports on our host.
-            self.logger.info("Checking ports.")
-            self.check_ports()
+                self.print_status()
+            if (
+                all(self.con.execute("SELECT ready FROM workers"))
+                and self.timeout_exceeded()
+            ):
+                # If every host has checked the ports and the initial sync timeout has
+                # passed, we are ready to start issuing forwarding commands.
+                self.logger.info(
+                    f"All {self.n_workers} workers are ready. Our port: {self.port}."
+                )
+                # Print ports.
+                self.output()
+            elif all(
+                self.con.execute(
+                    "SELECT ready FROM workers WHERE name = ?", (self.name,)
+                )
+            ):
+                # Any worker on our host has already checked the ports locally.
+                self.logger.info(
+                    "Our host is ready. Waiting for other hosts or timeout."
+                )
+            else:
+                # If we are not ready, check the ports on our host.
+                self.logger.info("Checking ports.")
+                self.check_ports()
 
-        # Signal that we are still alive.
-        self.increment_counter()
+            # Signal that we are still alive.
+            self.increment_counter()
+        except Exception:
+            self.logger.exception("Encountered error.")
 
     def check_ports(self):
         # TODO: Include dynamic removal of workers - replicate any lost local port
@@ -997,6 +1010,7 @@ class PortSync:
 
     def kill_procs(self):
         for proc in self.ssh_procs:
+            self.logger.warning(f"Killing: {proc}.")
             proc.kill()
 
     def timeout_exceeded(self):
