@@ -44,6 +44,8 @@ from subprocess import Popen
 from textwrap import dedent, wrap
 from time import monotonic, time
 
+import pandas as pd
+
 from wildfires.logging_config import enable_logging
 
 from .ports import get_ports
@@ -300,6 +302,10 @@ class PortSync:
         # logger = logging.getLogger(self.__class__.__name__)
         self.logger = LoggerAdapter(logger, self.name, self.hostname)
 
+        self.ssh_procs = []
+        atexit.register(self.kill_procs)
+        self.scheduler = Scheduler(self.poll_interval, self._sync_iteration)
+
         print("Starting")
         self.logger.info("Starting port number sync.")
 
@@ -452,8 +458,10 @@ class PortSync:
                     f"Worker `port` {port} supplied despite running as scheduler."
                 )
             initial_port = -2
+
             # The scheduler is responsible for clearing unresponsive workers, and so
             # needs to keep track of all workers' counters.
+
             def get_zero():
                 return 0
 
@@ -504,10 +512,6 @@ class PortSync:
 
         self.logger.info(f"Proposing port {self.port}.")
 
-        self.ssh_procs = []
-        atexit.register(self.kill_procs)
-        self.scheduler = Scheduler(self.poll_interval, self._sync_iteration)
-
     @property
     def port(self):
         return self.con.execute(
@@ -538,6 +542,7 @@ class PortSync:
                         self.missed_counts[worker_id] = 0
                 else:
                     self.counters[worker_id] = counter
+            self.print_status()
         if (
             all(self.con.execute("SELECT ready FROM workers"))
             and self.timeout_exceeded()
@@ -1015,6 +1020,52 @@ class PortSync:
                 f.write("-1\n")
         self.clear()
         sys.exit(1)
+
+    def print_status(self):
+        """Print information about the current workers to stdout."""
+        # Add general worker information.
+        workers_columns = (
+            "name",
+            "hostname",
+            "port",
+            "ready",
+            "invalid_port",
+            "counter",
+        )
+        df_columns = workers_columns
+        df_data = tuple(
+            list(row)
+            for row in self.con.execute(
+                f"SELECT {' ,'.join(workers_columns)} FROM workers"
+            )
+        )
+
+        # Add remote forwarding information.
+        df_columns += ("remote forward",)
+        for row in df_data:
+            remote_forward = self.con.execute(
+                "SELECT port FROM remote_forwards WHERE name = ?", (row[0],)
+            ).fetchone()
+            row.append(remote_forward if remote_forward else 0)
+
+        # Add local forwarding information.
+        df_columns += ("local forwards",)
+
+        local_forwards = defaultdict(list)
+        for worker_id, local_forward in self.con.execute(
+            """
+            SELECT workers.name, local_forwards.port
+            FROM workers
+            LEFT JOIN local_forwards ON workers.name=local_forwards.name"""
+        ):
+            local_forwards[worker_id].append(local_forward)
+
+        assert workers_columns[0] == "name"
+        for row in df_data:
+            row.append(local_forwards[row[0]])
+
+        df = pd.DataFrame(df_data, columns=df_columns).sort_values(["hostname", "name"])
+        print(df.to_string(index=False))
 
 
 def main():
