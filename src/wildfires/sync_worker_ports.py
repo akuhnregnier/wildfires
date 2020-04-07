@@ -1099,7 +1099,10 @@ def main():
         "--debug", action="store_true", help=port_sync_args["debug"].help
     )
     parser.add_argument(
-        "--output-file", nargs="?", help=port_sync_args["output_file"].help
+        "--output-file",
+        nargs="?",
+        default=port_sync_args["output_file"].default,
+        help=port_sync_args["output_file"].help,
     )
     parser.add_argument(
         "--ssh-opts",
@@ -1107,12 +1110,24 @@ def main():
         default=" ".join(port_sync_args["ssh_opts"].default),
         help=port_sync_args["ssh_opts"].help,
     )
-    parser.add_argument("--hostname", nargs="?", help=port_sync_args["ssh_opts"].help)
-    parser.add_argument("--port", type=int, nargs="?", help=port_sync_args["port"].help)
+    parser.add_argument(
+        "--hostname",
+        nargs="?",
+        default=port_sync_args["hostname"].default,
+        help=port_sync_args["hostname"].help,
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        nargs="?",
+        default=port_sync_args["port"].default,
+        help=port_sync_args["port"].help,
+    )
     parser.add_argument(
         "--keepalive-intervals",
         type=int,
         nargs="?",
+        default=port_sync_args["keepalive_intervals"].default,
         help=port_sync_args["keepalive_intervals"].help,
     )
     args = parser.parse_args()
