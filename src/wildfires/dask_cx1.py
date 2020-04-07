@@ -252,7 +252,10 @@ class CX1Cluster(PBSCluster):
         mod_kwargs.update(
             job_cls=CX1PBSJob,
             extra=list(mod_kwargs.get("extra", []))
-            + "--worker-port $WORKERPORT".split(),
+            + "--worker-port $WORKERPORT --no-dashboard".split(),
+            # TODO: Also forward nanny port (and set to True here again) to enable
+            # more functionality like re-starts and monitoring.
+            nanny=False,
             # NOTE: Simple ssh, NOT autossh is used below, since using autossh
             # resulted in the connection being dropped repeatedly as it was
             # overzealously restarted.
