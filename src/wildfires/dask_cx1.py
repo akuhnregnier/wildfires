@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import shlex
 import socket
 import sys
@@ -43,6 +44,28 @@ class FoundSchedulerError(DaskCX1Error):
 
 class WorkerPortError(DaskCX1Error):
     """Raised when an error while determining worker port numbers."""
+
+
+def walltime_seconds(walltime):
+    """Given a walltime string, return the number of seconds it represents.
+
+    Args:
+        walltime (str): Walltime, eg. '01:00:00'.
+
+    Returns:
+        int: Number of seconds represented by the walltime.
+
+    Raises:
+        ValueError: If an unsupported walltime format is supplied.
+
+    """
+    match = re.fullmatch(r"(\d{1,2}):(\d{1,2}):(\d{1,2})", walltime)
+    if match is None:
+        raise ValueError(
+            f"Expected walltime like '02:30:40', but got {repr(walltime)}."
+        )
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 60 * 60 + int(minutes) * 60 + int(seconds)
 
 
 def get_client(**specs):
@@ -181,8 +204,24 @@ class CX1PBSJob(PBSJob):
         # script, this will be forwarded to the proper scheduler port using local port
         # forwarding.
         command_template = self._command_template.split()
+
+        shutdown_seconds = kwargs.get("shutdown_seconds", 120)
+        timeout = walltime_seconds(kwargs["walltime"]) - shutdown_seconds
+
         command_template[3] = "localhost:$LOCALSCHEDULERPORT"
-        self._command_template = " ".join(command_template)
+        self._command_template = " ".join(
+            [
+                # Allow 2 minutes for setting up and cleaning up.
+                "timeout",
+                "--preserve-status",
+                f"{timeout}s",
+            ]
+            + command_template
+        )
+        # Kill the local worker port sync process.
+        self._command_template += "\nkill $SYNCWORKERPID"
+        # Allow for the cleanup actions initiated by the above to finish.
+        self._command_template += f"\nsleep {shutdown_seconds}"
 
 
 class CX1Cluster(PBSCluster):
@@ -243,10 +282,14 @@ class CX1Cluster(PBSCluster):
         self.sync_stderr_file = open(f"sync_stderr_{file_id}.log", "w")
         self.port_file = os.path.join(os.getcwd(), f"port_sync_{file_id}.db")
 
+        initial_timeout = mod_kwargs.get("initial_timeout", 120)
+        poll_interval = mod_kwargs.get("poll_interval", 10)
+
         sync_worker_ports_exec = (
             "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/"
             f"sync-worker-ports --data-file {self.port_file} "
-            f"--initial-timeout 120 --poll-interval 10 --ssh-opts='{ssh_opts}'"
+            f"--initial-timeout {initial_timeout} --poll-interval {poll_interval} "
+            f"--ssh-opts='{ssh_opts}'"
         )
 
         mod_kwargs.update(
@@ -273,13 +316,14 @@ ssh {ssh_opts} -L localhost:$LOCALSCHEDULERPORT:localhost:{scheduler_port} {host
 # both! The same goes for the other worker ports, since those need to be forwarded as
 # well to enable inter-worker communication.
 #
-# The sync-worker-ports executable is responsible for ssh forwarding of worker
-# ports.
+# The sync-worker-ports executable is responsible for SSH forwarding of worker
+# ports. Its PID is stored for later cleanup.
 #
 WORKERPORTFILE=${{JOBID}}_worker_port
 echo $(date): Starting worker port sync in background.
 echo $(date): Expecting worker port at file $WORKERPORTFILE.
 {sync_worker_ports_exec} --output-file $WORKERPORTFILE &
+SYNCWORKERPID=$!
 #
 # Wait for the worker sync program to write the worker port to the file.
 #
@@ -351,6 +395,7 @@ pgrep -afu ahk114
 
     def __cleanup(self):
         os.remove(self.scheduler_file)
+        self.worker_sync_proc.kill()
         self.sync_stdout_file.close()
         self.sync_stderr_file.close()
 

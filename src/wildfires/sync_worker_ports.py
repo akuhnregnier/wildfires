@@ -31,6 +31,7 @@ import logging
 import math
 import os
 import shlex
+import signal
 import socket
 import sqlite3
 import sys
@@ -290,6 +291,7 @@ class PortSync:
             raise ValueError(f"All SSH options must be strings. Got {repr(ssh_opts)}.")
         self.ssh_opts = ssh_opts
 
+        self.ssh_procs = []
         self.output_already = False
         self._locked_port = False
 
@@ -306,18 +308,27 @@ class PortSync:
         # logger = logging.getLogger(self.__class__.__name__)
         self.logger = LoggerAdapter(logger, self.name, self.hostname)
 
-        self.ssh_procs = []
-        atexit.register(self.kill_procs)
         self.scheduler = Scheduler(self.poll_interval, self._sync_iteration)
 
-        print("Starting")
         self.logger.info("Starting port number sync.")
 
         if not os.path.isfile(data_file):
             self.logger.info(f"Database file {data_file} was not found.")
         self.con = sqlite3.connect(data_file, timeout=40)
-        # TODO: Is this strictly necessary?
+
+        # Ensure a graceful exit when possible. Our own entry will be cleared from the
+        # database, SSH processes killed, and the database connection closed.
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda signum, frame: self.abort(code=signum))
+        # Database connection will be closed last (atexit operates in reverse order).
         atexit.register(self.con.close)
+        # After SSH processes are killed, our entry is removed from the database
+        # prompting other workers on the same host to take over port forwarding if
+        # needed.
+        atexit.register(self.clear)
+        # SSH processes will be removed first.
+        atexit.register(self._kill_ssh_procs)
+
         # Create the necessary tables.
         # Using foreign key constraints, ensure that local and remote forwarding
         # entries have corresponding pre-existing worker name and port entries in the
@@ -542,6 +553,7 @@ class PortSync:
                             self.missed_counts[worker_id] += 1
                             if self.missed_counts[worker_id] > self.keepalive_intervals:
                                 # The worker is unresponsive - assume it is dead.
+                                print(f"Clearing worker: {worker_id}.", flush=True)
                                 self.clear(worker_id)
                         else:
                             # Record the new counter value and reset the missed counts.
@@ -578,7 +590,7 @@ class PortSync:
             # Signal that we are still alive.
             self.increment_counter()
         except Exception:
-            self.logger.exception("Encountered error.")
+            self.logger.exception("Continuing after encountering error.")
 
     def check_ports(self):
         # TODO: Include dynamic removal of workers - replicate any lost local port
@@ -1008,7 +1020,7 @@ class PortSync:
                 )
         self.logger.debug("Finished notifying other workers.")
 
-    def kill_procs(self):
+    def _kill_ssh_procs(self):
         for proc in self.ssh_procs:
             self.logger.warning(f"Killing: {proc}.")
             proc.kill()
@@ -1024,16 +1036,15 @@ class PortSync:
             return False
         return True
 
-    def abort(self, msg=None):
+    def abort(self, msg=None, code=1):
         """Abort and signal the error to the job submission script."""
-        self.logger.critical("Encountered error. Exit (1)." if msg is None else msg)
+        self.logger.critical(f"Exit ({code})." if msg is None else msg)
         if self.debug:
             print("Port:", -1)
         else:
             with open(self.output_file, "w") as f:
                 f.write("-1\n")
-        self.clear()
-        sys.exit(1)
+        sys.exit(code)
 
     def print_status(self):
         """Print information about the current workers to stdout."""
@@ -1079,7 +1090,7 @@ class PortSync:
             row.append(local_forwards[row[0]])
 
         df = pd.DataFrame(df_data, columns=df_columns).sort_values(["hostname", "name"])
-        print(df.to_string(index=False))
+        print(df.to_string(index=False), flush=True)
 
 
 def main():
