@@ -12,7 +12,6 @@ dependencies:
   - dask
   - dask-jobqueue
   - dill
-  - fasteners
   - fiona
   - flake8
   - gitpython
