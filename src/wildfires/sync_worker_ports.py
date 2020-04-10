@@ -1099,9 +1099,12 @@ class PortSync:
     @property
     def scheduler_hostname(self):
         """The remote hostname that ports are forwarded to."""
-        return self.con.execute(
+        hostname = self.con.execute(
             "SELECT hostname FROM workers WHERE name = 'scheduler'"
         ).fetchone()
+        if hostname is None:
+            raise RuntimeError("Scheduler hostname is unavailable.")
+        return hostname
 
     @property
     def n_workers(self):

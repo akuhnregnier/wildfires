@@ -45,6 +45,7 @@ def get_qstat_ncpus():
         return None
     jobs = out.get("Jobs")
     if jobs:
+        pbs_jobid = os.environ["PBS_JOBID"]
         current_hostname = platform.node()
         if not current_hostname:
             current_hostname = socket.gethostname()
@@ -52,8 +53,32 @@ def get_qstat_ncpus():
             logger.error("Hostname could not be determined.")
             return None
 
+        if pbs_jobid:
+            # Try to retrieve number of cpus from our job id.
+            if pbs_jobid not in jobs:
+                logger.warning(
+                    f"PBS job id '{pbs_jobid}' was not found in list of jobs."
+                )
+            else:
+                job = jobs[pbs_jobid]
+                if "exec_host" in job:
+                    # Compare hostname recorded in the job.
+                    exec_host = job["exec_host"].split("/")[0]
+                    if exec_host not in current_hostname:
+                        logger.warning(
+                            f"Our hostname '{current_hostname}' and our job hostname "
+                            f"'{exec_host}' do not match."
+                        )
+                else:
+                    logger.warning(f"exec_host not found for job '{pbs_jobid}'.")
+                ncpus = int(job["Resource_List"]["ncpus"])
+                logger.info("Got ncpus: {} from job '{}'.".format(ncpus, pbs_jobid))
+                return ncpus
+        else:
+            logger.warning("PBS_JOBID environment variable was not found.")
+
         # Loop through each job.
-        for job_name, job in jobs.items():
+        for jobid, job in jobs.items():
             # 'B' only applies to array jobs and indicates that the job has begun.
             if not job["job_state"] in ("R", "B"):
                 logger.debug(
@@ -65,6 +90,7 @@ def get_qstat_ncpus():
             # If we are on the same machine.
             if "exec_host" not in job:
                 # Skip this job if it has no 'exec_host' attribute to compare against.
+                logger.warning(f"exec_host not found for job '{jobid}'.")
                 continue
             exec_host = job["exec_host"].split("/")[0]
             logger.debug(
@@ -76,9 +102,7 @@ def get_qstat_ncpus():
                 # and 'walltime' (eg. '08:00:00').
                 resources = job["Resource_List"]
                 ncpus = resources["ncpus"]
-                logger.info(
-                    "Getting ncpus: {} from job '{}'.".format(ncpus, job["Job_Name"])
-                )
+                logger.info("Got ncpus: {} from job '{}'.".format(ncpus, jobid))
                 return int(ncpus)
     else:
         logger.debug("No running jobs were found.")
