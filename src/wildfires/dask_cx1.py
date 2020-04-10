@@ -59,7 +59,7 @@ def walltime_seconds(walltime):
         ValueError: If an unsupported walltime format is supplied.
 
     """
-    match = re.fullmatch(r"(\d{1,2}):(\d{1,2}):(\d{1,2})", walltime)
+    match = re.fullmatch(r"(\d{1,3}):(\d{1,2}):(\d{1,2})", walltime)
     if match is None:
         raise ValueError(
             f"Expected walltime like '02:30:40', but got {repr(walltime)}."
@@ -289,16 +289,14 @@ class CX1Cluster(PBSCluster):
             "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/"
             f"sync-worker-ports --data-file {self.port_file} "
             f"--initial-timeout {initial_timeout} --poll-interval {poll_interval} "
-            f"--ssh-opts='{ssh_opts}'"
+            f"--ssh-opts='{ssh_opts}'" + (" --nanny" if mod_kwargs.get("nanny") else "")
         )
 
         mod_kwargs.update(
             job_cls=CX1PBSJob,
             extra=list(mod_kwargs.get("extra", []))
-            + "--worker-port $WORKERPORT --no-dashboard".split(),
-            # TODO: Also forward nanny port (and set to True here again) to enable
-            # more functionality like re-starts and monitoring.
-            nanny=False,
+            + "--worker-port $WORKERPORT --no-dashboard".split()
+            + ("--nanny-port $NANNYPORT".split() if mod_kwargs.get("nanny") else []),
             # NOTE: Simple ssh, NOT autossh is used below, since using autossh
             # resulted in the connection being dropped repeatedly as it was
             # overzealously restarted.
@@ -334,7 +332,16 @@ from time import sleep
 while not os.path.isfile("$WORKERPORTFILE"):
     sleep(1)
 with open("$WORKERPORTFILE") as f:
-    print(f.read().strip())
+    ports = f.read().strip().split()
+    if {mod_kwargs.get("nanny")}:
+        if len(ports) != 2:
+            # We expected 2 ports (worker & nanny).
+            print(-1)
+    else:
+        if len(ports) != 1:
+            # We expected 1 port (worker only).
+            print(-1)
+    print(ports[0])
 EOF
 )
 #
@@ -346,6 +353,20 @@ if [[ $WORKERPORT == "-1" ]]; then
     echo Exiting, as an error occurred during port forwarding.
     exit 1
 fi
+#
+# Get nanny port.
+#
+NANNYPORT=$({sys.executable}<<EOF
+if {mod_kwargs.get("nanny")}:
+    with open("$WORKERPORTFILE") as f:
+        ports = f.read().strip().split()
+        print(ports[1])
+else:
+    print('')
+EOF
+)
+#
+{'echo $(date): Got nanny port $NANNYPORT.' if mod_kwargs.get("nanny") else ''}
 #
 echo $(date): Removing worker port file $WORKERPORTFILE.
 rm "$WORKERPORTFILE"

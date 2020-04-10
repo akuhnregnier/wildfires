@@ -30,6 +30,7 @@ import atexit
 import logging
 import math
 import os
+import re
 import shlex
 import signal
 import socket
@@ -37,6 +38,7 @@ import sqlite3
 import sys
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections import OrderedDict, defaultdict, namedtuple
+from datetime import datetime
 from functools import reduce
 from operator import add
 from sched import scheduler
@@ -165,6 +167,7 @@ class Scheduler:
         """Cease to continually execute `action`."""
         if self.next_event is not None:
             self.scheduler.cancel(self.next_event)
+            self.next_event = None
 
 
 class LoggerAdapter(logging.LoggerAdapter):
@@ -236,6 +239,17 @@ port_sync_args = OrderedDict(
         before it is cleared.""",
         2,
     ),
+    nanny=arg_tuple(
+        "bool",
+        "Determine and remote-forward a nanny port in addition to the worker port.",
+        False,
+    ),
+    nanny_port=arg_tuple(
+        "int",
+        "If given, override automatic nanny port determination. "
+        "Requires `--nanny` or `nanny=True`.",
+        None,
+    ),
 )
 
 width = 88
@@ -274,7 +288,12 @@ class PortSync:
         hostname=port_sync_args["hostname"].default,
         port=port_sync_args["port"].default,
         keepalive_intervals=port_sync_args["keepalive_intervals"].default,
+        nanny=port_sync_args["nanny"].default,
+        nanny_port=port_sync_args["nanny_port"].default,
     ):
+        if nanny_port is not None and not nanny:
+            raise ValueError(f"`nanny_port={nanny_port}` given, but `nanny=False`.")
+
         self.start_time = time()
 
         self.initial_timeout = initial_timeout
@@ -290,6 +309,7 @@ class PortSync:
         if not all(isinstance(opt, str) for opt in ssh_opts):
             raise ValueError(f"All SSH options must be strings. Got {repr(ssh_opts)}.")
         self.ssh_opts = ssh_opts
+        self.nanny = nanny
 
         self.ssh_procs = []
         self.output_already = False
@@ -308,7 +328,7 @@ class PortSync:
         # logger = logging.getLogger(self.__class__.__name__)
         self.logger = LoggerAdapter(logger, self.name, self.hostname)
 
-        self.scheduler = Scheduler(self.poll_interval, self._sync_iteration)
+        self.loop_scheduler = Scheduler(self.poll_interval, self._sync_iteration)
 
         self.logger.info("Starting port number sync.")
 
@@ -320,14 +340,7 @@ class PortSync:
         # database, SSH processes killed, and the database connection closed.
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, lambda signum, frame: self.abort(code=signum))
-        # Database connection will be closed last (atexit operates in reverse order).
-        atexit.register(self.con.close)
-        # After SSH processes are killed, our entry is removed from the database
-        # prompting other workers on the same host to take over port forwarding if
-        # needed.
-        atexit.register(self.clear)
-        # SSH processes will be removed first.
-        atexit.register(self._kill_ssh_procs)
+        atexit.register(self.close)
 
         # Create the necessary tables.
         # Using foreign key constraints, ensure that local and remote forwarding
@@ -344,7 +357,8 @@ class PortSync:
                 port INTEGER NOT NULL UNIQUE,
                 ready BOOLEAN,
                 invalid_port BOOLEAN,
-                counter INTEGER NOT NULL
+                counter INTEGER NOT NULL,
+                nanny_port INTEGER UNIQUE
             );
             CREATE TABLE IF NOT EXISTS local_forwards (
                 name VARCHAR NOT NULL,
@@ -353,16 +367,69 @@ class PortSync:
                 FOREIGN KEY(port) REFERENCES workers (port)
             );
             CREATE TABLE IF NOT EXISTS remote_forwards (
-                -- Each worker only remote-forwards their own port.
+                -- Each worker only remote-forwards their own port (and nanny port).
                 name VARCHAR NOT NULL UNIQUE,
                 port INTEGER NOT NULL UNIQUE,
+                nanny_port INTEGER UNIQUE,
                 FOREIGN KEY(name) REFERENCES workers (name),
                 FOREIGN KEY(port) REFERENCES workers (port)
+                FOREIGN KEY(nanny_port) REFERENCES workers (nanny_port)
             );
 
-            -- Triggers to abort a transaction (raising sqlite3.IntegrityError) in
-            -- case a duplicate local or remote forwarding command would be
-            -- attempted on the same host (race condition).
+            -- Triggers raise an sqlite3.IntegrityError to abort a transaction.
+
+            -- Ensure that there are no duplicates across BOTH the port and nanny_port
+            -- columns. The triggers are duplicated for INSERT and UPDATE.
+
+            CREATE TRIGGER IF NOT EXISTS ensure_unique_ports_insert
+            BEFORE INSERT ON workers
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE (ABORT, "Port already exists (worker port or nanny port).")
+                WHERE NEW.port IN (
+                    SELECT port
+                    FROM workers
+                    UNION
+                    SELECT nanny_port
+                    FROM workers
+                ) OR NEW.nanny_port IN (
+                    SELECT port
+                    FROM workers
+                    UNION
+                    SELECT nanny_port
+                    FROM workers
+                );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS ensure_unique_ports_port_update
+            BEFORE UPDATE OF port ON workers
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE (ABORT, "Port already exists (worker port or nanny port).")
+                WHERE NEW.port IN (
+                    SELECT port
+                    FROM workers
+                    UNION
+                    SELECT nanny_port
+                    FROM workers
+                );
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS ensure_unique_ports_nanny_port_update
+            BEFORE UPDATE OF nanny_port ON workers
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE (ABORT, "Port already exists (worker port or nanny port).")
+                WHERE NEW.nanny_port IN (
+                    SELECT port
+                    FROM workers
+                    UNION
+                    SELECT nanny_port
+                    FROM workers
+                );
+            END;
+
+            -- Prevent duplicated local-forwards on the same host (race condition).
 
             CREATE TRIGGER IF NOT EXISTS validate_existing_local_forwards
             BEFORE INSERT ON local_forwards
@@ -381,25 +448,25 @@ class PortSync:
                 );
             END;
 
-            CREATE TRIGGER IF NOT EXISTS validate_existing_remote_forwards
+            -- Ensure each worker only remote-forwards their own port(s).
+
+            CREATE TRIGGER IF NOT EXISTS only_own_remote_forward
             BEFORE INSERT ON remote_forwards
             FOR EACH ROW
             BEGIN
-                SELECT RAISE (ABORT, "Duplicate remote port forwarding attempted.")
+                SELECT RAISE (ABORT, "Attempted remote forward of foreign port.")
                 WHERE EXISTS (
-                    SELECT hostname
+                    SELECT 1
                     FROM workers
-                    WHERE name = NEW.name AND hostname IN (
-                        SELECT hostname
-                        FROM workers
-                        INNER JOIN remote_forwards USING (name)
-                        WHERE remote_forwards.port = NEW.port
-                    )
+                    WHERE port = NEW.port AND name != NEW.name
+                ) OR (
+                    SELECT 1
+                    FROM workers
+                    WHERE nanny_port = NEW.nanny_port AND name != NEW.name
                 );
             END;
 
-            -- Triggers to prevent invalidated ports from being forwarded
-            -- (sqlite3.IntegrityError).
+            -- Prevent invalidated ports from being forwarded.
 
             CREATE TRIGGER IF NOT EXISTS no_invalid_port_local_forward
             BEFORE INSERT ON local_forwards
@@ -425,9 +492,7 @@ class PortSync:
                 );
             END;
 
-
-            -- Trigger to prevent already forwarded ports from being invalidated
-            -- (sqlite3.IntegrityError).
+            -- Trigger to prevent already forwarded ports from being invalidated.
 
             CREATE TRIGGER IF NOT EXISTS no_forwarded_port_invalidation
             BEFORE UPDATE OF invalid_port ON workers
@@ -441,11 +506,13 @@ class PortSync:
                     UNION
                     SELECT port
                     FROM remote_forwards
+                    UNION
+                    SELECT nanny_port
+                    FROM remote_forwards
                 );
             END;
 
-            -- Trigger to prevent already invalidated ports from being added
-            -- (sqlite3.IntegrityError).
+            -- Trigger to prevent already invalidated ports from being added.
 
             CREATE TRIGGER IF NOT EXISTS no_invalid_port_addition
             BEFORE INSERT ON workers
@@ -474,7 +541,13 @@ class PortSync:
                 self.logger.warning(
                     f"Worker `port` {port} supplied despite running as scheduler."
                 )
+            if nanny_port is not None:
+                self.logger.warning(
+                    f"Worker `nanny_port` {nanny_port} supplied despite running as "
+                    "scheduler."
+                )
             initial_port = -2
+            initial_nanny_port = None
 
             # The scheduler is responsible for clearing unresponsive workers, and so
             # needs to keep track of all workers' counters.
@@ -490,10 +563,19 @@ class PortSync:
                 self.logger.debug(
                     "No custom port supplied. Choosing one automatically."
                 )
-                initial_port = None
             else:
                 self.logger.debug(f"Custom port {port} supplied.")
-                initial_port = port
+            initial_port = port
+
+            if nanny:
+                if nanny_port is None:
+                    self.logger.debug(
+                        "No custom nanny port supplied. Choosing one automatically."
+                    )
+                else:
+                    self.logger.debug(f"Custom nanny port {nanny_port} supplied.")
+            # If `nanny == False`, `nanny_port is None` is guaranteed.
+            initial_nanny_port = nanny_port
 
         self.logger.debug("Inserting initial entry.")
 
@@ -502,23 +584,33 @@ class PortSync:
             try:
                 with self.con:
                     self.con.execute(
-                        "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (
                             self.name,
                             self.hostname,
-                            initial_port
-                            if initial_port is not None
-                            else get_ports()[0],
+                            get_ports()[0] if initial_port is None else initial_port,
                             False,
                             False,
                             0,
+                            get_ports()[0]
+                            if not self.is_scheduler
+                            and self.nanny
+                            and initial_nanny_port is None
+                            else initial_nanny_port,
                         ),
                     )
-                    # Notify other workers that they need to re-check ports.
-                    self.notify()
+                    if not self.is_scheduler:
+                        # Notify other workers that they need to re-check ports.
+                        self.notify()
                 break  # Stop trying to get a new port.
             except IntegrityError as integrity_error:
-                if str(integrity_error) == "UNIQUE constraint failed: workers.port":
+                if re.match(
+                    (
+                        "(^Port already exists \(worker port or nanny port\).$"
+                        "|^UNIQUE constraint failed: workers\..*$)"
+                    ),
+                    str(integrity_error),
+                ):
                     self.logger.debug("Encountered port number clash.")
                 else:
                     # Do not intercept other errors.
@@ -528,6 +620,8 @@ class PortSync:
             self.abort("Could not find a suitable unique port. Exit (1).")
 
         self.logger.info(f"Proposing port {self.port}.")
+        if self.nanny:
+            self.logger.info(f"Proposing nanny port {self.nanny_port}.")
 
     @property
     def port(self):
@@ -535,9 +629,15 @@ class PortSync:
             "SELECT port FROM workers WHERE name = ?", (self.name,)
         ).fetchone()
 
+    @property
+    def nanny_port(self):
+        return self.con.execute(
+            "SELECT nanny_port FROM workers WHERE name = ?", (self.name,)
+        ).fetchone()
+
     def run(self):
         """Start synchronisation."""
-        self.scheduler.run()
+        self.loop_scheduler.run()
 
     def _sync_iteration(self):
         """A synchronisation iteration which is looped using a scheduler."""
@@ -561,7 +661,9 @@ class PortSync:
                             self.missed_counts[worker_id] = 0
                     else:
                         self.counters[worker_id] = counter
-                self.print_status()
+                # Print information about the current workers to stdout.
+                print(datetime.now(), "(times may differ between hosts!)", flush=True)
+                print(self, flush=True)
             if (
                 all(self.con.execute("SELECT ready FROM workers"))
                 and self.timeout_exceeded()
@@ -570,6 +672,7 @@ class PortSync:
                 # passed, we are ready to start issuing forwarding commands.
                 self.logger.info(
                     f"All {self.n_workers} workers are ready. Our port: {self.port}."
+                    + (f" Our nanny port: {self.nanny_port}." if self.nanny else "")
                 )
                 # Print ports.
                 self.output()
@@ -593,8 +696,6 @@ class PortSync:
             self.logger.exception("Continuing after encountering error.")
 
     def check_ports(self):
-        # TODO: Include dynamic removal of workers - replicate any lost local port
-        # forwarding on other workers?
         if not self.locked_port and self.any_invalid_ports():
             # If we are still able to change our port, and if any port was unavailable.
             self.logger.warning("Encountered invalid port(s).")
@@ -612,6 +713,101 @@ class PortSync:
                 else:
                     # Only handle the locked database error.
                     raise
+
+    def _check_ports_locally(self):
+        """Check that ports work on our host.
+
+        The scheduler is ignored since it doesn't have a real worker port.
+
+        Raises:
+            sqlite3.OperationalError: If another worker locked the database for too
+                long while checking their own ports.
+
+        """
+        checked_ports = set()
+        with self.con:
+            # Lock the database while we check our ports to avoid other workers
+            # checking the same ports concurrently on our host.
+            # NOTE: This assumes all workers on the same node agree.
+            self.con.execute("BEGIN EXCLUSIVE")
+            for worker_id, port, nanny_port in self.con.execute(
+                "SELECT name, port, nanny_port FROM workers WHERE name != 'scheduler'"
+            ):
+                checked_ports.update((port, nanny_port))
+                self._port_available(worker_id, port)
+                if nanny_port is not None:
+                    self._port_available(worker_id, nanny_port)
+
+            if not self.any_invalid_ports():
+                try:
+                    with self.con:
+                        # Tell other workers that we have checked ports on our host.
+                        self.con.execute(
+                            "UPDATE workers SET ready = True WHERE hostname = ?",
+                            (self.hostname,),
+                        )
+                        if (
+                            set(
+                                self.con.execute(
+                                    """
+                                    SELECT port
+                                    FROM workers
+                                    WHERE name != 'scheduler'
+                                    UNION
+                                    SELECT nanny_port
+                                    FROM workers
+                                    WHERE name != 'scheduler'"""
+                                )
+                            )
+                            != checked_ports
+                        ):
+                            # XXX: With exclusive locking, this should never happen.
+                            # We need to roll back the transaction, since we did not
+                            # check all current ports  (ports may have been modified
+                            # while we carried out our checks).
+                            raise ChangedPortsError()
+                except ChangedPortsError:
+                    self.logger.warning("Ports changed during our availability check.")
+                    self.notify(hostname=self.hostname)
+
+    def _port_available(self, worker_id, port):
+        """Check if a port is available on our host."""
+
+        if port in self.host_forwarded_ports:
+            # Skip ports that have already been forwarded on our host.
+            self.logger.debug(f"Port {port} is already forwarded on this host.")
+            return
+
+        try:
+            self.logger.info(f"Checking port {port}.")
+            socket.socket().bind(("localhost", port))
+        except OSError:
+            # Port is already in use.
+            if port in self.all_forwarded_ports:
+                # TODO: In addition to terminating ourselves, also terminate other
+                # workers on our node (also the dask-worker process!).
+                self.abort(
+                    multiline(
+                        f"""
+                        Port {port} from {worker_id} was forwarded on other hosts (but
+                        not ours), but is unavailable on our host. Since we cannot
+                        change the port (it is already forwarded) we must retire
+                        workers on our host as connection to the cluster is now
+                        impossible. Exit (1)."""
+                    )
+                )
+
+            self.logger.warning(f"Port {port} from {worker_id} is unavailable.")
+            # Note that if the port has been changed since (another process
+            # marked the port as invalid before and it has been changed as a
+            # response) this will have no effect due to the 'WHERE' clause.
+            with self.con:
+                self.con.execute(
+                    "UPDATE workers "
+                    "SET invalid_port = True "
+                    "WHERE port = ? OR nanny_port = ?",
+                    (port,),
+                )
 
     def output(self):
         """Handle outputting worker port and issuing SSH commands.
@@ -636,89 +832,6 @@ class PortSync:
         else:
             self.logger.debug("No new ports to forward.")
 
-    def _check_ports_locally(self):
-        """Check that ports work on our host.
-
-        The scheduler is ignored since it doesn't have a real worker port.
-
-        Raises:
-            sqlite3.OperationalError: If another worker locked the database for too
-                long while checking their own ports.
-
-        """
-        checked_ports = set()
-        with self.con:
-            # Lock the database while we check our ports to avoid other workers
-            # checking the same ports concurrently on our host.
-            # NOTE: This assumes all workers on the same node agree.
-            self.con.execute("BEGIN EXCLUSIVE")
-            for worker_id, port in self.con.execute(
-                "SELECT name, port FROM workers WHERE name != 'scheduler'"
-            ):
-                checked_ports.add(port)
-                self._port_available(worker_id, port)
-
-            if not self.any_invalid_ports():
-                try:
-                    with self.con:
-                        # Tell other workers that we have checked ports on our host.
-                        self.con.execute(
-                            "UPDATE workers SET ready = True WHERE hostname = ?",
-                            (self.hostname,),
-                        )
-                        if (
-                            set(
-                                self.con.execute(
-                                    "SELECT port FROM workers WHERE name != 'scheduler'"
-                                )
-                            )
-                            != checked_ports
-                        ):
-                            # XXX: With exclusive locking, this should never happen.
-                            # We need to roll back the transaction, since we did not
-                            # check all current ports  (ports may have been modified
-                            # while we carried out our checks).
-                            raise ChangedPortsError()
-                except ChangedPortsError:
-                    self.logger.debug("Ports changed during our availability check.")
-                    self.notify(hostname=self.hostname)
-
-    def _port_available(self, worker_id, port):
-        """Check if a port is available on our host."""
-
-        if port in self.host_forwarded_ports:
-            # Skip ports that have already been forwarded on our host.
-            self.logger.debug(f"Port {port} is already forwarded on this host.")
-            return
-
-        try:
-            self.logger.info(f"Checking port {port}.")
-            socket.socket().bind(("localhost", port))
-        except OSError:
-            # Port is already in use.
-            if port in self.all_forwarded_ports:
-                # TODO: In addition to terminating ourselves, also terminate other
-                # workers on our node.
-                self.abort(
-                    multiline(
-                        f"""
-                        Port {port} from {worker_id} was forwarded on other hosts (but
-                        not ours), but is unavailable on our host. Since we cannot
-                        change the port (it is already forwarded) we must retire
-                        workers on our host as connection to the cluster is now
-                        impossible. Exit (1)."""
-                    )
-                )
-
-            self.logger.warning(f"Port {port} from {worker_id} is unavailable.")
-            # Note that if the port has been changed since (another process
-            # marked the port as invalid before and it has been changed as a
-            # response) this will have no effect due to the 'WHERE' clause.
-            with self.con:
-                self.con.execute(
-                    "UPDATE workers SET invalid_port = True WHERE port = ?", (port,)
-                )
-
     def remote_forwarding(self):
         """Create remote-forwarding command if needed.
 
@@ -739,20 +852,35 @@ class PortSync:
             )
         ):
             # Our port has not been remote-forwarded (or output) yet.
+
+            if self.nanny and all(
+                self.con.execute(
+                    "SELECT EXISTS(SELECT * FROM remote_forwards WHERE nanny_port = ?)",
+                    (self.nanny_port,),
+                )
+            ):
+                # Our nanny port has already been forwarded.
+                self.abort(
+                    "While our worker part was not forwarded, our nanny port was."
+                )
+
             if self.output_already:
                 raise RemoteForwardOutputError(
                     "Our port has been remote-forwarded already, but not output."
                 )
-            try:
-                # Register this new remote forward in the database.
-                with self.con:
-                    self.con.execute(
-                        "INSERT INTO remote_forwards VALUES (?, ?)",
-                        (self.name, self.port),
-                    )
-                # Create the remote forwarding command.
-                ssh_command = ("-R " + ":".join((f"localhost:{self.port}",) * 2),)
-
+            # Register this new remote forward in the database.
+            with self.con:
+                self.con.execute(
+                    f"INSERT INTO remote_forwards VALUES (?, ?, ?)",
+                    (self.name, self.port, self.nanny_port),
+                )
+            # Create the remote forwarding command.
+            ssh_command += ("-R " + ":".join((f"localhost:{self.port}",) * 2),)
+            if self.nanny:
+                ssh_command += (
+                    "-R " + ":".join((f"localhost:{self.nanny_port}",) * 2),
+                )
+            if not self.nanny:
                 # Output worker port.
                 self.logger.info(
                     f"Writing worker port {self.port} to file {self.output_file}."
@@ -761,23 +889,21 @@ class PortSync:
                     print("Port:", self.port)
                 else:
                     with open(self.output_file, "w") as f:
-                        f.write(str(self.port) + "\n")
-
-                self.output_already = True
-
-            except IntegrityError as integrity_error:
-                # This could happen if another process on the same node was already
-                # carrying out the identical transaction at the time we requested the
-                # transaction. If unchecked, this would lead to identical SSH
-                # forwarding commands being issued, which the TRIGGER avoids.
-                # NOTE: In this case (remote forwarding) each worker carries out their
-                # own forwarding, so this should never happen. The same is not true
-                # for local forwarding, which happens on a first come, first served
-                # basis and therefore has to be coordinated like this (or only one
-                # worker per host could be made responsible for it).
-                self.logger.error(
-                    f"Possible race condition intercepted: {integrity_error}"
+                        f.write(f"{self.port}\n")
+            else:
+                # Output worker and nanny ports.
+                self.logger.info(
+                    f"Writing worker port {self.port} and nanny port "
+                    f"{self.nanny_port} to file {self.output_file}."
                 )
+                if self.debug:
+                    print("Ports:", self.port, self.nanny_port)
+                else:
+                    with open(self.output_file, "w") as f:
+                        f.write(f"{self.port} {self.nanny_port}\n")
+
+            self.output_already = True
+
         return ssh_command
 
     def local_forwarding(self):
@@ -835,7 +961,13 @@ class PortSync:
                 # Create the corresponding local forwarding command.
                 ssh_command += ("-L " + ":".join((f"localhost:{new_port}",) * 2),)
             except IntegrityError as integrity_error:
-                # See the remote forwarding case above.
+                # This could happen if another process on the same node was already
+                # carrying out the identical transaction at the time we requested the
+                # transaction. If unchecked, this would lead to identical SSH
+                # forwarding commands being issued, which the TRIGGER avoids.
+                # Local forwarding happens on a first come, first served
+                # basis and therefore has to be coordinated like this (or only one
+                # worker per host could be made responsible for it).
                 self.logger.error(
                     f"Possible race condition intercepted: {integrity_error}"
                 )
@@ -854,40 +986,9 @@ class PortSync:
                 (current_counter + 1, self.name),
             )
 
-    def clear(self, name=None):
-        """To be called when this worker exits upon encountering an error.
-
-        Remove all rows relevant to the specified worker.
-        If our own worker is cleared, also stop the synchronisation loop.
-
-        Args:
-            name (str): Name of the worker to clear. Defaults to `self.name`.
-
-        """
-        if name is None:
-            name = self.name
-            port = self.port
-        else:
-            port = self.con.execute(
-                "SELECT port FROM workers WHERE name = ?", (name,)
-            ).fetchone()
-        self.logger.warning(f"Clearing worker {name} with port {port}.")
-        with self.con:
-            self.con.execute(
-                f"DELETE FROM local_forwards WHERE name = ? OR port = ?", (name, port)
-            )
-            for table in ("remote_forwards", "workers"):
-                self.con.execute(f"DELETE FROM {table} WHERE name = ?", (name,))
-
-        if name == self.name:
-            # Cancel the repeated execution of the synchronisation loop.
-            self.scheduler.cancel()
-
     @property
     def locked_port(self):
         """If our port is being forwarded, then we are no longer able to change it."""
-        # TODO: What happens when our port goes from forwarded -> not-forwarded?
-        # Eg. when the worker responsible for forwarding dies.
         if not self._locked_port:
             if self.timeout_exceeded():
                 # Optimisation - we save a query if the timeout has not expired yet.
@@ -920,14 +1021,28 @@ class PortSync:
             try:
                 with self.con:
                     self.con.execute(
-                        "UPDATE workers SET port = ?, invalid_port = False WHERE name = ?",
-                        (get_ports()[0], self.name),
+                        """
+                        UPDATE workers
+                        SET port = ?,{' nanny_port = ?,' if self.nanny else ''}
+                            invalid_port = False
+                        WHERE name = ?""",
+                        (
+                            get_ports()[0],
+                            *((get_ports()[0],) if self.nanny else ()),
+                            self.name,
+                        ),
                     )
                     # Notify other workers that they need to re-check ports.
                     self.notify()
                 break  # Stop trying to get a new port.
             except IntegrityError as integrity_error:
-                if str(integrity_error) == "UNIQUE constraint failed: workers.port":
+                if re.match(
+                    (
+                        "(^Port already exists \(worker port or nanny port\).$"
+                        "|^UNIQUE constraint failed: workers\..*$)"
+                    ),
+                    str(integrity_error),
+                ):
                     self.logger.debug("Encountered port number clash.")
                 else:
                     # Do not intercept other errors.
@@ -947,6 +1062,7 @@ class PortSync:
         return set(
             list(self.con.execute("SELECT port FROM local_forwards"))
             + list(self.con.execute("SELECT port FROM remote_forwards"))
+            + list(self.con.execute("SELECT nanny_port FROM remote_forwards"))
         )
 
     @property
@@ -966,13 +1082,16 @@ class PortSync:
                     list(
                         self.con.execute(
                             f"""
-                            SELECT {forward_tab}.port
+                            SELECT {forward_tab}.{column}
                             FROM {forward_tab} INNER JOIN workers USING(name)
                             WHERE workers.hostname = ?""",
                             (self.hostname,),
                         )
                     )
-                    for forward_tab in ("local_forwards", "remote_forwards")
+                    for forward_tab, column in zip(
+                        ("local_forwards", *("remote_forwards",) * 2),
+                        (*("port",) * 2, "nanny_port"),
+                    )
                 ),
             )
         )
@@ -1020,11 +1139,6 @@ class PortSync:
                 )
         self.logger.debug("Finished notifying other workers.")
 
-    def _kill_ssh_procs(self):
-        for proc in self.ssh_procs:
-            self.logger.warning(f"Killing: {proc}.")
-            proc.kill()
-
     def timeout_exceeded(self):
         if self.con.execute("SELECT exceeded FROM timeout_exceeded").fetchone() is None:
             if (time() - self.start_time) > self.initial_timeout:
@@ -1044,10 +1158,58 @@ class PortSync:
         else:
             with open(self.output_file, "w") as f:
                 f.write("-1\n")
+        self.close()
         sys.exit(code)
 
-    def print_status(self):
-        """Print information about the current workers to stdout."""
+    def close(self):
+        """Clean up."""
+        # If called explicitly, do not clean up later.
+        atexit.unregister(self.close)
+
+        # Kill SSH processes first.
+        self._kill_ssh_procs()
+
+        # After SSH processes are killed, remote our entry from the database,
+        # prompting other workers on our host to take over port forwarding if needed.
+        self.clear()
+
+        # Cancel the repeated execution of the synchronisation loop.
+        self.loop_scheduler.cancel()
+
+        # Close the database connection last.
+        self.con.close()
+
+    def _kill_ssh_procs(self):
+        for proc in self.ssh_procs:
+            self.logger.warning(f"Killing: {proc}.")
+            proc.kill()
+
+    def clear(self, name=None):
+        """To be called when this worker exits upon encountering an error.
+
+        Remove all rows relevant to the specified worker.
+        If our own worker is cleared, also stop the synchronisation loop.
+
+        Args:
+            name (str): Name of the worker to clear. Defaults to `self.name`.
+
+        """
+        if name is None:
+            name = self.name
+            port = self.port
+        else:
+            port = self.con.execute(
+                "SELECT port FROM workers WHERE name = ?", (name,)
+            ).fetchone()
+        self.logger.warning(f"Clearing worker {name} with port {port}.")
+        with self.con:
+            self.con.execute(
+                f"DELETE FROM local_forwards WHERE name = ? OR port = ?", (name, port)
+            )
+            for table in ("remote_forwards", "workers"):
+                self.con.execute(f"DELETE FROM {table} WHERE name = ?", (name,))
+
+    def __str__(self):
         # Add general worker information.
         workers_columns = (
             "name",
@@ -1064,6 +1226,13 @@ class PortSync:
                 f"SELECT {' ,'.join(workers_columns)} FROM workers"
             )
         )
+        # Add nanny port column.
+        df_columns += ("nanny_port",)
+        for row in df_data:
+            nanny_port = self.con.execute(
+                "SELECT nanny_port FROM workers WHERE name = ?", (row[0],)
+            ).fetchone()
+            row.append(nanny_port if nanny_port else 0)
 
         # Add remote forwarding information.
         df_columns += ("remote forward",)
@@ -1072,6 +1241,12 @@ class PortSync:
                 "SELECT port FROM remote_forwards WHERE name = ?", (row[0],)
             ).fetchone()
             row.append(remote_forward if remote_forward else 0)
+        df_columns += ("remote forward nanny",)
+        for row in df_data:
+            nanny_remote_forward = self.con.execute(
+                "SELECT nanny_port FROM remote_forwards WHERE name = ?", (row[0],)
+            ).fetchone()
+            row.append(nanny_remote_forward if nanny_remote_forward else 0)
 
         # Add local forwarding information.
         df_columns += ("local forwards",)
@@ -1090,7 +1265,7 @@ class PortSync:
             row.append(local_forwards[row[0]])
 
         df = pd.DataFrame(df_data, columns=df_columns).sort_values(["hostname", "name"])
-        print(df.to_string(index=False), flush=True)
+        return df.to_string(index=False)
 
 
 def main():
@@ -1155,6 +1330,16 @@ def main():
         default=port_sync_args["keepalive_intervals"].default,
         help=port_sync_args["keepalive_intervals"].help,
     )
+    parser.add_argument(
+        "--nanny", action="store_true", help=port_sync_args["debug"].help
+    )
+    parser.add_argument(
+        "--nanny-port",
+        type=int,
+        nargs="?",
+        default=port_sync_args["nanny_port"].default,
+        help=port_sync_args["nanny_port"].help,
+    )
     args = parser.parse_args()
 
     enable_logging(level=logging.DEBUG if args.debug else logging.INFO)
@@ -1170,6 +1355,8 @@ def main():
         args.hostname,
         args.port,
         args.keepalive_intervals,
+        args.nanny,
+        args.nanny_port,
     ).run()
 
 
