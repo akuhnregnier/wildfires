@@ -12,6 +12,7 @@ from operator import eq, ge
 from random import choice
 from string import ascii_lowercase
 from subprocess import Popen
+from textwrap import dedent
 
 from dask.distributed import Client
 from dask.utils import parse_bytes
@@ -248,6 +249,7 @@ class CX1Cluster(PBSCluster):
                 "to be known to be forwarded)."
             )
         mod_kwargs["processes"] = 1
+        nanny = mod_kwargs["nanny"] = mod_kwargs.get("nanny", True)
 
         # Set default parameters.
         mod_kwargs["cores"] = mod_kwargs.get("cores", DEFAULTS["cores"])
@@ -289,14 +291,31 @@ class CX1Cluster(PBSCluster):
             "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/"
             f"sync-worker-ports --data-file {self.port_file} "
             f"--initial-timeout {initial_timeout} --poll-interval {poll_interval} "
-            f"--ssh-opts='{ssh_opts}'" + (" --nanny" if mod_kwargs.get("nanny") else "")
+            f"--ssh-opts='{ssh_opts}'" + (" --nanny" if nanny else "")
+        )
+
+        get_nanny_port_script = dedent(
+            f"""
+            # Get nanny port.
+            #
+            NANNYPORT=$({sys.executable}<<EOF
+            with open("$WORKERPORTFILE") as f:
+                print(f.read().strip().split()[1])
+            EOF
+            )
+            #
+            echo $(date): Got nanny port $NANNYPORT.
+            #
+            """
+            if nanny
+            else ""
         )
 
         mod_kwargs.update(
             job_cls=CX1PBSJob,
             extra=list(mod_kwargs.get("extra", []))
             + "--worker-port $WORKERPORT --no-dashboard".split()
-            + ("--nanny-port $NANNYPORT".split() if mod_kwargs.get("nanny") else []),
+            + ("--nanny-port $NANNYPORT".split() if nanny else []),
             # NOTE: Simple ssh, NOT autossh is used below, since using autossh
             # resulted in the connection being dropped repeatedly as it was
             # overzealously restarted.
@@ -333,7 +352,7 @@ while not os.path.isfile("$WORKERPORTFILE"):
     sleep(1)
 with open("$WORKERPORTFILE") as f:
     ports = f.read().strip().split()
-    if {mod_kwargs.get("nanny")}:
+    if {nanny}:
         if len(ports) != 2:
             # We expected 2 ports (worker & nanny).
             print(-1)
@@ -354,26 +373,15 @@ if [[ $WORKERPORT == "-1" ]]; then
     exit 1
 fi
 #
-# Get nanny port.
-#
-NANNYPORT=$({sys.executable}<<EOF
-if {mod_kwargs.get("nanny")}:
-    with open("$WORKERPORTFILE") as f:
-        ports = f.read().strip().split()
-        print(ports[1])
-else:
-    print('')
-EOF
-)
-#
-{'echo $(date): Got nanny port $NANNYPORT.' if mod_kwargs.get("nanny") else ''}
-#
+{get_nanny_port_script}
 echo $(date): Removing worker port file $WORKERPORTFILE.
 rm "$WORKERPORTFILE"
-echo $(date): Finished running ssh, starting dask-worker now.
+#
 sleep 1
 echo $(date): Local processes:
 pgrep -afu ahk114
+#
+echo $(date): Finished running ssh, starting dask-worker now.
 """.strip().split(
                 "\n"
             )
