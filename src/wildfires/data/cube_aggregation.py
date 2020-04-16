@@ -23,25 +23,25 @@ import iris.coord_categorisation
 import numpy as np
 from joblib import Memory, Parallel, delayed
 
-import wildfires.data.datasets as wildfire_datasets
-
 from ..joblib.caching import CodeObj, wrap_decorator
 from ..logging_config import LOGGING
 from ..qstat import get_ncpus
 from ..utils import match_shape
 from .datasets import (
     DATA_DIR,
+    IGNORED_DATASETS,
+    Dataset,
     data_is_available,
     dataset_times,
     fill_dataset,
     get_climatology,
+    get_implemented_datasets,
     get_mean,
     get_monthly,
     get_monthly_mean_climatology,
 )
 
 __all__ = (
-    "IGNORED_DATASETS",
     "Datasets",
     "contains",
     "datasets_cache",
@@ -53,18 +53,6 @@ __all__ = (
 logger = logging.getLogger(__name__)
 memory = Memory(location=DATA_DIR if data_is_available() else None, verbose=1)
 
-IGNORED_DATASETS = [
-    "AvitabileAGB",
-    "CRU",
-    "ESA_CCI_Fire",
-    "ESA_CCI_Landcover",
-    "ESA_CCI_Soilmoisture",
-    "ESA_CCI_Soilmoisture_Daily",
-    "GPW_v4_pop_dens",
-    "LIS_OTD_lightning_time_series",
-    "Simard_canopyheight",
-    "Thurner_AGB",
-]
 
 # TODO: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
 
@@ -229,7 +217,7 @@ class Datasets:
     def __init__(self, datasets=None):
         self.datasets = []
         if datasets is not None:
-            if isinstance(datasets, wildfire_datasets.Dataset):
+            if isinstance(datasets, Dataset):
                 self.add(datasets)
             else:
                 for dataset in datasets:
@@ -246,7 +234,7 @@ class Datasets:
         return NotImplemented
 
     def __add__(self, other):
-        if isinstance(other, wildfire_datasets.Dataset):
+        if isinstance(other, Dataset):
             other = (other,)
 
         new_datasets = deepcopy(self)
@@ -257,7 +245,7 @@ class Datasets:
     __radd__ = __add__
 
     def __iadd__(self, other):
-        if isinstance(other, wildfire_datasets.Dataset):
+        if isinstance(other, Dataset):
             other = (other,)
 
         for dataset in other:
@@ -275,7 +263,7 @@ class Datasets:
             return type(self)(self.datasets[index])
         if isinstance(index, str):
             new_index = self.get_index(index)
-        elif isinstance(index, wildfire_datasets.Dataset):
+        elif isinstance(index, Dataset):
             new_index = self.datasets.index(index)
         else:
             new_index = index
@@ -766,31 +754,13 @@ def get_all_datasets(
         `Datasets`: Selection object describing the datasets.
 
     """
-    # TODO: Implement pretty dataset and variable names.
-
-    if pretty_dataset_names is None:
-        pretty_dataset_names = {}
-    if pretty_variable_names is None:
-        pretty_variable_names = {}
-    if ignore_names is None:
-        ignore_names = []
-    selection = Datasets()
-    dataset_names = dir(wildfire_datasets)
-    for dataset_name in [name for name in dataset_names if name not in ignore_names]:
-        logger.debug("Testing if {} is a valid Dataset.".format(dataset_name))
-        obj = getattr(wildfire_datasets, dataset_name)
-        if (
-            obj != wildfire_datasets.Dataset
-            and hasattr(obj, "__mro__")
-            and wildfire_datasets.Dataset in obj.__mro__
-        ):
-            try:
-                dataset = obj()
-                selection.add(dataset)
-            except NotImplementedError:
-                logger.info("{} is not implemented.".format(dataset_name))
-
-    return selection
+    return Datasets(
+        get_implemented_datasets(
+            pretty_dataset_names=pretty_dataset_names,
+            pretty_variable_names=pretty_variable_names,
+            ignore_names=ignore_names,
+        )
+    )
 
 
 def print_datasets_dates(selection):

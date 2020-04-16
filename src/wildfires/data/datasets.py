@@ -24,7 +24,7 @@ import operator
 import os
 import re
 import warnings
-from abc import ABC, abstractmethod
+from abc import ABCMeta, abstractmethod
 from collections import OrderedDict
 from copy import copy, deepcopy
 from datetime import datetime, timedelta
@@ -65,45 +65,13 @@ from ..utils import (
 
 __all__ = (
     "DATA_DIR",
+    "IGNORED_DATASETS",
     "MM_PER_HR_THRES",
     "M_PER_HR_THRES",
-    "AvitabileAGB",
-    "AvitabileThurnerAGB",
-    "CCI_BurnedArea_MERIS_4_1",
-    "CCI_BurnedArea_MODIS_5_1",
-    "CHELSA",
-    "CRU",
-    "CarvalhaisGPP",
-    "CommitMatchError",
-    "Copernicus_SWI",
-    "Dataset",
-    "ERA5_CAPEPrecip",
-    "ERA5_DryDayPeriod",
-    "ERA5_TotalPrecipitation",
-    "ERA5_Temperature",
-    "ESA_CCI_Fire",
-    "ESA_CCI_Landcover",
-    "ESA_CCI_Landcover_PFT",
-    "ESA_CCI_Soilmoisture",
-    "ESA_CCI_Soilmoisture_Daily",
     "Error",
-    "GFEDv4",
-    "GFEDv4s",
-    "GPW_v4_pop_dens",
-    "GSMaP_dry_day_period",
-    "GSMaP_precipitation",
-    "GlobFluo_SIF",
-    "HYDE",
-    "LIS_OTD_lightning_climatology",
-    "LIS_OTD_lightning_time_series",
-    "Liu_VOD",
-    "MCD64CMQ_C6",
-    "MOD15A2H_LAI_fPAR",
+    "CommitMatchError",
     "NonUniformCoordError",
     "ObservedAreaError",
-    "Simard_canopyheight",
-    "Thurner_AGB",
-    "VODCA",
     "cube_contains_coords",
     "data_is_available",
     "data_map_plot",
@@ -133,6 +101,20 @@ __all__ = (
     "regrid_dataset",
     "translate_longitudes",
 )
+
+
+IGNORED_DATASETS = [
+    "AvitabileAGB",
+    "CRU",
+    "ESA_CCI_Fire",
+    "ESA_CCI_Landcover",
+    "ESA_CCI_Soilmoisture",
+    "ESA_CCI_Soilmoisture_Daily",
+    "GPW_v4_pop_dens",
+    "LIS_OTD_lightning_time_series",
+    "Simard_canopyheight",
+    "Thurner_AGB",
+]
 
 
 logger = logging.getLogger(__name__)
@@ -963,7 +945,33 @@ def monthly_constraint(
     )
 
 
-class Dataset(ABC):
+class RegisterDatasets(ABCMeta):
+    """Datasets are registered into a central list to keep track of them.
+
+    If any subclass (dataset) is used as another class's superclass, it is removed
+    from the registry in favour of its subclasses.
+
+    """
+
+    datasets = None
+
+    def __init__(cls, name, bases, namespace):
+        super().__init__(name, bases, namespace)
+        if cls.datasets is None:
+            cls.datasets = set()
+        cls.datasets.add(cls)
+        cls.datasets -= set(bases)
+
+    def __iter__(cls):
+        return iter(cls.datasets)
+
+    def __str__(cls):
+        if cls in cls.datasets:
+            return cls.__name__
+        return f"{cls.__name__}: {', '.join(map(str, cls))}"
+
+
+class Dataset(metaclass=RegisterDatasets):
     # TODO: Make sure these get overridden by the subclasses, or that every
     # dataset uses these consistently (if defining custom date coordinates).
     calendar = "gregorian"
@@ -4388,26 +4396,45 @@ class VODCA(Dataset):
         return self.select_monthly_from_monthly(start, end)
 
 
+def get_implemented_datasets(
+    pretty_dataset_names=None, pretty_variable_names=None, ignore_names=IGNORED_DATASETS
+):
+    """Get all valid datasets defined in the `wildfires.data.datasets` module.
+
+    Args:
+        pretty_variable_names (dict): Dictionary mapping raw to pretty variable names
+            ({raw: pretty, ...}).
+
+    Returns:
+        list of `Dataset`: List of datasets.
+
+    """
+    # TODO: Implement pretty dataset and variable names.
+
+    if pretty_dataset_names is None:
+        pretty_dataset_names = {}
+    if pretty_variable_names is None:
+        pretty_variable_names = {}
+    if ignore_names is None:
+        ignore_names = []
+    dataset_list = []
+    for dataset_cls in Dataset:
+        if str(dataset_cls) in ignore_names:
+            logger.debug(f"Ignoring {dataset_cls}.")
+            continue
+        try:
+            dataset_list.append(dataset_cls())
+        except NotImplementedError:
+            logger.info(f"{dataset_cls} is not implemented.")
+    return dataset_list
+
+
 def dataset_times(datasets=None, dataset_names=None, lat_lon=False):
     """Compile dataset time span information.
 
     Args:
-        datasets (iterable of `Dataset`): If no value is given, defaults to using the
-            following datasets:
-                - AvitabileThurnerAGB(),
-                - CHELSA(),
-                - Copernicus_SWI(),
-                - ESA_CCI_Landcover_PFT(),
-                - GFEDv4(),
-                - GSMaP_precipitation(),
-                - GlobFluo_SIF(),
-                - HYDE(),
-                - LIS_OTD_lightning_time_series(),
-                - Liu_VOD(),
-                - MOD15A2H_LAI_fPAR(),
-                - Simard_canopyheight(),
-                - Thurner_AGB(),
-            Alternatively, a list of Dataset instances can be given.
+        datasets (iterable of `Dataset`): If no value is given, defaults to using all
+            available datasets.
         dataset_names (iterable of `str` or None): The names used for the datasets,
             the number of which should match the number of items in `datasets`. If
             None, use the `dataset.pretty` name for each `Dataset` in `datasets`.
@@ -4420,26 +4447,8 @@ def dataset_times(datasets=None, dataset_names=None, lat_lon=False):
         Otherwise the 3-tuple (None, None, None) will be returned.
 
     """
-    # TODO: Use the 'get_all_datasets' function from cube_aggregation.py here, listing
-    # the excluded datasets only in the docstring. This should make accommodating new
-    # datasets even easier.
     if datasets is None:
-        datasets = [
-            AvitabileThurnerAGB(),
-            CHELSA(),
-            Copernicus_SWI(),
-            ESA_CCI_Landcover_PFT(),
-            GFEDv4(),
-            GSMaP_precipitation(),
-            GlobFluo_SIF(),
-            HYDE(),
-            LIS_OTD_lightning_time_series(),
-            Liu_VOD(),
-            MOD15A2H_LAI_fPAR(),
-            Simard_canopyheight(),
-            Thurner_AGB(),
-        ]
-
+        datasets = get_implemented_datasets()
     if dataset_names is None:
         dataset_names = tuple(dataset.pretty for dataset in datasets)
 
@@ -4560,3 +4569,7 @@ def regions_GFED():
         14: "AUST",
     }
     return regions
+
+
+# Automatically export all Dataset subclass leafs defining individual datasets.
+__all__ = list(set(__all__).union(set(map(str, Dataset))))
