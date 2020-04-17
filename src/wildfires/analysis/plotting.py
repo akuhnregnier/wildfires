@@ -38,6 +38,14 @@ __all__ = (
 logger = logging.getLogger(__name__)
 
 
+class PlottingError(Exception):
+    """Base class for exception in the plotting module."""
+
+
+class MaskedDataError(PlottingError):
+    """Raised when trying to plot fully-masked data."""
+
+
 class FigureSaver:
     """Save figures using pre-defined options and directories.
 
@@ -768,8 +776,13 @@ def cube_plotting(
         cube = dummy_lat_lon_cube(
             cube, lat_lims=dummy_lat_lims, lon_lims=dummy_lon_lims
         )
+    if hasattr(cube.data, "mask"):
+        if np.all(cube.data.mask):
+            raise MaskedDataError("All data is masked.")
 
     if select_valid:
+        if not hasattr(cube.data, "mask"):
+            cube.data = np.ma.MaskedArray(cube.data, mask=False)
         cube, tr_longitudes = select_valid_subset(
             cube, longitudes=cube.coord("longitude").points
         )
