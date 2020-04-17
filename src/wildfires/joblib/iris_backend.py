@@ -81,7 +81,7 @@ class IrisStoreBackend(StoreBackendBase, StoreBackendMixin):
 
         For this backend, valid store options are !!!!
         """
-        # TODO: Options for ris netcdf saver in docstring above!
+        # TODO: Options for iris netcdf saver in docstring above!
 
         if backend_options is None:
             backend_options = {}
