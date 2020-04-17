@@ -5,6 +5,7 @@ import logging
 import logging.config
 import math
 import os
+import warnings
 
 import cartopy.crs as ccrs
 import iris
@@ -19,6 +20,7 @@ from ..data import dummy_lat_lon_cube
 from ..logging_config import LOGGING
 from ..utils import (
     in_360_longitude_system,
+    multiline,
     select_valid_subset,
     translate_longitude_system,
 )
@@ -37,21 +39,23 @@ logger = logging.getLogger(__name__)
 
 
 class FigureSaver:
-    """Saving figures.
+    """Save figures using pre-defined options and directories.
 
     If `debug`, `debug_options` will be used. Otherwise `options` are used.
 
-    Use like to save created figure(s) automatically:
+    Figure(s) are saved automatically:
 
     with FigureSaver("filename"):
         plt.figure()
         ...
 
-    with FigureSaver(("filename", "filename2")):
+    with FigureSaver(("filename1", "filename2")):
         plt.figure()
         ...
         plt.figure()
         ...
+
+    Manual saving using the defined options is also possible.
 
     with FigureSaver() as saver:
         fig = plt.figure()
@@ -81,62 +85,93 @@ class FigureSaver:
         "dpi": 350,
     }
 
-    def __init__(self, filename=None, directory=None, debug=None, **kwargs):
+    def __init__(self, filenames=None, *, directories=None, debug=None, **kwargs):
         """Initialise figure saver.
 
+        The initialised FigureSaver instance can be used repeatedly (as a context
+        manager) to save figures by calling it with at least filenames and optionally
+        directories, debug state, and saving options.
+
         Args:
-            filename ((iterable of) str or None): If None, disable automatic saving. Otherwise the
+            filenames ((iterable of) str or None): If None, disable automatic saving. Otherwise the
                 number of strings passed must match the number of opened figures at
                 the termination of the context manager.
             directory ((iterable of) str or None): The directory to save figures in.
                 If None, use the class default.
             debug (bool or None): If None, use the class default.
+            kwargs: Optional kwargs which are passed to plt.savefig().
 
         """
-        if debug is None:
-            # Reset to default.
-            self.debug = type(self).debug
-        else:
+        # Backwards compatibility.
+        if "filename" in kwargs:
+            warnings.warn(
+                "The `filename` argument is deprecated in favour of the `filenames` "
+                "argument, which takes precedence.",
+                FutureWarning,
+            )
+            # Only use the deprecated argument if the updated version is not used.
+            if filenames is None:
+                filenames = kwargs.pop("filename")
+        if "directory" in kwargs:
+            warnings.warn(
+                "The `directory` argument is deprecated in favour of the `directories` "
+                "argument, which takes precedence.",
+                FutureWarning,
+            )
+            # Only use the deprecated argument if the updated version is not used.
+            if directories is None:
+                directories = kwargs.pop("directory")
+
+        # Set instance defaults.
+        if debug is not None:
             self.debug = debug
 
-        if directory is None:
-            # Reset to default.
-            self.directory = type(self).directory
-        else:
-            self.directory = directory
+        directories = directories if directories is not None else self.directory
 
-        if filename is None:
-            # Disable automatic saving.
-            logger.debug("Automatic saving disabled.")
-            self.filenames = None
-            self.directories = None
-        else:
-            self.filenames = (filename,) if isinstance(filename, str) else filename
-            self.directories = (
-                (self.directory,) if isinstance(self.directory, str) else self.directory
-            )
+        self.directories = (
+            (directories,) if isinstance(directories, str) else directories
+        )
+
+        if filenames is not None:
+            self.filenames = (filenames,) if isinstance(filenames, str) else filenames
 
             if len(self.directories) != 1 and len(self.directories) != len(
                 self.filenames
             ):
                 raise ValueError(
-                    "If more than one directory is given, the number of given directories "
-                    "has to match the number of given file names. Got "
-                    f"{len(self.directories)} directories and {len(self.filenames)} "
-                    "file names."
+                    multiline(
+                        f"""If multiple directories are given, their number has to match
+                        the number of file names, but got {len(self.directories)}
+                        directories and {len(self.filenames)} file names."""
+                    )
                 )
-            if len(self.directories) == 1:
-                self.directories = [self.directories[0]] * len(self.filenames)
 
         self.options = self.debug_options.copy() if self.debug else self.options.copy()
         self.options.update(kwargs)
 
-        self.suffix = (
+    def __call__(self, filenames=None):
+        """Return a copy with the given filenames for figure saving.
+
+        This is meant to be used as a context manager:
+            >>> figure_saver = FigureSaver(**options)  # doctest: +SKIP
+            >>> with figure_saver("filename"):  # doctest: +SKIP
+            ...     plt.figure()  # doctest: +SKIP
+
+        Directories, options, etc... which the FigureSaver instance was initialised
+        with will be used to save the figures.
+
+        """
+        new_inst = type(self)(filenames, directories=self.directories, debug=self.debug)
+        new_inst.options = self.options
+        return new_inst
+
+    @property
+    def suffix(self):
+        return (
             self.options["filetype"]
             if "." in self.options["filetype"]
             else "." + self.options["filetype"]
         )
-        del self.options["filetype"]
 
     def __enter__(self):
         self.old_fignums = plt.get_fignums()
@@ -155,7 +190,7 @@ class FigureSaver:
 
         if len(fignums_save) != len(self.filenames):
             raise RuntimeError(
-                f"Expected {len(self.filenames)} figures, but got {len(fignums_save)}"
+                f"Expected {len(self.filenames)} figures, but got {len(fignums_save)}."
             )
 
         saved_figures = [
@@ -167,16 +202,38 @@ class FigureSaver:
 
         logger.debug(f"Saving figures {saved_figures}.")
 
+        if len(self.directories) == 1:
+            # Adapt to the number of figures.
+            directories = [self.directories[0]] * len(self.filenames)
+        else:
+            directories = self.directories
+
         for fignum, directory, filename in zip(
-            fignums_save, self.directories, self.filenames
+            fignums_save, directories, self.filenames
         ):
             fig = plt.figure(fignum)
             self.save_figure(fig, filename, directory)
 
     def save_figure(self, fig, filename, directory=None):
+        """Save a single figure.
+
+        Args:
+            fig (matplotlib.figure.Figure): Figure to save.
+            filename (str): Filename where the figure will be saved.
+            directory (str): Directory to save the figure in.
+
+        Raises:
+            ValueError: If multiple default directories were specified and no explicit
+                directory is supplied here. Since only one figure is being saved here,
+                it is unclear which directory to choose. In this case, the context
+                manager interface is to be used.
+
+        """
         if directory is None:
+            if len(self.directories) > 1:
+                raise ValueError("More than 1 default directory specified.")
             # Use default.
-            directory = type(self).directory
+            directory = self.directories[0]
 
         filepath = (
             os.path.expanduser(
@@ -187,7 +244,14 @@ class FigureSaver:
 
         logger.debug("Saving figure to '{}'.".format(filepath))
 
-        fig.savefig(filepath, **self.options)
+        fig.savefig(
+            filepath,
+            **{
+                option: value
+                for option, value in self.options.items()
+                if option != "filetype"
+            },
+        )
 
 
 def get_cubes_vmin_vmax(cubes, vmin_vmax_percentiles=(0.0, 100.0)):
