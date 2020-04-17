@@ -19,10 +19,6 @@ cache_dir = mkdtemp("joblib")
 # Make sure the temporary cache directory gets removed after.
 atexit.register(shutil.rmtree, cache_dir)
 memory = Memory(location=cache_dir, backend="iris", verbose=100)
-# memory = Memory(
-#     location=os.environ.get("TMPDIR", "/tmp"), backend="local2", verbose=100
-# )
-# memory = Memory(location=os.environ.get("TMPDIR", "/tmp"), backend="local", verbose=100)
 
 
 @memory.cache(ignore=["cube"])
@@ -57,13 +53,3 @@ def test_iris_backend():
     s3 = sorted(cube_list2.get(), key=lambda cube: cube.name())
     s4 = sorted(iris.cube.CubeList([cube, cube2]), key=lambda cube: cube.name())
     assert all(np.all(cube1.data == cube2.data) for cube1, cube2 in zip(s3, s4))
-
-
-# TODO: @data_availability
-# TODO: def test_avoid_duplicated_caching():
-# TODO: """Make sure that data is not being cached multiple times erroneously."""
-# TODO: # Could be achieved by parsing through the metadata.json files in the cache
-# directory, or by looking at the debug log files.
-# TODO: Ideally, the location of iris_memory would be changed to a temporary directory
-# for the test, the testing functions run twice, and checked that the number of cached
-# files does not change between the first and the second run!
