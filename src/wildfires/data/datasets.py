@@ -2034,10 +2034,8 @@ class Dataset(metaclass=RegisterDatasets):
 
             time_coord.points = num_shifted_dates
 
-            def cube_name_mod_func(s, capitalize=False):
-                if capitalize:
-                    return s + f" {months} Month"
-                return s + f" {months} month"
+            def cube_name_mod_func(s):
+                return s + f" {months} Month"
 
             cube.long_name = cube_name_mod_func(cube.name())
             cube.standard_name = None
@@ -2052,10 +2050,7 @@ class Dataset(metaclass=RegisterDatasets):
                 "__init__": lambda self: None,
                 "_pretty": cls._pretty + f" {months} Month",
                 "pretty_variable_names": dict(
-                    (
-                        cube_name_mod_func(raw),
-                        cube_name_mod_func(pretty, capitalize=True),
-                    )
+                    (cube_name_mod_func(raw), cube_name_mod_func(pretty))
                     for raw, pretty in cls.pretty_variable_names.items()
                 ),
             },
