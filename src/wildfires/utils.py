@@ -6,6 +6,7 @@ import logging
 import os
 from collections import Counter, namedtuple
 from copy import deepcopy
+from textwrap import dedent
 from time import time
 
 import fiona
@@ -838,3 +839,10 @@ def ensure_datetime(datetime_obj):
         return datetime_obj._to_real_datetime()
     except AttributeError:
         return datetime_obj
+
+
+def multiline(s, strip_all_indents=False):
+    if strip_all_indents:
+        return " ".join([dedent(sub) for sub in s.strip().split("\n")])
+    else:
+        return dedent(s).strip().replace("\n", " ")

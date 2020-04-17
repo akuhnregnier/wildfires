@@ -49,8 +49,7 @@ from time import monotonic, time
 
 import pandas as pd
 
-from wildfires.logging_config import enable_logging
-
+from .logging_config import enable_logging
 from .ports import get_ports
 
 logger = logging.getLogger(__name__)
