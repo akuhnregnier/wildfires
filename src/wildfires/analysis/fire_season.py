@@ -19,7 +19,7 @@ from copy import deepcopy
 
 import matplotlib as mpl
 import numpy as np
-from joblib import Memory
+from joblib import Memory, Parallel, delayed
 from scipy.ndimage import label
 from tqdm import tqdm
 
@@ -285,19 +285,17 @@ def thres_fire_season_stats(thres, min_time=None, max_time=None, which="climatol
     if which != "climatology":
         raise NotImplementedError("Check back later.")
     datasets = get_burned_area_datasets()
-    outputs = []
-    for dataset in tqdm(datasets):
-        start_arr, end_arr, size_arr, season_mask, fract_arr = get_fire_season(
+    outputs = Parallel(verbose=20)(
+        delayed(get_fire_season)(
             dataset.cube.data,
             thres,
             quiet=False,
             return_mask=True,
             return_fraction=True,
         )
-        outputs.append(
-            (dataset.name, start_arr, end_arr, size_arr, season_mask, fract_arr)
-        )
-    return outputs
+        for dataset in datasets
+    )
+    return [[dataset.name] + list(output) for dataset, output in zip(datasets, outputs)]
 
 
 if __name__ == "__main__":
