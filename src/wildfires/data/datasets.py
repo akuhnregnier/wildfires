@@ -3521,16 +3521,14 @@ class GlobFluo_SIF(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "GlobFluo_SIF")
-        loaded_cubes = iris.cube.CubeList(
-            [iris.load_cube(os.path.join(self.dir, "*.nc"))]
-        )
+        loaded_cube = iris.load_cube(os.path.join(self.dir, "*.nc"))
 
         # Need to convert to time coordinate, as values are relative to
         # 1582-10-14, which is not supported by the cf_units gregorian
         # calendar (needs to start from 1582-10-15, I think).
 
         # Get the original number of days relative to 1582-10-14 00:00:00.
-        days_since_1582_10_14 = loaded_cubes[0].coords()[0].points
+        days_since_1582_10_14 = loaded_cube.coords()[0].points
         # Define new time unit relative to a supported date.
         new_time_unit = cf_units.Unit(
             "days since 1582-10-16 00:00:00", calendar="gregorian"
@@ -3538,13 +3536,19 @@ class GlobFluo_SIF(Dataset):
         # The corresponding number of days for the new time unit.
         days_since_1582_10_16 = days_since_1582_10_14 - 2
 
-        loaded_cubes[0].remove_coord("time")
+        loaded_cube.remove_coord("time")
         new_time = iris.coords.DimCoord(
             days_since_1582_10_16, standard_name="time", units=new_time_unit
         )
-        loaded_cubes[0].add_dim_coord(new_time, 0)
+        loaded_cube.add_dim_coord(new_time, 0)
 
-        self.cubes = loaded_cubes
+        invalid_mask = np.logical_or(
+            loaded_cube.data.data > 20, loaded_cube.data.data < 0
+        )
+        logger.info(f"Masking {np.sum(invalid_mask)} invalid values for SIF.")
+        loaded_cube.data.mask |= invalid_mask
+
+        self.cubes = iris.cube.CubeList([loaded_cube])
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
@@ -3960,20 +3964,18 @@ class LIS_OTD_lightning_climatology(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "LIS_OTD_lightning_climatology")
-        self.cubes = iris.cube.CubeList(
-            [
-                iris.load(os.path.join(self.dir, "*.nc")).extract_strict(
-                    iris.Constraint(name="Combined Flash Rate Monthly Climatology")
-                )
-            ]
+
+        loaded_cube = iris.load(os.path.join(self.dir, "*.nc")).extract_strict(
+            iris.Constraint(name="Combined Flash Rate Monthly Climatology")
         )
+
         # Fix time units so they do not refer months, as this can't be processed by
         # iris / cf_units.
         # Realign times so they are at the centre of each month.
 
         # Check that existing time coordinate is as expected.
-        assert self.cubes[0].coord("time").units.origin == "months since 2014-1-1 0:0:0"
-        assert all(self.cubes[0].coord("time").points == np.arange(1, 13))
+        assert loaded_cube.coord("time").units.origin == "months since 2014-1-1 0:0:0"
+        assert all(loaded_cube.coord("time").points == np.arange(1, 13))
 
         datetimes = [
             (
@@ -3993,8 +3995,14 @@ class LIS_OTD_lightning_climatology(Dataset):
             standard_name="time",
             units=time_unit,
         )
-        self.cubes[0].coord("time").points = time_coord.points
-        self.cubes[0].coord("time").units = time_coord.units
+        loaded_cube.coord("time").points = time_coord.points
+        loaded_cube.coord("time").units = time_coord.units
+
+        invalid_mask = loaded_cube.data.data < 0
+        logger.info(f"Masking {np.sum(invalid_mask)} invalid values for LIS/OTD.")
+        loaded_cube.data.mask |= invalid_mask
+
+        self.cubes = iris.cube.CubeList([loaded_cube])
 
         # Make sure that the time coordinate is the first coordinate.
         self.cubes = self.get_monthly_data(
@@ -4021,14 +4029,14 @@ class LIS_OTD_lightning_climatology(Dataset):
         """'Broadcast' monthly climatology across the requested time
         period.
 
-        NOTE: Not 'True' monthly data!!
+        NOTE: This is a climatology, and not true monthly data!
 
         This method ignores days.
 
         """
         # TODO: Make this work with lazy data?
 
-        cube = self.cubes[0]
+        cube = self.cube
         assert (
             len(cube.coord("time").points) == 12
         ), "Only meant to be run starting from the initial state, which as 12 months."

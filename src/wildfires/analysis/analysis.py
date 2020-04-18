@@ -218,28 +218,6 @@ def data_processing(
 
     # Filling/processing/cleaning datasets.
 
-    # TODO: Make this kind of processing internal to each Dataset.
-    if "SIF" in list(masked_datasets.raw_variable_names) + list(
-        masked_datasets.pretty_variable_names
-    ):
-        logger.info("Extra processing for 'SIF'.")
-        sif_cube = masked_datasets.select_variables("SIF", inplace=False).cube
-        invalid_mask = np.logical_or(sif_cube.data.data > 20, sif_cube.data.data < 0)
-        logger.info(f"Masking {np.sum(invalid_mask)} invalid values for SIF.")
-        sif_cube.data.mask |= invalid_mask
-
-    # TODO: Make this kind of processing internal to each Dataset.
-    if "Combined Flash Rate Monthly Climatology" in list(
-        masked_datasets.raw_variable_names
-    ) + list(masked_datasets.pretty_variable_names):
-        logger.info("Extra processing for 'Combined Flash Rate Monthly Climatology'.")
-        lightning_cube = masked_datasets.select_variables(
-            "Combined Flash Rate Monthly Climatology", inplace=False
-        ).cube
-        invalid_mask = lightning_cube.data.data < 0
-        logger.info(f"Masking {np.sum(invalid_mask)} invalid values for LIS/OTD.")
-        lightning_cube.data.mask |= invalid_mask
-
     filled_datasets = masked_datasets.copy(deep=True).fill(
         *masks_to_apply, reference_variable=target_variable
     )
