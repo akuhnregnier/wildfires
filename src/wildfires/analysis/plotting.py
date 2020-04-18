@@ -105,7 +105,7 @@ class FigureSaver:
                 number of strings passed must match the number of opened figures at
                 the termination of the context manager.
             directory ((iterable of) str or None): The directory to save figures in.
-                If None, use the class default.
+                If None, use the class default. New directories will be created.
             debug (bool or None): If None, use the class default.
             kwargs: Optional kwargs which are passed to plt.savefig().
 
@@ -153,6 +153,12 @@ class FigureSaver:
                         directories and {len(self.filenames)} file names."""
                     )
                 )
+
+        # Make sure to resolve the home directory.
+        self.directories = tuple(map(os.path.expanduser, self.directories))
+        # Create new directories.
+        for save_dir in self.directories:
+            os.makedirs(save_dir, exist_ok=True)
 
         self.options = self.debug_options.copy() if self.debug else self.options.copy()
         self.options.update(kwargs)

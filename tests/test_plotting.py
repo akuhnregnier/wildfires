@@ -130,3 +130,29 @@ def test_dpi_saving():
 
     for fig in figs:
         plt.close(fig)
+
+
+def test_directory_creation():
+    """New directories should be created if they do not exist.
+
+    This does not apply when the `FigureSaver` default directory is altered
+    without instance creation.
+
+    """
+    figs = []
+    with TemporaryDirectory("plotting") as directory:
+        with FigureSaver(
+            "test1", directories=os.path.join(directory, "test"), debug=False
+        ):
+            figs.append(plt.figure())
+        with FigureSaver(directories=os.path.join(directory, "test"), debug=False)(
+            "test2"
+        ):
+            figs.append(plt.figure())
+
+        assert set(os.listdir(os.path.join(directory, "test"))) == {
+            f"test1.pdf",
+            f"test2.pdf",
+        }
+    for fig in figs:
+        plt.close(fig)
