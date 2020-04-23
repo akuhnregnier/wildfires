@@ -118,8 +118,6 @@ def get_fire_season(
     def null_func(x, *args, **kwargs):
         return x
 
-    prog_func = tqdm if not quiet else null_func
-
     if return_mask:
         season_mask = np.zeros(ba_data.shape, dtype=np.bool_)
 
@@ -162,7 +160,7 @@ def get_fire_season(
 
     if climatology:
         # Iterate only over relevant areas.
-        for xy in prog_func(zip(*indices), total=len(indices[0])):
+        for xy in tqdm(zip(*indices), total=len(indices[0]), disable=quiet):
             cluster = clusters[(slice(None),) + tuple(xy)]
             assert np.any(cluster)
             size = 0
