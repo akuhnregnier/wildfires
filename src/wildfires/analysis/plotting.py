@@ -101,9 +101,10 @@ class FigureSaver:
         directories, debug state, and saving options.
 
         Args:
-            filenames ((iterable of) str or None): If None, disable automatic saving. Otherwise the
-                number of strings passed must match the number of opened figures at
-                the termination of the context manager.
+            filenames ((iterable of) str or None): If None, the FigureSaver instance
+                must be called with a list of filenames for automatic saving.
+                Otherwise the number of strings passed must match the number of opened
+                figures at the termination of the context manager.
             directory ((iterable of) str or None): The directory to save figures in.
                 If None, use the class default. New directories will be created.
             debug (bool or None): If None, use the class default.
