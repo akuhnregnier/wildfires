@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
 """Utilities for the analysis of wildfires."""
+from ._version import version as __version__
 
-__version__ = "0.3.0"
+del _version

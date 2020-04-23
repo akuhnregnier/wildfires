@@ -122,3 +122,6 @@ cx1_files*/
 
 # Generated movies.
 *.mp4
+
+# Package version.
+_version.py
