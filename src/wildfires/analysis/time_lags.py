@@ -29,7 +29,7 @@ memory = Memory(location, backend="cloudpickle", verbose=100)
 
 
 @memory.cache
-def get_data(shift_months=None, selection_variables=None):
+def get_data(shift_months=None, selection_variables=None, masks=None):
     target_variable = "GFED4 BA"
 
     # Creation of new variables.
@@ -55,7 +55,7 @@ def get_data(shift_months=None, selection_variables=None):
 
     selection_datasets = [
         AvitabileThurnerAGB(),
-        CHELSA(),
+        ERA5_Temperature(),
         Copernicus_SWI(),
         ERA5_CAPEPrecip(),
         ERA5_DryDayPeriod(),
@@ -86,7 +86,7 @@ def get_data(shift_months=None, selection_variables=None):
             "TreeAll",
             "pftCrop",
             "pftHerb",
-            "SIF",
+            # "SIF", # TODO: Fix regridding!
             "popd",
             "FAPAR",
             "LAI",
@@ -123,6 +123,7 @@ def get_data(shift_months=None, selection_variables=None):
         use_lat_mask=False,
         use_fire_mask=False,
         target_variable=target_variable,
+        masks=masks,
     )
     return (
         endog_data,

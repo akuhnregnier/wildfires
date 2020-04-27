@@ -131,7 +131,7 @@ def TripleFigureSaver(model_name, *args, **kwargs):
     )
 
 
-def print_dataset_times(datasets, latex=False, lat_lon=False):
+def print_dataset_times(datasets, latex=False, lat_lon=False, logging=False):
     """Print information about the dataset times to stdout."""
     times_df = dataset_times(datasets.datasets, lat_lon=lat_lon)[2]
     if times_df is not None:
@@ -181,11 +181,16 @@ def data_processing(
     sqrt_var_names=None,
     verbose=True,
     use_fire_mask=False,
+    use_land_mask=True,
+    masks=None,
 ):
     """Create datasets for further analysis and model fitting."""
-    # TODO: Make this go through a logger.
-    selection.show("pretty")
-    print_dataset_times(selection, latex=False)
+    selection_representation = selection.state(variable_format="pretty")
+    logger.info(f"Processing selection:\n{selection_representation}.")
+
+    print_dataset_times(selection, latex=False, logging=True)
+
+    # Process datasets.
 
     raw_datasets = prepare_selection(selection, which=which)
     # XXX: This realises data, which is only acceptable since (if) other code accesses
@@ -193,8 +198,6 @@ def data_processing(
     raw_datasets.homogenise_masks()
 
     # Get land mask.
-    # TODO: Check that this works consistently, then it can be removed.
-    assert 1440 == raw_datasets.cubes[0].coord("longitude").points.shape[0]
     land_mask = ~get_land_mask(
         n_lon=raw_datasets.cubes[0].coord("longitude").points.shape[0]
     )
@@ -204,7 +207,9 @@ def data_processing(
     # Make a deep copy so that the original cubes are preserved.
     masked_datasets = raw_datasets.copy(deep=True)
 
-    masks_to_apply = [land_mask]
+    masks_to_apply = list(masks) if masks is not None else []
+    if use_land_mask:
+        masks_to_apply.append(land_mask)
     if use_lat_mask:
         # Define a latitude mask which ignores data beyond 60 degrees, as GSMaP data does
         # not extend to those latitudes.
@@ -218,6 +223,9 @@ def data_processing(
 
     # Filling/processing/cleaning datasets.
 
+    # TODO: Filling should be implemented on a per-dataset basis, for example
+    # substituting 0 biomass in deserts for masked values, instead of the generic
+    # nearest-neighbour approach here.
     filled_datasets = masked_datasets.copy(deep=True).fill(
         *masks_to_apply, reference_variable=target_variable
     )
