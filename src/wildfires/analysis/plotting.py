@@ -102,12 +102,15 @@ class FigureSaver:
 
         Args:
             filenames ((iterable of) str or None): If None, the FigureSaver instance
-                must be called with a list of filenames for automatic saving.
-                Otherwise the number of strings passed must match the number of opened
-                figures at the termination of the context manager.
+                must be called with a list of filenames and used as a context manager
+                for automatic saving. Otherwise, the number of strings passed must
+                match the number of opened figures at the termination of the context
+                manager.
             directory ((iterable of) str or None): The directory to save figures in.
-                If None, use the class default. New directories will be created.
-            debug (bool or None): If None, use the class default.
+                If None, use `FigureSaver.directory`. New directories will be created if
+                they do not exist.
+            debug (bool or None): Select the pre-set settings with which figures will
+                be saved. If None, use `FigureSaver.debug`.
             kwargs: Optional kwargs which are passed to plt.savefig().
 
         """
@@ -164,8 +167,11 @@ class FigureSaver:
         self.options = self.debug_options.copy() if self.debug else self.options.copy()
         self.options.update(kwargs)
 
-    def __call__(self, filenames=None):
-        """Return a copy with the given filenames for figure saving.
+    def __call__(self, filenames=None, sub_directory=None):
+        """Return a copy containing the given filenames for figure saving.
+
+        An optional sub-directory can also be specified for figures saved by the
+        returned object.
 
         This is meant to be used as a context manager:
             >>> figure_saver = FigureSaver(**options)  # doctest: +SKIP
@@ -175,8 +181,19 @@ class FigureSaver:
         Directories, options, etc... which the FigureSaver instance was initialised
         with will be used to save the figures.
 
+        Args:
+            filenames ((iterable of) str): Filenames used to save created figures.
+            sub_directory (str): If given, figures will be saved in a sub-directory
+                `sub_directory` of the pre-specified directory/directories.
+
         """
-        new_inst = type(self)(filenames, directories=self.directories, debug=self.debug)
+        new_inst = type(self)(
+            filenames,
+            directories=[os.path.join(orig, sub_directory) for orig in self.directories]
+            if sub_directory is not None
+            else self.directories,
+            debug=self.debug,
+        )
         new_inst.options = self.options
         return new_inst
 
