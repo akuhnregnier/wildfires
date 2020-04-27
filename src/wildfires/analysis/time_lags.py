@@ -5,6 +5,7 @@ import os
 
 import matplotlib as mpl
 import numpy as np
+import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 
@@ -56,20 +57,21 @@ def get_data(shift_months=None, selection_variables=None, masks=None):
         ERA5_Temperature(),
         Copernicus_SWI(),
         ERA5_CAPEPrecip(),
-        ERA5_DryDayPeriod(),
         ESA_CCI_Landcover_PFT(),
         GFEDv4(),
-        GlobFluo_SIF(),
+        # GlobFluo_SIF(), # TODO: Fix regridding!!
         HYDE(),
-        MOD15A2H_LAI_fPAR(),
-        VODCA(),
     ]
+    # These datasets will potentially be shifted.
+    datasets_to_shift = [ERA5_DryDayPeriod(), MOD15A2H_LAI_fPAR(), VODCA()]
+    selection_datasets += datasets_to_shift
     if shift_months is not None:
-        datasets_to_shift = (ERA5_DryDayPeriod, MOD15A2H_LAI_fPAR, VODCA)
         for shift in shift_months:
             for shift_dataset in datasets_to_shift:
                 selection_datasets.append(
-                    shift_dataset.get_temporally_shifted_dataset(months=-shift)
+                    shift_dataset.get_temporally_shifted_dataset(
+                        months=-shift, deep=False
+                    )
                 )
 
     if selection_variables is None:

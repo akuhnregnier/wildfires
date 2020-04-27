@@ -64,12 +64,12 @@ from ..utils import (
 )
 
 __all__ = (
+    "CommitMatchError",
     "DATA_DIR",
+    "Error",
     "IGNORED_DATASETS",
     "MM_PER_HR_THRES",
     "M_PER_HR_THRES",
-    "Error",
-    "CommitMatchError",
     "NonUniformCoordError",
     "ObservedAreaError",
     "cube_contains_coords",
@@ -589,12 +589,17 @@ def join_adjacent_intervals(intervals):
     return contiguous_intervals
 
 
-def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180), **kwargs):
+def dummy_lat_lon_cube(
+    data, lat_lims=(-90, 90), lon_lims=(-180, 180), monthly=False, **kwargs
+):
     """Construct a cube from data given certain assumptions and optional arguments.
 
     Args:
         lat_lims (2-tuple):
         lon_lims (2-tuple):
+        monthly (bool): If True, the dummy temporal coordinate will have monthly
+            instead of daily increments. Note that this is only used if the
+            `dim_coords_and_dims` keyword argument is not given.
         kwargs:
             Of note are:
                 - dim_coords_and_dims: If supplied, will be use to initialise
@@ -616,19 +621,22 @@ def dummy_lat_lon_cube(data, lat_lims=(-90, 90), lon_lims=(-180, 180), **kwargs)
     if n_dims == 2:
         grid_coords = [(new_lat_coord, 0), (new_lon_coord, 1)]
     else:
-        grid_coords = [
-            (
-                iris.coords.DimCoord(
-                    range(data.shape[0]),
-                    standard_name="time",
-                    var_name="time",
-                    units=cf_units.Unit("days since 1970-01-01", calendar="gregorian"),
-                ),
-                0,
-            ),
-            (new_lat_coord, 1),
-            (new_lon_coord, 2),
-        ]
+        # Define a time coordinate as well.
+        units = cf_units.Unit("days since 1970-01-01", calendar="gregorian")
+        if monthly:
+            num_dates = units.date2num(
+                [
+                    datetime(1970, 1, 1) + relativedelta(months=months)
+                    for months in range(data.shape[0])
+                ]
+            )
+        else:
+            num_dates = list(range(data.shape[0]))
+        time_coord = iris.coords.DimCoord(
+            num_dates, standard_name="time", var_name="time", units=units
+        )
+
+        grid_coords = [(time_coord, 0), (new_lat_coord, 1), (new_lon_coord, 2)]
 
     kwargs_mod = kwargs.copy()
     if "dim_coords_and_dims" in kwargs_mod:
@@ -1332,6 +1340,24 @@ class Dataset(metaclass=RegisterDatasets):
         if len(self.cubes) != 1:
             raise ValueError(f"Expected 1 cube, but found {len(self.cubes)} cubes.")
         return self.cubes[0]
+
+    def copy_cubes_no_data(self):
+        """Copy everything except the cube data.
+
+        This includes cube metadata.
+
+        Returns:
+            `Dataset`: The copied dataset.
+
+        """
+        new_cubelist = iris.cube.CubeList()
+        for cube in self:
+            # Copy everything about the cubes but their data.
+            new_cubelist.append(cube.copy(data=cube.core_data()))
+
+        dataset = copy(self)
+        dataset.cubes = new_cubelist
+        return dataset
 
     def copy(self, deep=False):
         """Make a copy.
@@ -2062,8 +2088,7 @@ class Dataset(metaclass=RegisterDatasets):
 
         return masked_dataset_class()
 
-    @classmethod
-    def get_temporally_shifted_dataset(cls, months=0):
+    def get_temporally_shifted_dataset(self, months=0, deep=False):
         """Derive a new dataset with shifted temporal cubes.
 
         The definition of the sign of the shift is motivated by the investigation of
@@ -2074,13 +2099,28 @@ class Dataset(metaclass=RegisterDatasets):
 
         Args:
             months (int or None): Number of months to shift the "time" coordinates by.
+            deep (bool): If True, copy the underlying data when creating the new
+                dataset.
 
         Returns:
-            An instance of a subclass of `cls` containing the shifted cubes.
+            An instance of a subclass of `type(self)` containing the shifted cubes.
+
+        Raises:
+            ValueError: If `months` is not an integer.
 
         """
-        assert isinstance(months, (int, np.integer))
-        orig_inst = cls()
+        if not isinstance(months, (int, np.integer)):
+            raise ValueError(
+                f"`months` should be an integer. Got type '{type(months)}'."
+            )
+        if deep:
+            # Copy everything.
+            orig_inst = self.copy(deep=True)
+        else:
+            # Copy everything but the underlying data, still making a copy of `self`,
+            # `self.cubes` and the non-data attributes of every cube therein.
+            orig_inst = self.copy_cubes_no_data()
+
         if not months:
             # No shift to be carried out - return instance of original class.
             return orig_inst
@@ -2124,14 +2164,14 @@ class Dataset(metaclass=RegisterDatasets):
         # Instantiate new dataset instance. This will lack any instantiation, which
         # must be replicated by manually assigning to the cubes attribute below.
         new_inst = type(
-            cls.__name__ + f"__{shift_dir}_{abs(months)}_month",
-            (cls,),
+            self.name + f"__{shift_dir}_{abs(months)}_month",
+            (type(self),),
             {
                 "__init__": lambda self: None,
-                "_pretty": cls._pretty + f" {months} Month",
+                "_pretty": self.pretty + f" {months} Month",
                 "pretty_variable_names": dict(
                     (cube_name_mod_func(raw), cube_name_mod_func(pretty))
-                    for raw, pretty in cls.pretty_variable_names.items()
+                    for raw, pretty in type(self).pretty_variable_names.items()
                 ),
             },
         )()
