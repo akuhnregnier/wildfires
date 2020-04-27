@@ -86,6 +86,7 @@ __all__ = (
     "get_dataset_mean_cubes",
     "get_dataset_monthly_cubes",
     "get_mean",
+    "get_memory",
     "get_monthly",
     "get_monthly_mean_climatology",
     "homogenise_cube_attributes",
@@ -141,10 +142,28 @@ def data_is_available():
     return os.path.exists(DATA_DIR)
 
 
+def get_memory(cache_dir="", **kwargs):
+    """Get a joblib Memory object used to cache function results.
+
+    Args:
+        cache_dir (str or None): Joblib cache directory name within
+            `wildfires.data.DATA_DIR`. If None, no caching will be done.
+        **kwargs: Extra arguments passed to `joblib.Memory()`.
+
+    Returns:
+        joblib.memory.Memory: Joblib Memory object.
+
+    """
+    return Memory(
+        location=os.path.join(DATA_DIR, "joblib_cache", cache_dir)
+        if cache_dir is not None and data_is_available()
+        else None,
+        **kwargs,
+    )
+
+
 register_backend()
-iris_memory = Memory(
-    location=DATA_DIR if data_is_available() else None, backend="iris", verbose=0
-)
+iris_memory = get_memory("datasets", backend="iris", verbose=0)
 
 
 class Error(Exception):

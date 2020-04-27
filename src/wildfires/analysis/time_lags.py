@@ -5,7 +5,6 @@ import os
 
 import matplotlib as mpl
 import numpy as np
-from joblib import Memory
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 
@@ -22,8 +21,7 @@ __all__ = ("rf_time_lag_grid_search",)
 logger = logging.getLogger(__name__)
 
 register_backend()
-location = os.path.join(DATA_DIR, "joblib_cachedir")
-memory = Memory(location, backend="cloudpickle", verbose=100)
+memory = get_memory("time_lags", backend="cloudpickle", verbose=100)
 
 # Creating the Data Structures used for Fitting
 

@@ -21,7 +21,7 @@ from pprint import pformat, pprint
 import iris
 import iris.coord_categorisation
 import numpy as np
-from joblib import Memory, Parallel, delayed
+from joblib import Parallel, delayed
 
 from ..joblib.caching import CodeObj, wrap_decorator
 from ..logging_config import LOGGING
@@ -37,6 +37,7 @@ from .datasets import (
     get_climatology,
     get_implemented_datasets,
     get_mean,
+    get_memory,
     get_monthly,
     get_monthly_mean_climatology,
 )
@@ -51,7 +52,7 @@ __all__ = (
 )
 
 logger = logging.getLogger(__name__)
-memory = Memory(location=DATA_DIR if data_is_available() else None, verbose=1)
+memory = get_memory("cube_aggregation", verbose=1)
 
 
 # TODO: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!

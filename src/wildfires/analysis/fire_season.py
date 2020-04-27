@@ -19,7 +19,7 @@ from copy import deepcopy
 
 import matplotlib as mpl
 import numpy as np
-from joblib import Memory, Parallel, delayed
+from joblib import Parallel, delayed
 from scipy.ndimage import label
 from tqdm import tqdm
 
@@ -31,9 +31,7 @@ __all__ = ("thres_fire_season_stats",)
 
 logger = logging.getLogger(__name__)
 
-
-location = os.path.join(DATA_DIR, "joblib_fire_season_cache")
-memory = Memory(location)
+memory = get_memory("fire_season")
 
 
 def get_fire_season(
