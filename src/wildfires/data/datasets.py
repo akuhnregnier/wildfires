@@ -1161,7 +1161,7 @@ class Dataset(metaclass=RegisterDatasets):
                 coord_names.extend(("latitude", "longitude"))
             elif n_dim == 3:
                 coord_names.extend(("time", "latitude", "longitude"))
-            else:
+            elif n_dim > 3:
                 warnings.warn(
                     f"\n{cube}\nin '{type(self)}' at '{id(self)}' has {n_dim} axes "
                     "with unexpected coordinate names."
