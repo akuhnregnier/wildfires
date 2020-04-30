@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Module that simplifies use of various datasets.
 
@@ -42,14 +41,13 @@ import pandas as pd
 import rasterio
 import scipy.ndimage
 from dateutil.relativedelta import relativedelta
+from era5analysis import MonthlyMeanMinMaxWorker, retrieval_processing, retrieve
 from git import Repo
 from iris.time import PartialDateTime
 from joblib import Memory, Parallel, delayed
 from numpy.testing import assert_allclose
 from pyhdf.SD import SD, SDC
 from tqdm import tqdm
-
-from era5analysis import MonthlyMeanMinMaxWorker, retrieval_processing, retrieve
 
 from ..joblib.caching import CodeObj, wrap_decorator
 from ..joblib.iris_backend import register_backend

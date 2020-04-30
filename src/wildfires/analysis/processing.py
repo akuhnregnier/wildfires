@@ -8,8 +8,6 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import r2_score
 
-from ..logging_config import LOGGING
-
 __all__ = (
     "log_map",
     "log_modulus",
@@ -86,7 +84,3 @@ def vif(exog_data):
         # identical.
 
     return pd.DataFrame({"Name": exog_data.columns, "VIF": vifs})
-
-
-if __name__ == "__main__":
-    logging.config.dictConfig(LOGGING)
