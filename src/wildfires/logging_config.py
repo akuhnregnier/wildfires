@@ -98,19 +98,22 @@ def enable_logging(mode="normal", level=None):
     Args:
         mode (str): Which configuration to use. Possible values are "normal" or
             "jupyter".
-        level (logging level): If given, alter the console logger level.
+        level (str or logging level): If given, alter the console logger level. If a
+            string is given, `level.upper()` will be used to retrieve the logging
+            level.
 
     """
     if mode == "normal":
-        if level is not None:
-            LOGGING["handlers"]["console"]["level"] = level
-        logging.config.dictConfig(LOGGING)
+        config_dict = LOGGING.copy()
     elif mode == "jupyter":
-        if level is not None:
-            JUPYTER_LOGGING["handlers"]["console"]["level"] = level
-        logging.config.dictConfig(JUPYTER_LOGGING)
+        config_dict = JUPYTER_LOGGING.copy()
     else:
         raise ValueError(f"Unknown mode '{mode}'.")
+    if level is not None:
+        if isinstance(level, str):
+            level = logging.getLevelName(level.upper())
+        config_dict["handlers"]["console"]["level"] = level
+    logging.config.dictConfig(config_dict)
 
 
 if __name__ == "__main__":
