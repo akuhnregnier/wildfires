@@ -93,7 +93,6 @@ __all__ = (
     "lat_lon_dimcoords",
     "lat_lon_match",
     "load_cubes",
-    "monthly_average_in_dir",
     "monthly_constraint",
     "regions_GFED",
     "regrid",
@@ -281,31 +280,6 @@ def homogenise_cube_attributes(cubes):
         cube.attributes = common_values
 
     return cubes
-
-
-def monthly_average_in_dir(directory):
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", message=((r".*'vod' invalid units 'unitless'.*"))
-        )
-        warnings.filterwarnings(
-            "ignore", message=((r".*'calendar' is not a permitted attribute.*"))
-        )
-        raw_cubes = iris.load(os.path.join(directory, "*.nc"))
-        raw_cubes = iris.cube.CubeList(
-            [
-                cube
-                for cube in raw_cubes
-                if "vegetation optical depth" in cube.name().lower()
-            ]
-        )
-        raw_cubes = raw_cubes.concatenate()
-        assert len(raw_cubes) == 1
-        raw_cube = raw_cubes[0]
-        iris.coord_categorisation.add_month_number(raw_cube, "time")
-        iris.coord_categorisation.add_year(raw_cube, "time")
-
-    return raw_cube.aggregated_by(["month_number", "year"], iris.analysis.MEAN)
 
 
 @wrap_decorator
@@ -4431,7 +4405,7 @@ class VODCA(Dataset):
             # threads has the potential to speed up the averaging.
             # Parallel(n_jobs=get_ncpus(), prefer="threads")(
             Parallel(n_jobs=1, prefer="threads")(
-                delayed(monthly_average_in_dir)(directory)
+                delayed(self._monthly_average_in_dir)(directory)
                 for directory in tqdm(daily_dirs)
             )
         )
@@ -4449,6 +4423,31 @@ class VODCA(Dataset):
         self.cubes = mean_cubes
 
         self.write_cache()
+
+    @staticmethod
+    def _monthly_average_in_dir(directory):
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message=((r".*'vod' invalid units 'unitless'.*"))
+            )
+            warnings.filterwarnings(
+                "ignore", message=((r".*'calendar' is not a permitted attribute.*"))
+            )
+            raw_cubes = iris.load(os.path.join(directory, "*.nc"))
+            raw_cubes = iris.cube.CubeList(
+                [
+                    cube
+                    for cube in raw_cubes
+                    if "vegetation optical depth" in cube.name().lower()
+                ]
+            )
+            raw_cubes = raw_cubes.concatenate()
+            assert len(raw_cubes) == 1
+            raw_cube = raw_cubes[0]
+            iris.coord_categorisation.add_month_number(raw_cube, "time")
+            iris.coord_categorisation.add_year(raw_cube, "time")
+
+        return raw_cube.aggregated_by(["month_number", "year"], iris.analysis.MEAN)
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
