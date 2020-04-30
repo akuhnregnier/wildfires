@@ -754,6 +754,7 @@ def regrid(
     mdtol=1,
     regridder=None,
     return_regridder=False,
+    verbose=False,
 ):
     """Regrid latitudes and longitudes.
 
@@ -775,6 +776,9 @@ def regrid(
         return_regridder (bool): If True, return the regridder which contains the
             interpolation weights. This can be re-used for the same type of regridding
             operation between the same lat-lon grids.
+        verbose (bool): If True, show a progress meter showing the remaining slices.
+            Applies only if `cube` has more coordinates than simply latitude and
+            longitude.
 
     Returns:
         iris.cube.Cube: The interpolated cube.
@@ -833,11 +837,15 @@ def regrid(
         # Iterate over all dimensions but (guaranteed to be preceding) latitude and
         # longitude.
         regridded_cubes = iris.cube.CubeList()
-        for indices in zip(
-            *(
-                ind_arr.flatten()
-                for ind_arr in np.indices(cube.shape[: len(cube.shape) - 2])
-            )
+        indices_lists = [
+            ind_arr.flatten()
+            for ind_arr in np.indices(cube.shape[: len(cube.shape) - 2])
+        ]
+        for indices in tqdm(
+            zip(*indices_lists),
+            total=len(indices_lists[0]),
+            desc="Regridding time slices",
+            disable=not verbose,
         ):
             # Reuse the regridder between subsequent regridding operations.
             regridded_cube, regridder = regrid(
