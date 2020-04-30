@@ -19,6 +19,7 @@ TODO:
 
 """
 import glob
+import pickle
 import logging
 import operator
 import os
@@ -28,7 +29,7 @@ from abc import ABCMeta, abstractmethod
 from collections import OrderedDict
 from copy import copy, deepcopy
 from datetime import datetime, timedelta
-from functools import reduce, wraps
+from functools import partial, reduce, wraps
 
 import cf_units
 import h5py
@@ -774,6 +775,232 @@ def lat_lon_match(
     return False
 
 
+def _2d_regrid(cube, area_weighted, new_latitudes, new_longitudes, mdtol, regridder,
+        return_regridder):
+    """Regrid latitudes and longitudes.
+
+    Expects at least latitude and longitude coordinates.
+
+    Args:
+        cube (iris.cube.Cube): Cube to regrid.
+        area_weighted (bool): If True, perform first order conservative area weighted
+            regridding.
+        new_latitudes (array-like): New grid latitudes.
+        new_longitudes (array-like): New grid longitudes.
+        mdtol (float): Fraction of masked data to tolerate when `area_weighted` is
+            True. If more than this fraction of source cells is missing for a given
+            target cell, the target cell will be masked. If `mdtol=1`, all
+            contributing source cells need to be masked for the resultant cell to be
+            masked.
+        regridder (Iris regridder or str): Iris regridder, or pickled bytes
+            representation thereof. If a bytes object is given, pickle is used to
+            instantiate the regridder before it is used, overriding other settings
+            like `area_weighted`.
+        return_regridder (bool): If True, return the regridder which contains the
+            interpolation weights. This can be re-used for the same type of regridding
+            operation between the same lat-lon grids.
+
+    Returns:
+        iris.cube.Cube: The interpolated cube.
+
+        iris.cube.Cube, iris Regridder: If `return_regridder` is True, the
+        interpolated cube and associated regridder are returned.
+
+    Raises:
+        ValueError: If a coordinate system other than `None` or `WGS84` is
+            encountered.
+
+    """
+    # This is where the core 2D regridding takes place.
+    assert cube_contains_coords(
+        cube, "latitude", "longitude"
+    ), "Need [lat, lon] dimensions for core algorithm."
+
+    WGS84 = iris.coord_systems.GeogCS(
+        semi_major_axis=6378137.0, semi_minor_axis=6356752.314245179
+    )
+    # Make sure coordinate systems are uniform.
+    systems = [
+        cube.coord(coord_name).coord_system for coord_name in ["latitude", "longitude"]
+    ]
+    assert systems[0] == systems[1]
+
+    if systems[0] is None:
+        coord_sys = None
+    elif (systems[0].semi_major_axis == WGS84.semi_major_axis) and (
+        systems[0].semi_minor_axis == WGS84.semi_minor_axis
+    ):
+        logger.debug("Using WGS84 coordinate system for regridding.")
+        coord_sys = WGS84
+        # Fix floating point 'bug' where the inverse flattening of the
+        # coord system that comes with the dataset does not match the
+        # inverse flattening that is calculated by iris upon giving the two
+        # axis parameters above (which do match between the two coordinate
+        # systems). Inverse flattening calculated by iris:
+        # 298.2572235629972, vs that in the Copernicus_SWI dataset:
+        # 298.257223563, which seems like it is simply truncated.
+        for coord_name in ["latitude", "longitude"]:
+            cube.coord(coord_name).coord_system = WGS84
+    else:
+        raise ValueError("Unknown coord_system:{:}".format(systems[0]))
+
+    for coord in [c for c in cube.coords() if c.name() in ["latitude", "longitude"]]:
+        if not coord.has_bounds():
+            coord.guess_bounds()
+
+    if regridder is None:
+        logger.debug("Constructing regridder.")
+        for coord in [new_latitudes, new_longitudes]:
+            coord.coord_system = coord_sys
+
+        grid_coords = [(new_latitudes, 0), (new_longitudes, 1)]
+
+        new_grid = iris.cube.Cube(
+            np.zeros([coord[0].points.size for coord in grid_coords]),
+            dim_coords_and_dims=grid_coords,
+        )
+
+        for coord in new_grid.coords():
+            if not coord.has_bounds():
+                coord.guess_bounds()
+
+        if area_weighted:
+            regridder = iris.analysis.AreaWeighted(mdtol=mdtol).regridder(
+                cube, new_grid
+            )
+        else:
+            regridder = iris.analysis.Linear().regridder(cube, new_grid)
+    elif isinstance(regridder, bytes):
+        logger.debug("Instantiating given regridder.")
+        regridder = pickle.loads(regridder)
+    else:
+        logger.debug("Using given regridder.")
+
+    logger.debug("Cube has lazy data: {}.".format(cube.has_lazy_data()))
+    interpolated_cube = regridder(cube)
+
+    if return_regridder:
+        return interpolated_cube, regridder
+    return interpolated_cube
+
+
+def regrid(
+    cube,
+    area_weighted=False,
+    new_latitudes=get_centres(np.linspace(-90, 90, 721)),
+    new_longitudes=get_centres(np.linspace(-180, 180, 1441)),
+    mdtol=1,
+    regridder=None,
+    return_regridder=False,
+    verbose=False,
+):
+    """Regrid latitudes and longitudes.
+
+    Expects at least latitude and longitude coordinates.
+
+    Args:
+        cube (iris.cube.Cube): Cube to regrid.
+        area_weighted (bool): If True, perform first order conservative area weighted
+            regridding.
+        new_latitudes (array-like): New grid latitudes.
+        new_longitudes (array-like): New grid longitudes.
+        mdtol (float): Fraction of masked data to tolerate when `area_weighted` is
+            True. If more than this fraction of source cells is missing for a given
+            target cell, the target cell will be masked. If `mdtol=1`, all
+            contributing source cells need to be masked for the resultant cell to be
+            masked.
+        regridder (Iris regridder or str): Iris regridder, or pickled bytes
+            representation thereof. If a bytes object is given, pickle is used to
+            instantiate the regridder before it is used, overriding other settings
+            like `area_weighted`.
+        return_regridder (bool): If True, return the regridder which contains the
+            interpolation weights. This can be re-used for the same type of regridding
+            operation between the same lat-lon grids.
+
+    Returns:
+        iris.cube.Cube: The interpolated cube.
+
+        iris.cube.Cube, iris Regridder: If `return_regridder` is True, the
+        interpolated cube and associated regridder are returned.
+
+    Raises:
+        ValueError: If a coordinate system other than `None` or `WGS84` is
+            encountered.
+
+    """
+    # This is where the core 2D regridding takes place.
+    assert cube_contains_coords(
+        cube, "latitude", "longitude"
+    ), "Need [lat, lon] dimensions for core algorithm."
+
+    WGS84 = iris.coord_systems.GeogCS(
+        semi_major_axis=6378137.0, semi_minor_axis=6356752.314245179
+    )
+    # Make sure coordinate systems are uniform.
+    systems = [
+        cube.coord(coord_name).coord_system for coord_name in ["latitude", "longitude"]
+    ]
+    assert systems[0] == systems[1]
+
+    if systems[0] is None:
+        coord_sys = None
+    elif (systems[0].semi_major_axis == WGS84.semi_major_axis) and (
+        systems[0].semi_minor_axis == WGS84.semi_minor_axis
+    ):
+        logger.debug("Using WGS84 coordinate system for regridding.")
+        coord_sys = WGS84
+        # Fix floating point 'bug' where the inverse flattening of the
+        # coord system that comes with the dataset does not match the
+        # inverse flattening that is calculated by iris upon giving the two
+        # axis parameters above (which do match between the two coordinate
+        # systems). Inverse flattening calculated by iris:
+        # 298.2572235629972, vs that in the Copernicus_SWI dataset:
+        # 298.257223563, which seems like it is simply truncated.
+        for coord_name in ["latitude", "longitude"]:
+            cube.coord(coord_name).coord_system = WGS84
+    else:
+        raise ValueError("Unknown coord_system:{:}".format(systems[0]))
+
+    for coord in [c for c in cube.coords() if c.name() in ["latitude", "longitude"]]:
+        if not coord.has_bounds():
+            coord.guess_bounds()
+
+    if regridder is None:
+        logger.debug("Constructing regridder.")
+        for coord in [new_latitudes, new_longitudes]:
+            coord.coord_system = coord_sys
+
+        grid_coords = [(new_latitudes, 0), (new_longitudes, 1)]
+
+        new_grid = iris.cube.Cube(
+            np.zeros([coord[0].points.size for coord in grid_coords]),
+            dim_coords_and_dims=grid_coords,
+        )
+
+        for coord in new_grid.coords():
+            if not coord.has_bounds():
+                coord.guess_bounds()
+
+        if area_weighted:
+            regridder = iris.analysis.AreaWeighted(mdtol=mdtol).regridder(
+                cube, new_grid
+            )
+        else:
+            regridder = iris.analysis.Linear().regridder(cube, new_grid)
+    elif isinstance(regridder, bytes):
+        logger.debug("Instantiating given regridder.")
+        regridder = pickle.loads(regridder)
+    else:
+        logger.debug("Using given regridder.")
+
+    logger.debug("Cube has lazy data: {}.".format(cube.has_lazy_data()))
+    interpolated_cube = regridder(cube)
+
+    if return_regridder:
+        return interpolated_cube, regridder
+    return interpolated_cube
+
+
 def regrid(
     cube,
     area_weighted=False,
@@ -835,21 +1062,50 @@ def regrid(
 
         # Iterate over all dimensions but (guaranteed to be preceding) latitude and
         # longitude.
-        regridded_cubes = iris.cube.CubeList()
-        for indices in zip(
-            *(
-                ind_arr.flatten()
-                for ind_arr in np.indices(cube.shape[: len(cube.shape) - 2])
-            )
-        ):
-            regridded_cubes.append(
-                regrid(
-                    cube[indices],
-                    area_weighted=area_weighted,
-                    new_latitudes=new_latitudes,
-                    new_longitudes=new_longitudes,
+        indices_list = list(
+            zip(
+                *(
+                    ind_arr.flatten()
+                    for ind_arr in np.indices(cube.shape[: len(cube.shape) - 2])
                 )
             )
+        )
+
+        # The first iteration computes the regridder which will then be re-used for
+        # subsequent operations.
+        regridded_cube, regridder = regrid(
+            cube[indices_list[0]],
+            area_weighted=area_weighted,
+            new_latitudes=new_latitudes,
+            new_longitudes=new_longitudes,
+            mdtol=mdtol,
+            regridder=regridder,
+            return_regridder=True,
+        )
+        regridded_cubes = iris.cube.CubeList([regridded_cube])
+
+        # Reuse the regridder for subsequent regridding operations.
+        cached_regrid = partial(
+            regrid,
+            area_weighted=area_weighted,
+            new_latitudes=new_latitudes,
+            new_longitudes=new_longitudes,
+            mdtol=mdtol,
+            regridder=regridder,
+            return_regridder=False,
+        )
+
+        # Allow subsequent operations to be carried out in parallel.
+        regridded_cubes.extend(
+            Parallel()(
+                delayed(cached_regrid)(cube[indices])
+                for indices in tqdm(
+                    indices_list[1:],
+                    desc="Pre-fetching time slices",
+                    disable=not verbose,
+                )
+            )
+        )
 
         to_remove = set(
             [coord.name() for coord in regridded_cubes[0].coords()]
@@ -858,66 +1114,14 @@ def regrid(
             for coord in to_remove:
                 regridded_cube.remove_coord(coord)
                 regridded_cube.remove_coord(coord)
-
+        if return_regridder:
+            return regridded_cubes.merge_cube(), regridder
         return regridded_cubes.merge_cube()
 
-    assert cube_contains_coords(
-        cube, "latitude", "longitude"
-    ), "Need [lat, lon] dimensions for core algorithm."
+    return _2d_regrid(cube=cube, area_weighted=area_weighted, new_latitudes=new_latitudes,
+            new_longitudes=new_longitudes, mdtol=mdtol, regridder=regridder,
+            return_regridder=return_regridder)
 
-    WGS84 = iris.coord_systems.GeogCS(
-        semi_major_axis=6378137.0, semi_minor_axis=6356752.314245179
-    )
-    # Make sure coordinate systems are uniform.
-    systems = [
-        cube.coord(coord_name).coord_system for coord_name in ["latitude", "longitude"]
-    ]
-    assert systems[0] == systems[1]
-
-    if systems[0] is None:
-        coord_sys = None
-    elif (systems[0].semi_major_axis == WGS84.semi_major_axis) and (
-        systems[0].semi_minor_axis == WGS84.semi_minor_axis
-    ):
-        logger.debug("Using WGS84 coordinate system for regridding.")
-        coord_sys = WGS84
-        # Fix floating point 'bug' where the inverse flattening of the
-        # coord system that comes with the dataset does not match the
-        # inverse flattening that is calculated by iris upon giving the two
-        # axis parameters above (which do match between the two coordinate
-        # systems). Inverse flattening calculated by iris:
-        # 298.2572235629972, vs that in the Copernicus_SWI dataset:
-        # 298.257223563, which seems like it is simply truncated.
-        for coord_name in ["latitude", "longitude"]:
-            cube.coord(coord_name).coord_system = WGS84
-    else:
-        raise ValueError("Unknown coord_system:{:}".format(systems[0]))
-
-    for coord in [c for c in cube.coords() if c.name() in ["latitude", "longitude"]]:
-        if not coord.has_bounds():
-            coord.guess_bounds()
-
-    for coord in [new_latitudes, new_longitudes]:
-        coord.coord_system = coord_sys
-
-    grid_coords = [(new_latitudes, 0), (new_longitudes, 1)]
-
-    new_grid = iris.cube.Cube(
-        np.zeros([coord[0].points.size for coord in grid_coords]),
-        dim_coords_and_dims=grid_coords,
-    )
-
-    for coord in new_grid.coords():
-        if not coord.has_bounds():
-            coord.guess_bounds()
-
-    scheme = iris.analysis.AreaWeighted() if area_weighted else iris.analysis.Linear()
-
-    logger.debug("Cube has lazy data: {}.".format(cube.has_lazy_data()))
-    logger.debug("Calling regrid with scheme '{}'.".format(scheme))
-    interpolated_cube = cube.regrid(new_grid, scheme)
-
-    return interpolated_cube
 
 
 @dataset_cache

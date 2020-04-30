@@ -2,8 +2,10 @@
 import iris
 import numpy as np
 import pytest
+from joblib import parallel_backend
 
 from wildfires.data.datasets import dummy_lat_lon_cube, regrid
+from wildfires.qstat import get_ncpus
 from wildfires.utils import get_centres
 
 
@@ -73,16 +75,20 @@ def test_return_identical_cube(cubes_2D):
     ), "(2D) The regridded and target cubes should be identical."
 
 
-def test_3D_regrid(cubes_3D):
+@pytest.mark.parametrize(
+    "backend,n_jobs",
+    [("threading", 1), ("threading", get_ncpus()), ("loky", get_ncpus())],
+)
+def test_3D_regrid(cubes_3D, backend, n_jobs):
     time_source_cube, time_target_cube = cubes_3D
-    time_regridded = regrid(
-        time_source_cube,
-        area_weighted=True,
-        new_latitudes=time_target_cube.coord("latitude"),
-        new_longitudes=time_target_cube.coord("longitude"),
-    )
-
-    assert np.all(np.isclose(time_regridded.data, time_target_cube.data))
+    with parallel_backend(backend, n_jobs=n_jobs):
+        time_regridded = regrid(
+            time_source_cube,
+            area_weighted=True,
+            new_latitudes=time_target_cube.coord("latitude"),
+            new_longitudes=time_target_cube.coord("longitude"),
+        )
+    assert np.allclose(time_regridded.data, time_target_cube.data)
 
 
 def test_lon():
