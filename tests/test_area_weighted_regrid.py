@@ -53,7 +53,7 @@ def test_2D_regrid(cubes_2D):
         new_longitudes=target_cube.coord("longitude"),
     )
 
-    assert np.all(np.isclose(regridded.data, target_cube.data))
+    assert np.allclose(regridded.data, target_cube.data)
 
 
 def test_return_identical_cube(cubes_2D):
@@ -81,8 +81,7 @@ def test_3D_regrid(cubes_3D):
         new_latitudes=time_target_cube.coord("latitude"),
         new_longitudes=time_target_cube.coord("longitude"),
     )
-
-    assert np.all(np.isclose(time_regridded.data, time_target_cube.data))
+    assert np.allclose(time_regridded.data, time_target_cube.data)
 
 
 def test_lon():
@@ -105,4 +104,4 @@ def test_lon():
         new_latitudes=get_centres(np.linspace(-90, 90, target_interp.shape[0] + 1)),
         new_longitudes=get_centres(np.linspace(-180, 180, target_interp.shape[1] + 1)),
     )
-    assert np.all(np.isclose(target_interp, regrid_cube.data))
+    assert np.allclose(target_interp, regrid_cube.data)

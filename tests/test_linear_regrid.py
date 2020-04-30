@@ -60,7 +60,7 @@ def test_linear_downsampling(nlats, factor):
             np.linspace(-180, 180, (source_data.shape[1] // factor) + 1)
         ),
     )
-    assert np.all(np.isclose(simple_interp, regrid_cube.data))
+    assert np.allclose(simple_interp, regrid_cube.data)
 
 
 def test_non_central():
@@ -91,4 +91,4 @@ def test_non_central():
         new_latitudes=get_centres(np.linspace(-90, 90, target_interp.shape[0] + 1)),
         new_longitudes=target_longitudes,
     )
-    assert np.all(np.isclose(target_interp, regrid_cube.data))
+    assert np.allclose(target_interp, regrid_cube.data)

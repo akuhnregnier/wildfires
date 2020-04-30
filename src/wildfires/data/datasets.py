@@ -777,18 +777,43 @@ def regrid(
     area_weighted=False,
     new_latitudes=get_centres(np.linspace(-90, 90, 721)),
     new_longitudes=get_centres(np.linspace(-180, 180, 1441)),
+    mdtol=1,
+    regridder=None,
+    return_regridder=False,
 ):
     """Regrid latitudes and longitudes.
 
     Expects at least latitude and longitude coordinates.
 
-    NOTE: Regarding caching AreaWeighted regridders - the creation of the
-    regridder does not seem to take much time, however, so this step is
-    almost inconsequential. This is supported by the fact that the source
-    code and online bug reports show that no actual caching of weights
-    takes place! Furthermore, as time coordinate differences may
-    exist between coordinates, iris does not support such differences with
-    cached regridders.
+    Args:
+        cube (iris.cube.Cube): Cube to regrid.
+        area_weighted (bool): If True, perform first order conservative area weighted
+            regridding.
+        new_latitudes (array-like): New grid latitudes.
+        new_longitudes (array-like): New grid longitudes.
+        mdtol (float): Fraction of masked data to tolerate when `area_weighted` is
+            True. If more than this fraction of source cells is missing for a given
+            target cell, the target cell will be masked. If `mdtol=1`, all
+            contributing source cells need to be masked for the resultant cell to be
+            masked.
+        regridder (iris Regridder): Regridder to use. Overrides other settings like
+            `area_weighted`.
+        return_regridder (bool): If True, return the regridder which contains the
+            interpolation weights. This can be re-used for the same type of regridding
+            operation between the same lat-lon grids.
+
+    Returns:
+        iris.cube.Cube: The interpolated cube.
+
+        iris.cube.Cube, iris Regridder: If `return_regridder` is True, the
+        interpolated cube and associated regridder are returned.
+
+    Raises:
+        ValueError: If a coordinate system other than `None` or `WGS84` is
+            encountered.
+
+    Note:
+        Do time coordinate differences disrupt the usage of a cached regridders?
 
     """
     assert cube_contains_coords(
@@ -840,14 +865,17 @@ def regrid(
                 for ind_arr in np.indices(cube.shape[: len(cube.shape) - 2])
             )
         ):
-            regridded_cubes.append(
-                regrid(
-                    cube[indices],
-                    area_weighted=area_weighted,
-                    new_latitudes=new_latitudes,
-                    new_longitudes=new_longitudes,
-                )
+            # Reuse the regridder between subsequent regridding operations.
+            regridded_cube, regridder = regrid(
+                cube[indices],
+                area_weighted=area_weighted,
+                new_latitudes=new_latitudes,
+                new_longitudes=new_longitudes,
+                mdtol=mdtol,
+                regridder=regridder,
+                return_regridder=True,
             )
+            regridded_cubes.append(regridded_cube)
 
         to_remove = set(
             [coord.name() for coord in regridded_cubes[0].coords()]
@@ -856,9 +884,11 @@ def regrid(
             for coord in to_remove:
                 regridded_cube.remove_coord(coord)
                 regridded_cube.remove_coord(coord)
-
+        if return_regridder:
+            return regridded_cubes.merge_cube(), regridder
         return regridded_cubes.merge_cube()
 
+    # This is where the core 2D regridding takes place.
     assert cube_contains_coords(
         cube, "latitude", "longitude"
     ), "Need [lat, lon] dimensions for core algorithm."
@@ -895,26 +925,36 @@ def regrid(
         if not coord.has_bounds():
             coord.guess_bounds()
 
-    for coord in [new_latitudes, new_longitudes]:
-        coord.coord_system = coord_sys
+    if regridder is None:
+        logger.debug("Constructing regridder.")
+        for coord in [new_latitudes, new_longitudes]:
+            coord.coord_system = coord_sys
 
-    grid_coords = [(new_latitudes, 0), (new_longitudes, 1)]
+        grid_coords = [(new_latitudes, 0), (new_longitudes, 1)]
 
-    new_grid = iris.cube.Cube(
-        np.zeros([coord[0].points.size for coord in grid_coords]),
-        dim_coords_and_dims=grid_coords,
-    )
+        new_grid = iris.cube.Cube(
+            np.zeros([coord[0].points.size for coord in grid_coords]),
+            dim_coords_and_dims=grid_coords,
+        )
 
-    for coord in new_grid.coords():
-        if not coord.has_bounds():
-            coord.guess_bounds()
+        for coord in new_grid.coords():
+            if not coord.has_bounds():
+                coord.guess_bounds()
 
-    scheme = iris.analysis.AreaWeighted() if area_weighted else iris.analysis.Linear()
+        if area_weighted:
+            regridder = iris.analysis.AreaWeighted(mdtol=mdtol).regridder(
+                cube, new_grid
+            )
+        else:
+            regridder = iris.analysis.Linear().regridder(cube, new_grid)
+    else:
+        logger.debug("Using given regridder.")
 
     logger.debug("Cube has lazy data: {}.".format(cube.has_lazy_data()))
-    logger.debug("Calling regrid with scheme '{}'.".format(scheme))
-    interpolated_cube = cube.regrid(new_grid, scheme)
+    interpolated_cube = regridder(cube)
 
+    if return_regridder:
+        return interpolated_cube, regridder
     return interpolated_cube
 
 
