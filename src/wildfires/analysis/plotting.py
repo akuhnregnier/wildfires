@@ -160,9 +160,6 @@ class FigureSaver:
 
         # Make sure to resolve the home directory.
         self.directories = tuple(map(os.path.expanduser, self.directories))
-        # Create new directories.
-        for save_dir in self.directories:
-            os.makedirs(save_dir, exist_ok=True)
 
         self.options = self.debug_options.copy() if self.debug else self.options.copy()
         self.options.update(kwargs)
@@ -246,13 +243,15 @@ class FigureSaver:
             fig = plt.figure(fignum)
             self.save_figure(fig, filename, directory)
 
-    def save_figure(self, fig, filename, directory=None):
+    def save_figure(self, fig, filename, directory=None, sub_directory=None):
         """Save a single figure.
 
         Args:
             fig (matplotlib.figure.Figure): Figure to save.
             filename (str): Filename where the figure will be saved.
             directory (str): Directory to save the figure in.
+            sub_directory (str): If given, figures will be saved in a sub-directory
+                `sub_directory` of the pre-specified directory/directories.
 
         Raises:
             ValueError: If multiple default directories were specified and no explicit
@@ -266,6 +265,10 @@ class FigureSaver:
                 raise ValueError("More than 1 default directory specified.")
             # Use default.
             directory = self.directories[0]
+        if sub_directory is not None:
+            directory = os.path.join(directory, sub_directory)
+
+        os.makedirs(directory, exist_ok=True)
 
         filepath = (
             os.path.expanduser(
