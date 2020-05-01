@@ -801,10 +801,10 @@ class PortSync:
             # marked the port as invalid before and it has been changed as a
             # response) this will have no effect due to the 'WHERE' clause.
             with self.con:
+                # XXX: Must the 'WHERE' clause be extended to include
+                # 'OR nanny_port=`port`'?
                 self.con.execute(
-                    "UPDATE workers "
-                    "SET invalid_port = True "
-                    "WHERE port = ? OR nanny_port = ?",
+                    "UPDATE workers " "SET invalid_port = True " "WHERE port = ?",
                     (port,),
                 )
 
