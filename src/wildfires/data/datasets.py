@@ -4463,6 +4463,24 @@ class VODCA(Dataset):
         return self.select_monthly_from_monthly(start, end)
 
 
+class WWLLN(Dataset):
+    _pretty = "WWLLN Lightning"
+    pretty_variable_names = {
+        "frequency of lightning flashes per unit area": "lightning"
+    }
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, "WWLLN")
+        raw_cube = iris.load_cube(os.path.join(self.dir, "WWLLN_monthly.nc"))
+        raw_cube.units = cf_units.Unit("1/km2")
+        self.cubes = iris.cube.CubeList([raw_cube])
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
 def get_implemented_datasets(
     pretty_dataset_names=None, pretty_variable_names=None, ignore_names=IGNORED_DATASETS
 ):
