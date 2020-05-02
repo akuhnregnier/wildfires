@@ -111,6 +111,9 @@ class Scheduler:
 
     def _execute_action(self):
         """Execute the action and schedule the next execution."""
+        # Remove the reference to the next event scheduled at the end of the previous
+        # run, since we currently within that event, so cancelling would not work.
+        self.next_event = None
         if self.first_time is None:
             # Keep track of when the first execution was.
             self.first_time = monotonic()
@@ -675,14 +678,14 @@ class PortSync:
                 )
                 # Print ports.
                 self.output()
-            elif all(
+            elif not self.any_invalid_ports() and all(
                 self.con.execute(
                     "SELECT ready FROM workers WHERE name = ?", (self.name,)
                 )
             ):
                 # Any worker on our host has already checked the ports locally.
                 self.logger.info(
-                    "Our host is ready. Waiting for other hosts or timeout."
+                    "Our host is ready. Waiting for other hosts and timeout."
                 )
             else:
                 # If we are not ready, check the ports on our host.
@@ -734,8 +737,6 @@ class PortSync:
             ):
                 checked_ports.update((port, nanny_port))
                 self._port_available(worker_id, port)
-                if nanny_port is not None:
-                    self._port_available(worker_id, nanny_port)
 
             if not self.any_invalid_ports():
                 try:
@@ -804,8 +805,7 @@ class PortSync:
                 # XXX: Must the 'WHERE' clause be extended to include
                 # 'OR nanny_port=`port`'?
                 self.con.execute(
-                    "UPDATE workers " "SET invalid_port = True " "WHERE port = ?",
-                    (port,),
+                    "UPDATE workers SET invalid_port = True WHERE port = ?", (port,),
                 )
 
     def output(self):
@@ -1025,19 +1025,20 @@ class PortSync:
         """Select a different port."""
         for _ in range(100):
             # Try for 100 times at most to set a new, unique port.
+            new_port = get_ports()[0]
+            if new_port == self.nanny_port:
+                self.logger.debug(f"New port ({new_port}) matched nanny port.")
+                continue
             try:
                 with self.con:
+                    # Update the worker port, but never the nanny port since that only
+                    # has to be forwarded for ourselves.
                     self.con.execute(
                         f"""
                         UPDATE workers
-                        SET port = ?,{' nanny_port = ?,' if self.nanny else ''}
-                            invalid_port = False
+                        SET port = ?, invalid_port = False
                         WHERE name = ?""",
-                        (
-                            get_ports()[0],
-                            *((get_ports()[0],) if self.nanny else ()),
-                            self.name,
-                        ),
+                        (new_port, self.name),
                     )
                     # Notify other workers that they need to re-check ports.
                     self.notify()
