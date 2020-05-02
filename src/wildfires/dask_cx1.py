@@ -210,6 +210,8 @@ class CX1PBSJob(PBSJob):
         timeout = walltime_seconds(kwargs["walltime"]) - shutdown_seconds
 
         command_template[3] = "localhost:$LOCALSCHEDULERPORT"
+        # TODO: Add code to terminate the dask-worker if an error code has been
+        # written to $WORKERPORTFILE.
         self._command_template = " ".join(
             [
                 # Allow 2 minutes for setting up and cleaning up.

@@ -973,12 +973,20 @@ class PortSync:
         return ssh_command
 
     def increment_counter(self):
-        """Increment our keepalive-counter."""
+        """Increment our keepalive-counter.
+
+        Also abort if we have been removed from the database by another process.
+
+        """
+        # Fetch counter.
+        current_counter = self.con.execute(
+            "SELECT counter FROM workers WHERE name = ?", (self.name,)
+        ).fetchone()
+
+        if current_counter is None:
+            self.abort("Our entry has been removed. Exit (2).")
+
         with self.con:
-            # Fetch counter.
-            current_counter = self.con.execute(
-                "SELECT counter FROM workers WHERE name = ?", (self.name,)
-            ).fetchone()
             # Increment and write back.
             self.con.execute(
                 "UPDATE workers SET counter = ? WHERE name = ?",
