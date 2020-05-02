@@ -1020,7 +1020,7 @@ class PortSync:
             try:
                 with self.con:
                     self.con.execute(
-                        """
+                        f"""
                         UPDATE workers
                         SET port = ?,{' nanny_port = ?,' if self.nanny else ''}
                             invalid_port = False
