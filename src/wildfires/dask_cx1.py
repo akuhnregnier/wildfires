@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import atexit
 import json
 import logging
 import os
@@ -7,18 +8,19 @@ import shlex
 import socket
 import sys
 from functools import wraps
+from getpass import getuser
 from inspect import signature
 from operator import eq, ge
 from random import choice
 from string import ascii_lowercase
 from subprocess import Popen
 from textwrap import dedent
+from urllib.parse import urlparse, urlunparse
 
 from dask.distributed import Client
 from dask.utils import parse_bytes
-from joblib import parallel_backend
-
 from dask_jobqueue.pbs import PBSCluster, PBSJob, pbs_format_bytes_ceil
+from joblib import parallel_backend
 
 from .ports import get_ports
 from .qstat import get_ncpus
@@ -41,6 +43,10 @@ class DaskCX1Error(Exception):
 
 class FoundSchedulerError(DaskCX1Error):
     """Raised when no scheduler matching the requested specifications could be found."""
+
+
+class SchedulerConnectionError(DaskCX1Error):
+    """Raised when a connection to a scheduler could not be established."""
 
 
 class WorkerPortError(DaskCX1Error):
@@ -82,14 +88,70 @@ def get_client(**specs):
 
     Raises:
         FoundSchedulerError: If no matching scheduler could be found.
+        SchedulerConnectionError: If a matching scheduler was found, but a connection
+            could not be established.
 
     """
     logger.info(f"Trying to find Dask scheduler with minimum specs {specs}.")
     scheduler_file = get_scheduler_file(**specs)
-    if scheduler_file is not None:
+
+    if scheduler_file is None:
+        raise FoundSchedulerError(f"No scheduler with minimum specs {specs} found.")
+
+    try:
         logger.info(f"Found scheduler at {scheduler_file}.")
-        return Client(scheduler_file=scheduler_file)
-    raise FoundSchedulerError(f"No scheduler with minimum specs {specs} found.")
+        # Try connecting to the Client. If this does not work, we will try port
+        # forwarding.
+        return Client(scheduler_file=scheduler_file, timeout=10)
+    except OSError:
+        logger.warning(
+            f"Could not connect to the scheduler at {scheduler_file} "
+            "(no port forwarding)."
+        )
+
+    with open(scheduler_file) as f:
+        scheduler_info = json.load(f)
+
+    cluster_address = urlparse(scheduler_info["address"])
+
+    cluster_hostname = scheduler_info["worker_specs"]["cluster_hostname"]
+    if cluster_hostname != socket.gethostname():
+        # We are on a different host, so port forwarding might have to be used.
+        cluster_netloc = cluster_address.netloc
+        logger.info(f"Starting local port forwarding to {cluster_netloc}.")
+        cluster_host, _, cluster_port = cluster_netloc.partition(":")
+        ssh = Popen(
+            shlex.split(
+                f"ssh -NT -L localhost:{cluster_port}:{cluster_netloc} "
+                f"{getuser()}@{cluster_hostname} "
+                "-o StrictHostKeyChecking=accept-new"
+            )
+        )
+
+        def kill_local_forward_ssh():
+            ssh.kill()
+
+        atexit.register(kill_local_forward_ssh)
+
+        # Replace the host address with localhost, since we are now forwarding the
+        # port.
+        cluster_address = cluster_address._replace(
+            netloc=":".join(("localhost", cluster_port))
+        )
+
+        try:
+            # Try connecting to the Client. If this does not work, we will try port
+            # forwarding.
+            return Client(urlunparse(cluster_address), timeout=10)
+        except OSError:
+            logger.warning(
+                "Could not connect to the scheduler at {scheduler_file} after port "
+                "forwarding."
+            )
+
+    raise SchedulerConnectionError(
+        f"Could not connect to scheduler at {scheduler_file}."
+    )
 
 
 def get_parallel_backend(loky_fallback=True, **specs):
@@ -234,7 +296,7 @@ class CX1Cluster(PBSCluster):
         self._scheduler_file = None
 
         # This where the scheduler is run, and thus where ports have to be forwarded to.
-        hostname = socket.gethostname()
+        hostname = socket.getfqdn()
 
         # First place any args into kwargs, then update relevant entries in kwargs to
         # enable operation on CX1.
@@ -403,6 +465,8 @@ echo $(date): Finished running ssh, starting dask-worker now.
         # When saving the worker specs, we carry about little other than the type of
         # the worker class.
         info["worker_specs"]["job_cls"] = mod_kwargs["job_cls"].__name__
+
+        info["worker_specs"]["cluster_hostname"] = hostname
 
         with open(self.scheduler_file, "w") as f:
             json.dump(info, f, indent=2)
