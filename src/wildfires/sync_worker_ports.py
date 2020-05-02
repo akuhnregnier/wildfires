@@ -1344,7 +1344,7 @@ def main():
     )
     args = parser.parse_args()
 
-    enable_logging(level=logging.DEBUG if args.debug else logging.INFO)
+    enable_logging(level=logging.DEBUG if args.debug else logging.INFO, pbs=True)
 
     PortSync(
         args.data_file,

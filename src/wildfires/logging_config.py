@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 import logging.config
 import os
+import socket
 from copy import deepcopy
+from pathlib import PurePath
 
 log_dir = os.path.expanduser(os.path.join("~", "Documents", "wildfire_logs"))
 if not os.path.isdir(log_dir):
@@ -92,7 +94,7 @@ JUPYTER_LOGGING = deepcopy(LOGGING)
 JUPYTER_LOGGING["handlers"]["console"]["level"] = "WARNING"
 
 
-def enable_logging(mode="normal", level=None):
+def enable_logging(mode="normal", level=None, pbs=False):
     """Configure logging in a standardised manner.
 
     Args:
@@ -101,6 +103,8 @@ def enable_logging(mode="normal", level=None):
         level (str or logging level): If given, alter the console logger level. If a
             string is given, `level.upper()` will be used to retrieve the logging
             level.
+        pbs (bool): Place logging files in the 'pbs' sub-directory. All files will
+            additionally include the PBS job id and machine hostname.
 
     """
     if mode == "normal":
@@ -113,6 +117,26 @@ def enable_logging(mode="normal", level=None):
         if isinstance(level, str):
             level = logging.getLevelName(level.upper())
         config_dict["handlers"]["console"]["level"] = level
+    if pbs:
+        pbs_jobid = os.environ.get("PBS_JOBID")
+        if pbs_jobid:
+            pbs_jobid = pbs_jobid.split(".")[0]
+            hostname = socket.gethostname()
+            for handler, handler_config in config_dict["handlers"].items():
+                filename = handler_config.get("filename")
+                if filename is not None:
+                    parts = list(PurePath(filename).parts)
+                    parts[-1] = "_".join(map(str, (pbs_jobid, hostname, parts[-1])))
+                    parts.insert(-1, "pbs")
+                    new_filename = PurePath(*parts)
+                    handler_config["filename"] = str(new_filename)
+                    os.makedirs(new_filename.parent, exist_ok=True)
+        else:
+            logging.config.dictConfig(config_dict)
+            logging.getLogger(__name__).warning(
+                "pbs=True given, but not running in a PBS job (pbs_jobid empty)."
+            )
+            return
     logging.config.dictConfig(config_dict)
 
 
