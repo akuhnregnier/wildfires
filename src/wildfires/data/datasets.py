@@ -3319,6 +3319,7 @@ class ESA_CCI_Soilmoisture(Dataset):
 
 class ESA_CCI_Soilmoisture_Daily(Dataset):
     _pretty = "ESA CCI Daily Soil Moisture"
+    _not_implemented = True
 
     def __init__(self):
         raise NotImplementedError("Use ESA_CCI_Soilmoisture Dataset for monthly data!")
@@ -4471,7 +4472,11 @@ class WWLLN(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "WWLLN")
-        raw_cube = iris.load_cube(os.path.join(self.dir, "WWLLN_monthly.nc"))
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message=((r".*'lightning' invalid units 'strokes km-2'.*"))
+            )
+            raw_cube = iris.load_cube(os.path.join(self.dir, "WWLLN_monthly.nc"))
         raw_cube.units = cf_units.Unit("1/km2")
         self.cubes = iris.cube.CubeList([raw_cube])
 
