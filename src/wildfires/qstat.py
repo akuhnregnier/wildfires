@@ -33,6 +33,11 @@ def get_qstat_ncpus():
     of the running jobs.
 
     """
+    pbs_jobid = os.environ.get("PBS_JOBID")
+    if pbs_jobid is None:
+        logger.debug("Not running in a PBS job on hpc.")
+        return None
+
     try:
         out = get_qstat_json()
     except FileNotFoundError:
@@ -45,7 +50,6 @@ def get_qstat_ncpus():
         return None
     jobs = out.get("Jobs")
     if jobs:
-        pbs_jobid = os.environ["PBS_JOBID"]
         current_hostname = platform.node()
         if not current_hostname:
             current_hostname = socket.gethostname()
