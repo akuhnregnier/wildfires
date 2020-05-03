@@ -41,13 +41,14 @@ import pandas as pd
 import rasterio
 import scipy.ndimage
 from dateutil.relativedelta import relativedelta
-from era5analysis import MonthlyMeanMinMaxWorker, retrieval_processing, retrieve
 from git import Repo
 from iris.time import PartialDateTime
 from joblib import Memory, Parallel, delayed
 from numpy.testing import assert_allclose
 from pyhdf.SD import SD, SDC
 from tqdm import tqdm
+
+from era5analysis import MonthlyMeanMinMaxDTRWorker, retrieval_processing, retrieve
 
 from ..joblib.caching import CodeObj, wrap_decorator
 from ..joblib.iris_backend import register_backend
@@ -2947,6 +2948,7 @@ class ERA5_Temperature(Dataset):
         "Mean 2 metre temperature": "Mean Temp",
         "Min 2 metre temperature": "Min Temp",
         "Max 2 metre temperature": "Max Temp",
+        "DTR 2 metre temperature": "Diurnal Temp Range",
     }
 
     def __init__(self):
@@ -2957,7 +2959,7 @@ class ERA5_Temperature(Dataset):
             return
         files = sorted(
             glob.glob(
-                os.path.join(self.dir, "**", "*_monthly_mean_min_max.nc"),
+                os.path.join(self.dir, "**", "*_monthly_mean_min_max_dtr.nc"),
                 recursive=True,
             )
         )
@@ -2970,13 +2972,13 @@ class ERA5_Temperature(Dataset):
                     end=PartialDateTime(2019, 1, 1),
                     target_dir=self.dir,
                 ),
-                processing_class=MonthlyMeanMinMaxWorker,
+                processing_class=MonthlyMeanMinMaxDTRWorker,
                 n_threads=10,
                 soft_filesize_limit=700,
             )
             files = sorted(
                 glob.glob(
-                    os.path.join(self.dir, "**", "*_monthly_mean_min_max.nc"),
+                    os.path.join(self.dir, "**", "*_monthly_mean_min_max_dtr.nc"),
                     recursive=True,
                 )
             )
@@ -4661,5 +4663,5 @@ def regions_GFED():
     return regions
 
 
-# Automatically export all Dataset subclass leafs defining individual datasets.
+# Automatically export all Dataset subclass leaves defining individual datasets.
 __all__ = list(set(__all__).union(set(map(str, Dataset))))
