@@ -866,7 +866,6 @@ def regrid(
         for regridded_cube in regridded_cubes:
             for coord in to_remove:
                 regridded_cube.remove_coord(coord)
-                regridded_cube.remove_coord(coord)
         if return_regridder:
             return regridded_cubes.merge_cube(), regridder
         return regridded_cubes.merge_cube()
