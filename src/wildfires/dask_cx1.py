@@ -211,7 +211,6 @@ def get_parallel_backend(fallback="loky", **specs):
         [1, 2, 3, 4]
 
     """
-    logger.info(f"Trying to find Dask scheduler with minimum specs {specs}.")
     try:
         # Make sure that the Client disconnects.
         with get_client(**specs) as client:
@@ -219,7 +218,8 @@ def get_parallel_backend(fallback="loky", **specs):
             # XXX: Prevent closed connection errors due to abrupt closing of the client.
             # TODO: Re-use of the same client.
             sleep(1)
-    except (FoundSchedulerError, SchedulerConnectionError):
+    except (FoundSchedulerError, SchedulerConnectionError) as err:
+        logger.warning(f"Could not connect to scheduler: {err}.")
         # If no scheduler could be found, or a connection could not be established.
         if not fallback:
             raise FoundSchedulerError(f"No scheduler with minimum specs {specs} found.")
