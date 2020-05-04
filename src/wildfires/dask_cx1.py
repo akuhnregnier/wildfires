@@ -150,6 +150,7 @@ def get_client(**specs):
         ssh = Popen(shlex.split(ssh_command))
 
         def kill_local_forward_ssh():
+            logger.debug(f"Shutting down SSH local port forwarding ({ssh}).")
             ssh.kill()
 
         atexit.register(kill_local_forward_ssh)
