@@ -7,6 +7,7 @@ import re
 import shlex
 import socket
 import sys
+from contextlib import contextmanager
 from functools import wraps
 from getpass import getuser
 from inspect import signature
@@ -15,6 +16,7 @@ from random import choice
 from string import ascii_lowercase
 from subprocess import Popen
 from textwrap import dedent
+from time import sleep
 from urllib.parse import urlparse, urlunparse
 
 from dask.distributed import Client
@@ -98,10 +100,36 @@ def get_client(**specs):
     if scheduler_file is None:
         raise FoundSchedulerError(f"No scheduler with minimum specs {specs} found.")
 
+    with open(scheduler_file) as f:
+        scheduler_info = json.load(f)
+
+    cluster_address = urlparse(scheduler_info["address"])
+    cluster_netloc = cluster_address.netloc
+    cluster_host, _, cluster_port = cluster_netloc.partition(":")
+
+    cluster_hostname = scheduler_info["worker_specs"]["cluster_hostname"]
+    our_hostname = socket.getfqdn()
+
     try:
         logger.info(f"Found scheduler at {scheduler_file}.")
         # Try connecting to the Client. If this does not work, we will try port
         # forwarding.
+
+        if cluster_hostname != our_hostname:
+            # Check if port forwarding has been carried out previously.
+            try:
+                return Client(
+                    urlunparse(
+                        cluster_address._replace(
+                            netloc=":".join(("localhost", cluster_port))
+                        )
+                    ),
+                    timeout=10,
+                )
+            except OSError:
+                logger.debug("No previous port forwarding could be used.")
+
+        # Try using the actual address.
         return Client(scheduler_file=scheduler_file, timeout=10)
     except OSError:
         logger.warning(
@@ -109,24 +137,17 @@ def get_client(**specs):
             "(no port forwarding)."
         )
 
-    with open(scheduler_file) as f:
-        scheduler_info = json.load(f)
-
-    cluster_address = urlparse(scheduler_info["address"])
-
-    cluster_hostname = scheduler_info["worker_specs"]["cluster_hostname"]
-    if cluster_hostname != socket.gethostname():
+    if cluster_hostname != our_hostname:
         # We are on a different host, so port forwarding might have to be used.
-        cluster_netloc = cluster_address.netloc
         logger.info(f"Starting local port forwarding to {cluster_netloc}.")
-        cluster_host, _, cluster_port = cluster_netloc.partition(":")
-        ssh = Popen(
-            shlex.split(
-                f"ssh -NT -L localhost:{cluster_port}:{cluster_netloc} "
-                f"{getuser()}@{cluster_hostname} "
-                "-o StrictHostKeyChecking=accept-new"
-            )
+        ssh_command = (
+            f"ssh -NT -L localhost:{cluster_port}:{cluster_netloc} "
+            f"{getuser()}@{cluster_hostname} "
+            "-o StrictHostKeyChecking=no"
         )
+        logger.debug(f"SSH command: {ssh_command}.")
+        # TODO: Capture stderr.
+        ssh = Popen(shlex.split(ssh_command))
 
         def kill_local_forward_ssh():
             ssh.kill()
@@ -140,12 +161,13 @@ def get_client(**specs):
         )
 
         try:
-            # Try connecting to the Client. If this does not work, we will try port
-            # forwarding.
-            return Client(urlunparse(cluster_address), timeout=10)
+            # Try connecting to the Client.
+            new_client_address = urlunparse(cluster_address)
+            logger.debug(f"Connecting to client at {new_client_address}.")
+            return Client(new_client_address, timeout=10)
         except OSError:
             logger.warning(
-                "Could not connect to the scheduler at {scheduler_file} after port "
+                f"Could not connect to the scheduler at {scheduler_file} after port "
                 "forwarding."
             )
 
@@ -154,7 +176,8 @@ def get_client(**specs):
     )
 
 
-def get_parallel_backend(loky_fallback=True, **specs):
+@contextmanager
+def get_parallel_backend(fallback="loky", **specs):
     """Try to connect to an existing Dask scheduler with the supplied specs.
 
     The fallback is a local loky backend with the number of CPUs determined by the
@@ -165,33 +188,48 @@ def get_parallel_backend(loky_fallback=True, **specs):
         specs: Worker resource specifications, eg. cores=10, memory="8GB". The
             scheduler's cluster will have access to a certain number of such workers,
             where each worker will have access to `cores` number of threads.
-        loky_fallback (bool): If True, allow falling back to a local loky cluster when
-            no matching scheduler is found.
+        fallback (str): If not False (eg. the empty string ""), allow falling back to
+            the backend specified by the supplied string, eg. "loky" or "sequential".
+            Additionally, if `fallback` is "none", no joblib backend will be invoked
+            at all.
 
-    Returns:
-        joblib.parallel.parallel_backend: Context manager to manage nested calls to
-        `joblib.parallel.Parallel()`.
+    Yields:
+        joblib.parallel.parallel_backend or None: Context manager to manage nested
+            calls to `joblib.parallel.Parallel()`. None if `fallback='none'`.
+        distributed Client or None: If a Dask scheduler was found, the associated
+            distributed Client will be yielded. Otherwise this will be None.
 
     Raises:
-        FoundSchedulerError: If no matching scheduler could be found and
-            `loky_fallback` is False.
+        FoundSchedulerError: If no matching scheduler could be found and `not fallback`.
+
+    Examples:
+        >>> from joblib import Parallel, delayed
+        >>> with get_parallel_backend(cores=999999) as (backend, client):
+        ...     assert client is None, "Can't possible have that many cores!"
+        ...     out = Parallel()(delayed(lambda x: x + 1)(i) for i in  range(4))
+        >>> print(out)
+        [1, 2, 3, 4]
 
     """
     logger.info(f"Trying to find Dask scheduler with minimum specs {specs}.")
-    scheduler_file = get_scheduler_file(**specs)
-    if scheduler_file is not None:
-        logger.info(f"Found scheduler at {scheduler_file}.")
-        # TODO: Turn this function into a context manager of its own to handle Client
-        # shutdown.
-        Client(scheduler_file=scheduler_file)
-        return parallel_backend("dask", wait_for_workers_timeout=600)
-
-    if not loky_fallback:
-        raise FoundSchedulerError(f"No scheduler with minimum specs {specs} found.")
-
-    ncpus = get_ncpus()
-    logger.info(f"Using loky backend with {ncpus} jobs.")
-    return parallel_backend("loky", n_jobs=ncpus)
+    try:
+        # Make sure that the Client disconnects.
+        with get_client(**specs) as client:
+            yield parallel_backend("dask", wait_for_workers_timeout=600), client
+            # XXX: Prevent closed connection errors due to abrupt closing of the client.
+            # TODO: Re-use of the same client.
+            sleep(1)
+    except (FoundSchedulerError, SchedulerConnectionError):
+        # If no scheduler could be found, or a connection could not be established.
+        if not fallback:
+            raise FoundSchedulerError(f"No scheduler with minimum specs {specs} found.")
+        if fallback == "none":
+            logger.info("Not using any backend.")
+            yield None, None
+        else:
+            ncpus = get_ncpus()
+            logger.info(f"Using {fallback} backend with {ncpus} jobs.")
+            yield parallel_backend(fallback, n_jobs=ncpus), None
 
 
 def get_scheduler_file(match="above", **specs):
@@ -204,6 +242,10 @@ def get_scheduler_file(match="above", **specs):
     >>> client = Client(scheduler_file=scheduler_file)  # doctest: +SKIP
 
     This client can then be used to submit tasks to the scheduler.
+
+    A more robust way to get a Client is to use `get_client()`, which additionally
+    attempts port forwarding to the scheduler's host if the connection does not
+    succeed at first.
 
     Args:
         match (str): One of "above" or "same". All resource specifications provided as
@@ -240,7 +282,7 @@ def get_scheduler_file(match="above", **specs):
             try:
                 stored_value = worker_specs[spec]
             except KeyError:
-                logging.warning(
+                logger.warning(
                     f"The resource specification at {scheduler_file} did not specify a "
                     f"value for '{spec}'."
                 )
@@ -256,6 +298,7 @@ def get_scheduler_file(match="above", **specs):
         else:
             # If all comparisons succeeded, return the scheduler file.
             return os.path.join(SCHEDULER_DIR, scheduler_file)
+    logger.info(f"Could not find a Dask scheduler ({match}) for specs {specs}.")
 
 
 class CX1PBSJob(PBSJob):
@@ -349,12 +392,14 @@ class CX1Cluster(PBSCluster):
         self.port_file = os.path.join(os.getcwd(), f"port_sync_{file_id}.db")
 
         initial_timeout = mod_kwargs.get("initial_timeout", 120)
-        poll_interval = mod_kwargs.get("poll_interval", 10)
+        poll_interval = mod_kwargs.get("poll_interval", 20)
+        keepalive_intervals = mod_kwargs.get("keepalive_intervals", 15)
 
         sync_worker_ports_exec = (
             "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/"
             f"sync-worker-ports --data-file {self.port_file} "
             f"--initial-timeout {initial_timeout} --poll-interval {poll_interval} "
+            f"--keepalive-intervals {keepalive_intervals} "
             f"--ssh-opts='{ssh_opts}'" + (" --nanny" if nanny else "")
         )
 
