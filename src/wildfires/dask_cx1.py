@@ -213,8 +213,10 @@ def get_parallel_backend(fallback="loky", **specs):
     """
     try:
         # Make sure that the Client disconnects.
-        with get_client(**specs) as client:
-            yield parallel_backend("dask", wait_for_workers_timeout=600), client
+        with get_client(**specs) as client, parallel_backend(
+            "dask", wait_for_workers_timeout=600
+        ) as backend:
+            yield backend, client
             # XXX: Prevent closed connection errors due to abrupt closing of the client.
             # TODO: Re-use of the same client.
             sleep(1)
