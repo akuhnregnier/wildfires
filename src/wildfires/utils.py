@@ -3,11 +3,15 @@
 
 """
 import logging
+import math
 import os
+import pickle
 from collections import Counter, namedtuple
 from copy import deepcopy
+from functools import wraps
 from textwrap import dedent
 from time import time
+from warnings import warn
 
 import fiona
 import iris
@@ -18,6 +22,125 @@ from scipy.ndimage import label
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
+
+
+class NoCachedDataError(Exception):
+    """Raised when the cache pickle file could not be found."""
+
+
+class SimpleCache:
+    """Simple caching functionality without analysing arguments."""
+
+    def __init__(
+        self, filename, cache_dir=".pickle", verbose=10, pickler=pickle,
+    ):
+        """Initialise the cacher.
+
+        Args:
+            filename (str): Name of the file to save to.
+            cache_dir (str): Directory `filename` will be created in.
+            verbose (int): If `verbose >= 10`, logging messages will be printed to stdout.
+            pickler (object): An object with 'load' and 'dump' methods analogous to pickle.
+
+        """
+        os.makedirs(cache_dir, exist_ok=True)
+        self.pickle_path = os.path.join(cache_dir, filename)
+        self.verbose = verbose
+        self.pickler = pickler
+
+    def available(self):
+        """Check if data has been cached."""
+        avail = os.path.isfile(self.pickle_path)
+        if self.verbose >= 10:
+            if avail:
+                print(f"Data found at {self.pickle_path}.")
+            else:
+                print(f"Data not found at {self.pickle_path}.")
+        return avail
+
+    def load(self):
+        """Load cached data.
+
+        Returns:
+            Loaded data.
+
+        Raises:
+            NoCachedDataError: If no cached data was found.
+
+        """
+        if self.available():
+            with open(self.pickle_path, "rb") as f:
+                return self.pickler.load(f)
+        raise NoCachedDataError(f"{self.pickle_path} does not exist.")
+
+    def save(self, obj):
+        """Cache `obj`."""
+        if self.verbose >= 10:
+            print(f"Saving data to {self.pickle_path}.")
+        with open(self.pickle_path, "wb") as f:
+            self.pickler.dump(obj, f, -1)
+
+    def clear(self):
+        """Delete cached contents (if any)."""
+        if self.verbose >= 10:
+            print(f"Clearing data from {self.pickle_path}.")
+        if os.path.isfile(self.pickle_path):
+            os.remove(self.pickle_path)
+
+    def __call__(self, func):
+        """Simple caching decorator."""
+
+        @wraps(func)
+        def cached_func(*args, **kwargs):
+            if args or kwargs:
+                warn(
+                    "Parameters are not considered when saving/loading cached results."
+                )
+            try:
+                return self.load()
+            except NoCachedDataError:
+                if self.verbose >= 10:
+                    print(f"Calling {func}.")
+                start = time()
+                results = func(*args, **kwargs)
+                eval_time = time() - start
+                if self.verbose >= 10:
+                    print(f"Finished call. Time taken: {self.float_format(eval_time)}s")
+                self.save(results)
+                save_time = time() - eval_time - start
+                if self.verbose >= 10:
+                    print(
+                        f"Finished saving. Time taken: {self.float_format(save_time)}s"
+                    )
+                return results
+
+        return cached_func
+
+    def __repr__(self):
+        return f"SimpleCache at {self.pickle_path} - saved data: {self.available()}."
+
+    def __str__(self):
+        return repr(self)
+
+    @staticmethod
+    def float_format(number, additional=0):
+        """Float formatting that only retains decimal places for small numbers.
+
+        Args:
+            number (float): Number to format.
+            additional (int): Number of additional decimal places to use.
+
+        Returns:
+            str: Formatted `number`.
+
+        """
+        if number < 10:
+            dec = math.ceil(abs(math.log10(number)))
+            if number <= 1:
+                dec += 1
+        else:
+            dec = 0
+        return f"{number:0.{dec + additional}f}"
 
 
 class TqdmContext(tqdm):
