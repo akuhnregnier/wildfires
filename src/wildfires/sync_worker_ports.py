@@ -45,7 +45,7 @@ from sched import scheduler
 from sqlite3 import IntegrityError, OperationalError
 from subprocess import Popen
 from textwrap import dedent, wrap
-from time import monotonic, time
+from time import monotonic, sleep, time
 
 import pandas as pd
 
@@ -817,7 +817,9 @@ class PortSync:
         if self.is_scheduler:
             return
 
-        ssh_command = self.remote_forwarding() + self.local_forwarding()
+        # First carry out the port forwarding, the output the port(s).
+        remote_ssh_command = self.remote_forwarding()
+        ssh_command = remote_ssh_command + self.local_forwarding()
 
         if ssh_command:
             # If there is any forwarding to carry out.
@@ -828,8 +830,40 @@ class PortSync:
             )
             self.logger.info(f"Running ssh command: {ssh_command}.")
             self.ssh_procs.append(Popen(ssh_command))
+
+            if remote_ssh_command:
+                # Allow for the SSH connections to be established.
+                # TODO: Make this nonblocking by output ports in another thread.
+                sleep(2)
+                self._write_ports()
         else:
             self.logger.debug("No new ports to forward.")
+
+    def _write_ports(self):
+        """Output port(s) to the output file."""
+        if not self.nanny:
+            # Output worker port.
+            self.logger.info(
+                f"Writing worker port {self.port} to file {self.output_file}."
+            )
+            if self.debug:
+                print("Port:", self.port)
+            else:
+                with open(self.output_file, "w") as f:
+                    f.write(f"{self.port}\n")
+        else:
+            # Output worker and nanny ports.
+            self.logger.info(
+                f"Writing worker port {self.port} and nanny port "
+                f"{self.nanny_port} to file {self.output_file}."
+            )
+            if self.debug:
+                print("Ports:", self.port, self.nanny_port)
+            else:
+                with open(self.output_file, "w") as f:
+                    f.write(f"{self.port} {self.nanny_port}\n")
+
+        self.output_already = True
 
     def remote_forwarding(self):
         """Create remote-forwarding command if needed.
@@ -879,29 +913,6 @@ class PortSync:
                 ssh_command += (
                     "-R " + ":".join((f"localhost:{self.nanny_port}",) * 2),
                 )
-            if not self.nanny:
-                # Output worker port.
-                self.logger.info(
-                    f"Writing worker port {self.port} to file {self.output_file}."
-                )
-                if self.debug:
-                    print("Port:", self.port)
-                else:
-                    with open(self.output_file, "w") as f:
-                        f.write(f"{self.port}\n")
-            else:
-                # Output worker and nanny ports.
-                self.logger.info(
-                    f"Writing worker port {self.port} and nanny port "
-                    f"{self.nanny_port} to file {self.output_file}."
-                )
-                if self.debug:
-                    print("Ports:", self.port, self.nanny_port)
-                else:
-                    with open(self.output_file, "w") as f:
-                        f.write(f"{self.port} {self.nanny_port}\n")
-
-            self.output_already = True
 
         return ssh_command
 
