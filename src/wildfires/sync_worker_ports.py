@@ -324,7 +324,7 @@ class PortSync:
 
         # The hostname is important as ports only need to be forwarded once per host,
         # since intra-host communication should be possible without port forwarding.
-        self.hostname = hostname if hostname is not None else socket.gethostname()
+        self.hostname = hostname if hostname is not None else socket.getfqdn()
 
         # TODO: Need to configure this logger to make this work.
         # logger = logging.getLogger(self.__class__.__name__)
