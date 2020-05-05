@@ -8,7 +8,7 @@ import shlex
 import socket
 import sys
 from contextlib import contextmanager
-from functools import wraps
+from functools import partial, wraps
 from getpass import getuser
 from inspect import signature
 from operator import eq, ge
@@ -53,6 +53,16 @@ class SchedulerConnectionError(DaskCX1Error):
 
 class WorkerPortError(DaskCX1Error):
     """Raised when an error while determining worker port numbers."""
+
+
+def multiline(s, strip_all_indents=False):
+    if strip_all_indents:
+        return " ".join([dedent(sub) for sub in s.strip().split("\n")])
+    else:
+        return dedent(s).strip().replace("\n", " ")
+
+
+strip_multiline = partial(multiline, strip_all_indents=True)
 
 
 def walltime_seconds(walltime):
@@ -394,16 +404,45 @@ class CX1Cluster(PBSCluster):
         self.sync_stderr_file = open(f"sync_stderr_{file_id}.log", "w")
         self.port_file = os.path.join(os.getcwd(), f"port_sync_{file_id}.db")
 
+        # Directory where workers will place their counter files.
+        self.counter_dir = os.path.join(os.getcwd(), f"counters_{file_id}")
+
         initial_timeout = mod_kwargs.get("initial_timeout", 120)
-        poll_interval = mod_kwargs.get("poll_interval", 20)
+
+        # Set the port sync program up so that workers can be unresponsive for up to X
+        # minutes before they are killed using 'qdel'. X is the product of the poll
+        # interval (p_i) and the keepalive intervals (n_k), ie. X = p_i x k_i.
+
+        # Since an unresponsive worker might block the database while it is
+        # unresponsive, we need another way to signal to the scheduler that responsive
+        # workers are still alive - this is done using files in a dedicated folder
+        # wherein one file is used by each worker to store and increment a personal
+        # counter which is then read by the scheduler.
+
+        poll_interval = mod_kwargs.get("poll_interval", 30)
         keepalive_intervals = mod_kwargs.get("keepalive_intervals", 4)
 
-        sync_worker_ports_exec = (
+        # Amount of time before a worker gives up waiting for an unresponsive worker.
+        sqlite_timeout = mod_kwargs.get("sqlite_timeout", 10)
+
+        sync_worker_ports_bin = (
             "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/"
-            f"sync-worker-ports --data-file {self.port_file} "
-            f"--initial-timeout {initial_timeout} --poll-interval {poll_interval} "
-            f"--keepalive-intervals {keepalive_intervals} "
-            f"--ssh-opts='{ssh_opts}'" + (" --nanny" if nanny else "")
+            "sync-worker-ports"
+        )
+
+        sync_worker_ports_exec = (
+            strip_multiline(
+                f"""{sync_worker_ports_bin}
+                --data-file {self.port_file}
+                --initial-timeout {initial_timeout}
+                --poll-interval {poll_interval}
+                --keepalive-intervals {keepalive_intervals}
+                --sqlite-timeout {sqlite_timeout}
+                --enable-qdel
+                --counter-dir {self.counter_dir}
+                --ssh-opts='{ssh_opts}'"""
+            )
+            + (" --nanny" if nanny else "")
         )
 
         get_nanny_port_script = dedent(
@@ -436,11 +475,6 @@ export DASK_TEMPORARY_DIRECTORY=$TMPDIR
 #
 JOBID="${{PBS_JOBID%%.*}}"
 echo $(date): JOBID $JOBID on host $(hostname).
-echo $(date): Getting ports.
-read LOCALSCHEDULERPORT <<< $({valid_ports_exec} 1)
-#
-echo $(date): "Forwarding local scheduler port $LOCALSCHEDULERPORT to {hostname}."
-ssh {ssh_opts} -L localhost:$LOCALSCHEDULERPORT:localhost:{scheduler_port} {hostname} &
 #
 # For the worker ports, extra care needs to be taken since these need to be the same
 # on the worker and scheduler node. So we need to check that the port is unused on
@@ -490,6 +524,12 @@ fi
 {get_nanny_port_script}
 echo $(date): Removing worker port file $WORKERPORTFILE.
 rm "$WORKERPORTFILE"
+#
+echo $(date): Getting local scheduler port.
+read LOCALSCHEDULERPORT <<< $({valid_ports_exec} 1)
+#
+echo $(date): "Forwarding local scheduler port $LOCALSCHEDULERPORT to {hostname}."
+ssh {ssh_opts} -L localhost:$LOCALSCHEDULERPORT:localhost:{scheduler_port} {hostname} &
 #
 sleep 1
 echo $(date): Local processes:

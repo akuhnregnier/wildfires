@@ -33,15 +33,15 @@ def get_port_sync():
     ):
         # This represents other workers (non-schedulers) in the system.
         workers_values = [
-            ("1", "host1", 1234, False, False, 0, None if not nanny else 2234),
-            ("2", "host1", 1235, False, False, 0, None if not nanny else 2235),
-            ("3", "host2", 1236, False, False, 0, None if not nanny else 2236),
+            ("1", "host1", 1234, False, False, None if not nanny else 2234),
+            ("2", "host1", 1235, False, False, None if not nanny else 2235),
+            ("3", "host2", 1236, False, False, None if not nanny else 2236),
         ]
         if not scheduler:
             # Set a worker job id for the PortSync instance.
             os.environ["PBS_JOBID"] = "worker_test.pbs"
             # Since we are not a scheduler, add a scheduler to the system.
-            workers_values.append(("scheduler", "host1", -2, False, False, 0, None))
+            workers_values.append(("scheduler", "host1", -2, False, False, None))
 
         port_sync = PortSync(
             data_file=database_file,
@@ -55,7 +55,7 @@ def get_port_sync():
 
         with port_sync.con:
             port_sync.con.executemany(
-                "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?, ?)", workers_values
+                "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?)", workers_values
             )
             port_sync.con.execute(
                 "INSERT INTO timeout_exceeded VALUES (?)", (timeout_exceeded,)
@@ -92,9 +92,7 @@ def test_duplicated_ports(get_port_sync, timeout_exceeded, hostname, nanny):
     )
 
     def insert_values(*values):
-        port_sync.con.execute(
-            "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?, ?)", values
-        )
+        port_sync.con.execute("INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?)", values)
 
     def update_ports(*, port=None, nanny_port=None, name=port_sync.name):
         if port is not None:
@@ -127,14 +125,10 @@ def test_duplicated_ports(get_port_sync, timeout_exceeded, hostname, nanny):
                 raise IntentionalRollbackError()
 
     fail_tests = []
-    fail_tests.append((insert_values, ("4", "host1", 1234, False, False, 0, None), {}))
+    fail_tests.append((insert_values, ("4", "host1", 1234, False, False, None), {}))
     if nanny:
-        fail_tests.append(
-            (insert_values, ("4", "host1", 1234, False, False, 0, 2234), {})
-        )
-        fail_tests.append(
-            (insert_values, ("4", "host1", 2222, False, False, 0, 2234), {})
-        )
+        fail_tests.append((insert_values, ("4", "host1", 1234, False, False, 2234), {}))
+        fail_tests.append((insert_values, ("4", "host1", 2222, False, False, 2234), {}))
 
     fail_tests.append((update_ports, (), dict(port=1234)))
     fail_tests.append((update_ports, (), dict(port=1236)))
@@ -150,12 +144,10 @@ def test_duplicated_ports(get_port_sync, timeout_exceeded, hostname, nanny):
         should_fail(mod_fn, args, kwargs)
 
     pass_tests = []
-    pass_tests.append((insert_values, ("4", "host1", 2222, False, False, 0, 3333), {}))
+    pass_tests.append((insert_values, ("4", "host1", 2222, False, False, 3333), {}))
 
     if not nanny:
-        pass_tests.append(
-            (insert_values, ("4", "host1", 2222, False, False, 0, 2234), {})
-        )
+        pass_tests.append((insert_values, ("4", "host1", 2222, False, False, 2234), {}))
 
     pass_tests.append((update_ports, (), dict(port=4444, nanny_port=5555)))
     pass_tests.append((update_ports, (), dict(port=4445, nanny_port=5556, name="2")))
@@ -449,8 +441,8 @@ def test_invalid_port_addition(
     def new_worker():
         with port_sync.con:
             port_sync.con.execute(
-                "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?, ?)",
-                ("test", hostname, port_sync.port + 1, False, invalid, 0, None),
+                "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?)",
+                ("test", hostname, port_sync.port + 1, False, invalid, None),
             )
 
     if invalid:

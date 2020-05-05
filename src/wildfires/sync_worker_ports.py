@@ -44,11 +44,12 @@ from operator import add
 from sched import scheduler
 from sqlite3 import IntegrityError, OperationalError
 from subprocess import Popen
-from textwrap import dedent, wrap
+from textwrap import wrap
 from time import monotonic, sleep, time
 
 import pandas as pd
 
+from .dask_cx1 import strip_multiline
 from .logging_config import enable_logging
 from .ports import get_ports
 
@@ -69,13 +70,6 @@ class ChangedPortsError(PortSyncError):
 
 class SchedulerError(PortSyncError):
     """Raised when a scheduling error is encountered."""
-
-
-def multiline(s, strip_all_indents=False):
-    if strip_all_indents:
-        return " ".join([dedent(sub) for sub in s.strip().split("\n")])
-    else:
-        return dedent(s).strip().replace("\n", " ")
 
 
 class Scheduler:
@@ -188,8 +182,8 @@ _arg_tuple = namedtuple("Arg", ["type", "help", "default"])
 
 def arg_tuple(type_string, help_string, default_value):
     """Get a descriptive argument namedtuple with concatenated help string."""
-    # Apply `multiline` to the help strings.
-    help_string = multiline(help_string, strip_all_indents=True)
+    # Apply `strip_multiline` to the help strings.
+    help_string = strip_multiline(help_string)
     return _arg_tuple(type_string, help_string, default_value)
 
 
@@ -259,6 +253,15 @@ port_sync_args = OrderedDict(
         the qdel command.""",
         False,
     ),
+    sqlite_timeout=arg_tuple(
+        "int", "Time to wait for the database lock to be released.", 40
+    ),
+    counter_dir=arg_tuple(
+        "str",
+        """Directory where counter information is written to. This needs to be the
+        same for the scheduler and all the workers it manages.""",
+        os.getcwd(),
+    ),
 )
 
 width = 88
@@ -300,6 +303,8 @@ class PortSync:
         nanny=port_sync_args["nanny"].default,
         nanny_port=port_sync_args["nanny_port"].default,
         enable_qdel=port_sync_args["enable_qdel"].default,
+        sqlite_timeout=port_sync_args["sqlite_timeout"].default,
+        counter_dir=port_sync_args["counter_dir"].default,
     ):
         if nanny_port is not None and not nanny:
             raise ValueError(f"`nanny_port={nanny_port}` given, but `nanny=False`.")
@@ -321,6 +326,9 @@ class PortSync:
         self.ssh_opts = ssh_opts
         self.nanny = nanny
         self.enable_qdel = enable_qdel
+        self.counter_dir = counter_dir
+
+        os.makedirs(self.counter_dir, exist_ok=True)
 
         self.ssh_procs = []
         self.output_already = False
@@ -330,6 +338,9 @@ class PortSync:
         self.name = (
             "scheduler" if self.is_scheduler else os.environ["PBS_JOBID"].split(".")[0]
         )
+
+        # Only applies to workers.
+        self.counter_file = os.path.join(self.counter_dir, self.name)
 
         # The hostname is important as ports only need to be forwarded once per host,
         # since intra-host communication should be possible without port forwarding.
@@ -343,9 +354,12 @@ class PortSync:
 
         self.logger.info("Starting port number sync.")
 
+        self.sqlite_timeout = sqlite_timeout
+
         if not os.path.isfile(data_file):
             self.logger.info(f"Database file {data_file} was not found.")
-        self.con = sqlite3.connect(data_file, timeout=40)
+        self.con = sqlite3.connect(data_file, timeout=self.sqlite_timeout)
+        self.logger.info(f"Connected to database at {data_file}.")
 
         # Ensure a graceful exit when possible. Our own entry will be cleared from the
         # database, SSH processes killed, and the database connection closed.
@@ -368,7 +382,6 @@ class PortSync:
                 port INTEGER NOT NULL UNIQUE,
                 ready BOOLEAN,
                 invalid_port BOOLEAN,
-                counter INTEGER NOT NULL,
                 nanny_port INTEGER UNIQUE
             );
             CREATE TABLE IF NOT EXISTS local_forwards (
@@ -563,11 +576,8 @@ class PortSync:
             # The scheduler is responsible for clearing unresponsive workers, and so
             # needs to keep track of all workers' counters.
 
-            def get_zero():
-                return 0
-
-            self.counters = {}
-            self.missed_counts = defaultdict(get_zero)
+            self.counters = defaultdict(int)
+            self.missed_counts = defaultdict(int)
             self.keepalive_intervals = keepalive_intervals
         else:
             if port is None:
@@ -595,14 +605,13 @@ class PortSync:
             try:
                 with self.con:
                     self.con.execute(
-                        "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?)",
                         (
                             self.name,
                             self.hostname,
                             get_ports()[0] if initial_port is None else initial_port,
                             False,
                             False,
-                            0,
                             get_ports()[0]
                             if not self.is_scheduler
                             and self.nanny
@@ -653,25 +662,40 @@ class PortSync:
     def _sync_iteration(self):
         """A synchronisation iteration which is looped using a scheduler."""
         try:
-            if self.is_scheduler:
+            if not self.is_scheduler:
+                # Signal that we are alive.
+                self.increment_counter()
+            else:
                 # Check the worker counters to detect inactive workers.
-                for worker_id, counter in self.con.execute(
-                    "SELECT name, counter FROM workers WHERE name != 'scheduler'"
+                for worker_id, port in self.con.execute(
+                    "SELECT name, port FROM workers WHERE name != 'scheduler'"
                 ):
-                    if worker_id in self.counters:
-                        if counter == self.counters[worker_id]:
-                            # The counter has not changed - a dead worker?
-                            self.missed_counts[worker_id] += 1
-                            if self.missed_counts[worker_id] > self.keepalive_intervals:
-                                # The worker is unresponsive - assume it is dead.
-                                print(f"Clearing worker: {worker_id}.", flush=True)
-                                self.clear(worker_id)
-                        else:
-                            # Record the new counter value and reset the missed counts.
-                            self.counters[worker_id] = counter
-                            self.missed_counts[worker_id] = 0
+                    worker_counter_file = os.path.join(self.counter_dir, worker_id)
+                    if os.path.isfile(worker_counter_file):
+                        with open(worker_counter_file) as f:
+                            counter = int(f.read())
                     else:
+                        counter = 0
+
+                    if counter == self.counters[worker_id]:
+                        # The worker may be unresponsive.
+                        self.missed_counts[worker_id] += 1
+                        if self.missed_counts[worker_id] > self.keepalive_intervals:
+                            # The worker is unresponsive - assume it is dead.
+                            msg = strip_multiline(
+                                f"""Clearing worker {worker_id} with port {port} as
+                                its counter ({counter}) has not changed for
+                                {self.missed_counts[worker_id]} iterations."""
+                            )
+                            self.logger.warning(msg)
+                            print(msg, flush=True)
+                            self.clear(worker_id)
+
+                    else:
+                        # The worker was responsive.
+                        self.missed_counts[worker_id] = 0
                         self.counters[worker_id] = counter
+
                 # Print information about the current workers to stdout.
                 print(datetime.now(), "(times may differ between hosts!)", flush=True)
                 print(self, flush=True)
@@ -685,9 +709,9 @@ class PortSync:
                     f"All {self.n_workers} workers are ready. Our port: {self.port}."
                     + (f" Our nanny port: {self.nanny_port}." if self.nanny else "")
                 )
+                # Carry out port forwarding and print out ports.
                 try:
-                    # Carry out port forwarding and print out ports.
-                    self.output()
+                    self._only_handle_locked_database_error(self.output)
                 except Exception:
                     # If we cannot successfully carry out port forwarding or
                     # communicate our ports to the dask-worker process, there is
@@ -709,11 +733,29 @@ class PortSync:
                 # If we are not ready, check the ports on our host.
                 self.logger.info("Checking ports.")
                 self.check_ports()
-
-            # Signal that we are still alive.
-            self.increment_counter()
         except Exception:
             self.logger.exception("Continuing after encountering error.")
+
+    def _only_handle_locked_database_error(self, bound_method):
+        """Call `bound_method` without arguments.
+
+        Internally, the locked database error, and only this specific kind of
+        `OperationalError` error, is handled.
+
+        """
+        try:
+            bound_method()
+        except OperationalError as operational_error:
+            if str(operational_error) == "database is locked":
+                self.logger.warning(
+                    strip_multiline(
+                        f"""The database remained locked for longer than
+                        {self.sqlite_timeout} s."""
+                    )
+                )
+            else:
+                # Only handle the locked database error, propagate all others.
+                raise
 
     def check_ports(self):
         if not self.locked_port and self.any_invalid_ports():
@@ -725,14 +767,7 @@ class PortSync:
         else:
             # If all ports are available on other nodes, check that they work on ours.
             # ignoring the scheduler (since it doesn't have a real worker port).
-            try:
-                self._check_ports_locally()
-            except OperationalError as operational_error:
-                if str(operational_error) == "database is locked":
-                    self.logger.warning("The database was locked for too long.")
-                else:
-                    # Only handle the locked database error.
-                    raise
+            self._only_handle_locked_database_error(self._check_ports_locally)
 
     def _check_ports_locally(self):
         """Check that ports work on our host.
@@ -802,15 +837,14 @@ class PortSync:
         except OSError:
             # Port is already in use.
             if port in self.all_forwarded_ports:
-                # TODO: In addition to terminating ourselves, also terminate other
-                # workers on our node (also the dask-worker process!).
+                # TODO: Also terminate other workers on our node (also the dask-worker
+                # process!).
                 self.abort(
-                    multiline(
-                        f"""
-                        Port {port} from {worker_id} was forwarded on other hosts (but
-                        not ours), but is unavailable on our host. Since we cannot
-                        change the port (it is already forwarded) we must retire
-                        workers on our host as connection to the cluster is now
+                    strip_multiline(
+                        f"""Port {port} from {worker_id} was forwarded on other hosts
+                        (but not ours), but is unavailable on our host. Since we
+                        cannot change the port (it is already forwarded) we must
+                        retire workers on our host as connection to the cluster is now
                         impossible. Exit (1)."""
                     ),
                     1,
@@ -1008,20 +1042,22 @@ class PortSync:
         Also abort if we have been removed from the database by another process.
 
         """
-        # Fetch counter.
-        current_counter = self.con.execute(
-            "SELECT counter FROM workers WHERE name = ?", (self.name,)
+        # Check that we are still in the database.
+        name_entry = self.con.execute(
+            "SELECT name FROM workers WHERE name = ?", (self.name,)
         ).fetchone()
 
-        if current_counter is None:
+        if name_entry is None:
             self.abort("Our entry has been removed. Exit (3).", 3)
 
-        with self.con:
-            # Increment and write back.
-            self.con.execute(
-                "UPDATE workers SET counter = ? WHERE name = ?",
-                (current_counter + 1, self.name),
-            )
+        # Increment our counter.
+        if os.path.isfile(self.counter_file):
+            with open(self.counter_file) as f:
+                current_counter = int(f.read())
+        else:
+            current_counter = 0
+        with open(self.counter_file, "w") as f:
+            f.write(str(current_counter + 1))
 
     @property
     def locked_port(self):
@@ -1266,8 +1302,11 @@ class PortSync:
             if self.enable_qdel:
                 # Ensure that the job termination happens (for example if there is a
                 # locked database error).
+                # TODO: Make this more graceful - at the moment dask-worker cleanup
+                # would be interrupted, for example.
 
                 def cancel_worker_job(jobid):
+                    self.logger.warning(f"Calling 'qdel {jobid}'.")
                     Popen(shlex.split(f"qdel {jobid}"))
 
                 if name == self.name:
@@ -1279,14 +1318,7 @@ class PortSync:
 
     def __str__(self):
         # Add general worker information.
-        workers_columns = (
-            "name",
-            "hostname",
-            "port",
-            "ready",
-            "invalid_port",
-            "counter",
-        )
+        workers_columns = ("name", "hostname", "port", "ready", "invalid_port")
         df_columns = workers_columns
         df_data = tuple(
             list(row)
@@ -1317,6 +1349,8 @@ class PortSync:
             row.append(nanny_remote_forward if nanny_remote_forward else 0)
 
         # Add local forwarding information.
+        # TODO: 'wrap' the local forwards lists, since their number can grow quite
+        # large, making the final visualisation unwieldy.
         df_columns += ("local forwards",)
 
         local_forwards = defaultdict(list)
@@ -1411,6 +1445,19 @@ def main():
     parser.add_argument(
         "--enable-qdel", action="store_true", help=port_sync_args["enable_qdel"].help
     )
+    parser.add_argument(
+        "--sqlite-timeout",
+        type=int,
+        nargs="?",
+        default=port_sync_args["sqlite_timeout"].default,
+        help=port_sync_args["sqlite_timeout"].help,
+    )
+    parser.add_argument(
+        "--counter-dir",
+        nargs="?",
+        default=port_sync_args["counter_dir"].default,
+        help=port_sync_args["counter_dir"].help,
+    )
     args = parser.parse_args()
 
     enable_logging(level=logging.DEBUG if args.debug else logging.INFO, pbs=True)
@@ -1429,6 +1476,8 @@ def main():
         args.nanny,
         args.nanny_port,
         args.enable_qdel,
+        args.sqlite_timeout,
+        args.counter_dir,
     ).run()
 
 
