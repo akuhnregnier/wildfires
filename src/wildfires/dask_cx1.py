@@ -396,7 +396,7 @@ class CX1Cluster(PBSCluster):
 
         initial_timeout = mod_kwargs.get("initial_timeout", 120)
         poll_interval = mod_kwargs.get("poll_interval", 20)
-        keepalive_intervals = mod_kwargs.get("keepalive_intervals", 15)
+        keepalive_intervals = mod_kwargs.get("keepalive_intervals", 4)
 
         sync_worker_ports_exec = (
             "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/"

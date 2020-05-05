@@ -252,6 +252,13 @@ port_sync_args = OrderedDict(
         "Requires `--nanny` or `nanny=True`.",
         None,
     ),
+    enable_qdel=arg_tuple(
+        "bool",
+        """Only use if worker processes will be started using PBS. In addition to
+        being removed from the database, cleared workers will also be cancelled using
+        the qdel command.""",
+        False,
+    ),
 )
 
 width = 88
@@ -292,6 +299,7 @@ class PortSync:
         keepalive_intervals=port_sync_args["keepalive_intervals"].default,
         nanny=port_sync_args["nanny"].default,
         nanny_port=port_sync_args["nanny_port"].default,
+        enable_qdel=port_sync_args["enable_qdel"].default,
     ):
         if nanny_port is not None and not nanny:
             raise ValueError(f"`nanny_port={nanny_port}` given, but `nanny=False`.")
@@ -312,6 +320,7 @@ class PortSync:
             raise ValueError(f"All SSH options must be strings. Got {repr(ssh_opts)}.")
         self.ssh_opts = ssh_opts
         self.nanny = nanny
+        self.enable_qdel = enable_qdel
 
         self.ssh_procs = []
         self.output_already = False
@@ -676,8 +685,17 @@ class PortSync:
                     f"All {self.n_workers} workers are ready. Our port: {self.port}."
                     + (f" Our nanny port: {self.nanny_port}." if self.nanny else "")
                 )
-                # Print ports.
-                self.output()
+                try:
+                    # Carry out port forwarding and print out ports.
+                    self.output()
+                except Exception:
+                    # If we cannot successfully carry out port forwarding or
+                    # communicate our ports to the dask-worker process, there is
+                    # nothing else we can do.
+                    msg = "Exception during output stage. Exit (4)."
+                    self.logger.exception(msg)
+                    self.abort(msg, 4)
+
             elif not self.any_invalid_ports() and all(
                 self.con.execute(
                     "SELECT ready FROM workers WHERE name = ?", (self.name,)
@@ -794,7 +812,8 @@ class PortSync:
                         change the port (it is already forwarded) we must retire
                         workers on our host as connection to the cluster is now
                         impossible. Exit (1)."""
-                    )
+                    ),
+                    1,
                 )
 
             self.logger.warning(f"Port {port} from {worker_id} is unavailable.")
@@ -805,7 +824,7 @@ class PortSync:
                 # XXX: Must the 'WHERE' clause be extended to include
                 # 'OR nanny_port=`port`'?
                 self.con.execute(
-                    "UPDATE workers SET invalid_port = True WHERE port = ?", (port,),
+                    "UPDATE workers SET invalid_port = True WHERE port = ?", (port,)
                 )
 
     def output(self):
@@ -894,7 +913,7 @@ class PortSync:
             ):
                 # Our nanny port has already been forwarded.
                 self.abort(
-                    "While our worker part was not forwarded, our nanny port was."
+                    "While our worker part was not forwarded, our nanny port was.", 5
                 )
 
             if self.output_already:
@@ -995,7 +1014,7 @@ class PortSync:
         ).fetchone()
 
         if current_counter is None:
-            self.abort("Our entry has been removed. Exit (2).")
+            self.abort("Our entry has been removed. Exit (3).", 3)
 
         with self.con:
             # Increment and write back.
@@ -1068,7 +1087,7 @@ class PortSync:
                     raise
         else:
             # No break encountered - the new port was always already present.
-            self.abort("Could not find a suitable unique port. Exit (1).")
+            self.abort("Could not find a suitable unique port. Exit (1).", 1)
 
     @property
     def all_forwarded_ports(self):
@@ -1193,7 +1212,8 @@ class PortSync:
 
         # After SSH processes are killed, remote our entry from the database,
         # prompting other workers on our host to take over port forwarding if needed.
-        self.clear()
+        if not self.is_scheduler:
+            self.clear()
 
         # Cancel the repeated execution of the synchronisation loop.
         self.loop_scheduler.cancel()
@@ -1207,29 +1227,55 @@ class PortSync:
             proc.kill()
 
     def clear(self, name=None):
-        """To be called when this worker exits upon encountering an error.
+        """Remove a worker from the database.
 
         Remove all rows relevant to the specified worker.
-        If our own worker is cleared, also stop the synchronisation loop.
+
+        If we are removing our ourselves, register the termination of our job when the
+        interpreter exits after calling `sys.exit()`.
+
+        Otherwise (ie. when the scheduler is dealing with an unresponsive worker),
+        terminate the worker's job immediately (does this cause problems for the
+        database file?).
 
         Args:
             name (str): Name of the worker to clear. Defaults to `self.name`.
 
         """
-        if name is None:
-            name = self.name
-            port = self.port
-        else:
-            port = self.con.execute(
-                "SELECT port FROM workers WHERE name = ?", (name,)
-            ).fetchone()
-        self.logger.warning(f"Clearing worker {name} with port {port}.")
-        with self.con:
-            self.con.execute(
-                f"DELETE FROM local_forwards WHERE name = ? OR port = ?", (name, port)
-            )
-            for table in ("remote_forwards", "workers"):
-                self.con.execute(f"DELETE FROM {table} WHERE name = ?", (name,))
+        if name == "scheduler":
+            self.logger.warning("Trying to clear scheduler.")
+            return
+
+        try:
+            if name is None:
+                name = self.name
+                port = self.port
+            else:
+                port = self.con.execute(
+                    "SELECT port FROM workers WHERE name = ?", (name,)
+                ).fetchone()
+            self.logger.warning(f"Clearing worker {name} with port {port}.")
+            with self.con:
+                self.con.execute(
+                    f"DELETE FROM local_forwards WHERE name = ? OR port = ?",
+                    (name, port),
+                )
+                for table in ("remote_forwards", "workers"):
+                    self.con.execute(f"DELETE FROM {table} WHERE name = ?", (name,))
+        finally:
+            if self.enable_qdel:
+                # Ensure that the job termination happens (for example if there is a
+                # locked database error).
+
+                def cancel_worker_job(jobid):
+                    Popen(shlex.split(f"qdel {jobid}"))
+
+                if name == self.name:
+                    # If we are terminating ourselves.
+                    atexit.register(cancel_worker_job, name)
+                else:
+                    # We are terminating an unresponsive worker.
+                    cancel_worker_job(name)
 
     def __str__(self):
         # Add general worker information.
@@ -1353,7 +1399,7 @@ def main():
         help=port_sync_args["keepalive_intervals"].help,
     )
     parser.add_argument(
-        "--nanny", action="store_true", help=port_sync_args["debug"].help
+        "--nanny", action="store_true", help=port_sync_args["nanny"].help
     )
     parser.add_argument(
         "--nanny-port",
@@ -1361,6 +1407,9 @@ def main():
         nargs="?",
         default=port_sync_args["nanny_port"].default,
         help=port_sync_args["nanny_port"].help,
+    )
+    parser.add_argument(
+        "--enable-qdel", action="store_true", help=port_sync_args["enable_qdel"].help
     )
     args = parser.parse_args()
 
@@ -1379,6 +1428,7 @@ def main():
         args.keepalive_intervals,
         args.nanny,
         args.nanny_port,
+        args.enable_qdel,
     ).run()
 
 
