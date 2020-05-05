@@ -432,6 +432,8 @@ class CX1Cluster(PBSCluster):
             # resulted in the connection being dropped repeatedly as it was
             # overzealously restarted.
             env_extra=f"""
+export DASK_TEMPORARY_DIRECTORY=$TMPDIR
+#
 JOBID="${{PBS_JOBID%%.*}}"
 echo $(date): JOBID $JOBID on host $(hostname).
 echo $(date): Getting ports.
