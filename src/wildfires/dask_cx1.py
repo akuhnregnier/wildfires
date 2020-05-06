@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from functools import partial, wraps
 from getpass import getuser
 from inspect import signature
-from operator import eq, ge
+from operator import eq, ge, lt
 from random import choice
 from string import ascii_lowercase
 from subprocess import Popen
@@ -246,7 +246,9 @@ def get_parallel_backend(fallback="loky", **specs):
 
 
 def get_scheduler_file(match="above", **specs):
-    """Get a scheduler file that points to an existing scheduler.
+    """Get a scheduler file describing an existing scheduler.
+
+    The newest file matching the given `specs` will be returned.
 
     This file can then be used to connect to the scheduler like so:
 
@@ -254,18 +256,18 @@ def get_scheduler_file(match="above", **specs):
     >>> scheduler_file = get_scheduler_file(cores=3, memory="10GB")  # doctest: +SKIP
     >>> client = Client(scheduler_file=scheduler_file)  # doctest: +SKIP
 
-    This client can then be used to submit tasks to the scheduler.
+    The client can be used to submit tasks to the scheduler.
 
     A more robust way to get a Client is to use `get_client()`, which additionally
     attempts port forwarding to the scheduler's host if the connection does not
     succeed at first.
 
     Args:
-        match (str): One of "above" or "same". All resource specifications provided as
+        match {"above", "same", or "below"}: All resource specifications provided as
             keyword arguments (eg. 'cores=10') will be matched against the worker
-            specifications in existing scheduler files. If "above", all specifications
-            must match or exceed the requested values for a match to be reported. If
-            "same", all specifications must match exactly.
+            specifications in existing scheduler files. For example, if "above", all
+            specifications must match or exceed the requested values for a match to be
+            reported.
         specs: Worker resource specifications, eg. cores=10, memory="8GB". The
             scheduler's cluster will have access to a certain number of such workers,
             where each worker will have access to `cores` number of threads.
@@ -279,6 +281,8 @@ def get_scheduler_file(match="above", **specs):
         comp = ge
     elif match == "same":
         comp = eq
+    elif match == "below":
+        comp = lt
     else:
         raise ValueError(f"Invalid argument for 'match' given: {repr(match)}.")
 
@@ -288,7 +292,13 @@ def get_scheduler_file(match="above", **specs):
     )
     specs["walltime"] = specs.get("walltime", DEFAULTS["walltime"])
 
-    for scheduler_file in os.listdir(SCHEDULER_DIR):
+    for scheduler_file in sorted(
+        os.listdir(SCHEDULER_DIR),
+        key=lambda scheduler_file: os.path.getctime(
+            os.path.join(SCHEDULER_DIR, scheduler_file)
+        ),
+        reverse=True,
+    ):
         with open(os.path.join(SCHEDULER_DIR, scheduler_file)) as f:
             worker_specs = json.load(f)["worker_specs"]
         for spec, requested_value in specs.items():
