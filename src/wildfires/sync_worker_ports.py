@@ -41,10 +41,12 @@ from collections import OrderedDict, defaultdict, namedtuple
 from datetime import datetime
 from functools import reduce
 from operator import add
+from random import random
 from sched import scheduler
 from sqlite3 import IntegrityError, OperationalError
 from subprocess import Popen
 from textwrap import wrap
+from threading import Thread
 from time import monotonic, sleep, time
 
 import pandas as pd
@@ -204,7 +206,7 @@ port_sync_args = OrderedDict(
         300,
     ),
     poll_interval=arg_tuple(
-        "float", "Interval in seconds between file read operations.", 10
+        "float", "Interval in seconds between file read operations.", 30
     ),
     scheduler=arg_tuple(
         "bool",
@@ -254,7 +256,7 @@ port_sync_args = OrderedDict(
         False,
     ),
     sqlite_timeout=arg_tuple(
-        "int", "Time to wait for the database lock to be released.", 40
+        "int", "Time to wait for the database lock to be released.", 10
     ),
     counter_dir=arg_tuple(
         "str",
@@ -355,6 +357,11 @@ class PortSync:
         self.logger.info("Starting port number sync.")
 
         self.sqlite_timeout = sqlite_timeout
+
+        if self.sqlite_timeout >= self.poll_interval:
+            raise ValueError(
+                "The poll interval should be larger than the SQLite timeout."
+            )
 
         if not os.path.isfile(data_file):
             self.logger.info(f"Database file {data_file} was not found.")
@@ -643,6 +650,14 @@ class PortSync:
         if self.nanny:
             self.logger.info(f"Proposing nanny port {self.nanny_port}.")
 
+        if not self.is_scheduler:
+            self.logger.info("Starting keep-alive counter-file writer thread.")
+            Thread(
+                target=Scheduler(self.poll_interval, self.increment_counter).run,
+                daemon=True,
+            ).start()
+            self._random_sleep()
+
     @property
     def port(self):
         return self.con.execute(
@@ -663,8 +678,7 @@ class PortSync:
         """A synchronisation iteration which is looped using a scheduler."""
         try:
             if not self.is_scheduler:
-                # Signal that we are alive.
-                self.increment_counter()
+                self._abort_if_removed()
             else:
                 # Check the worker counters to detect inactive workers.
                 for worker_id, port in self.con.execute(
@@ -753,9 +767,19 @@ class PortSync:
                         {self.sqlite_timeout} s."""
                     )
                 )
+                self._random_sleep()
             else:
                 # Only handle the locked database error, propagate all others.
                 raise
+
+    def _random_sleep(self):
+        """Sleep for a random amount of time less than 20% of the SQLite timeout.
+
+        This could ease pressure on the database when many connections are initiated
+        at similar times.
+
+        """
+        sleep(0.2 * random() * self.sqlite_timeout)
 
     def check_ports(self):
         if not self.locked_port and self.any_invalid_ports():
@@ -886,7 +910,7 @@ class PortSync:
 
             if remote_ssh_command:
                 # Allow for the SSH connections to be established.
-                # TODO: Make this nonblocking by output ports in another thread.
+                # TODO: Make this nonblocking by outputting ports in another thread.
                 sleep(2)
                 self._write_ports()
         else:
@@ -1036,12 +1060,8 @@ class PortSync:
                 )
         return ssh_command
 
-    def increment_counter(self):
-        """Increment our keepalive-counter.
-
-        Also abort if we have been removed from the database by another process.
-
-        """
+    def _abort_if_removed(self):
+        """Abort if we have been removed from the database by another process."""
         # Check that we are still in the database.
         name_entry = self.con.execute(
             "SELECT name FROM workers WHERE name = ?", (self.name,)
@@ -1050,12 +1070,19 @@ class PortSync:
         if name_entry is None:
             self.abort("Our entry has been removed. Exit (3).", 3)
 
+    def increment_counter(self):
+        """Increment our keepalive-counter."""
+
         # Increment our counter.
         if os.path.isfile(self.counter_file):
             with open(self.counter_file) as f:
                 current_counter = int(f.read())
         else:
             current_counter = 0
+        self.logger.debug(
+            f"Read current counter {current_counter} from {self.counter_file}."
+        )
+        self.logger.debug(f"Writing {current_counter + 1} to {self.counter_file}.")
         with open(self.counter_file, "w") as f:
             f.write(str(current_counter + 1))
 
