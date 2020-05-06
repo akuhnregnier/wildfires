@@ -51,6 +51,7 @@ def get_port_sync():
             port=port,
             nanny=nanny,
             nanny_port=nanny_port,
+            sqlite_timeout=0.2,
         )
 
         with port_sync.con:

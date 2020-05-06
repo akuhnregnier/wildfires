@@ -46,7 +46,7 @@ from sched import scheduler
 from sqlite3 import IntegrityError, OperationalError
 from subprocess import Popen
 from textwrap import wrap
-from threading import Thread
+from threading import Event, Thread
 from time import monotonic, sleep, time
 
 import pandas as pd
@@ -75,7 +75,15 @@ class SchedulerError(PortSyncError):
 
 
 class Scheduler:
-    def __init__(self, interval, action, args=None, kwargs=None, max_iter=math.inf):
+    def __init__(
+        self,
+        interval,
+        action,
+        args=None,
+        kwargs=None,
+        max_iter=math.inf,
+        action_name=None,
+    ):
         """Scheduler for repeated execution of an action.
 
         Args:
@@ -84,20 +92,44 @@ class Scheduler:
             args (tuple): Positional arguments.
             kwargs (dictionary): Keyword arguments.
             max_iter (int or float): Maximum number of iterations.
+            action_name (str): If set, used for debugging purposes.
 
         """
-        self.scheduler = scheduler()
+        self.scheduler = scheduler(delayfunc=self._interruptible_sleep)
 
         self.interval = interval
         self.action = action
         self.args = args if args is not None else ()
         self.kwargs = kwargs if kwargs is not None else {}
         self.max_iter = max_iter
+        self._action_name = action_name
 
         self.first_time = None
         self.iterations = 0
         self.n_intervals = 0
         self.next_event = None
+        self._stop_event = Event()
+
+    def _interruptible_sleep(self, total_time, chunk_seconds=0.001):
+        """Sleep for `total_time` in intervals that are `chunk_seconds` long.
+
+        If `self._stopped()`, the sleep will be interrupted. The length of
+        `chunk_seconds` determines the time it takes for the scheduling to be
+        interrupted by other threads.
+
+        """
+        if total_time < chunk_seconds:
+            sleep(total_time)
+        else:
+            start = monotonic()
+            while (monotonic() - start) < total_time:
+                if self._stopped():
+                    break
+                sleep(chunk_seconds)
+
+    def __str__(self):
+        responsibility = self.action if self._action_name is None else self._action_name
+        return f"Scheduler running {responsibility} every {self.interval} seconds."
 
     def run(self):
         """Start running the action."""
@@ -157,12 +189,19 @@ class Scheduler:
         self.n_intervals = next_intervals
 
         if self.iterations < self.max_iter:
-            self.next_event = self.scheduler.enterabs(
-                next_time, 0, self._execute_action
-            )
+            # If we have been requested to stop during an execution of the event, do
+            # not schedule another one.
+            if not self._stopped():
+                self.next_event = self.scheduler.enterabs(
+                    next_time, 0, self._execute_action
+                )
+
+    def _stopped(self):
+        return self._stop_event.is_set()
 
     def cancel(self):
         """Cease to continually execute `action`."""
+        self._stop_event.set()
         if self.next_event is not None:
             self.scheduler.cancel(self.next_event)
             self.next_event = None
@@ -177,6 +216,15 @@ class LoggerAdapter(logging.LoggerAdapter):
 
     def process(self, msg, kwargs):
         return f"\n[{self.worker_name}:{self.hostname}] {msg}", kwargs
+
+
+class KeepAliveThread(Thread):
+    def __init__(self, interval, target, action_name=None, **kwargs):
+        self.target_sched = Scheduler(interval, target, action_name=action_name)
+        super().__init__(target=self.target_sched.run, **kwargs)
+
+    def stop(self):
+        self.target_sched.cancel()
 
 
 _arg_tuple = namedtuple("Arg", ["type", "help", "default"])
@@ -352,7 +400,9 @@ class PortSync:
         # logger = logging.getLogger(self.__class__.__name__)
         self.logger = LoggerAdapter(logger, self.name, self.hostname)
 
-        self.loop_scheduler = Scheduler(self.poll_interval, self._sync_iteration)
+        self.loop_scheduler = Scheduler(
+            self.poll_interval, self._sync_iteration, action_name="port sync main loop"
+        )
 
         self.logger.info("Starting port number sync.")
 
@@ -652,11 +702,16 @@ class PortSync:
 
         if not self.is_scheduler:
             self.logger.info("Starting keep-alive counter-file writer thread.")
-            Thread(
-                target=Scheduler(self.poll_interval, self.increment_counter).run,
+            self.keepalive_thread = KeepAliveThread(
+                interval=self.poll_interval,
+                target=self.increment_counter,
+                action_name="keepalive",
                 daemon=True,
-            ).start()
+            )
+            self.keepalive_thread.start()
             self._random_sleep()
+        else:
+            self.keepalive_thread = None
 
     @property
     def port(self):
@@ -1280,6 +1335,17 @@ class PortSync:
 
         # Cancel the repeated execution of the synchronisation loop.
         self.loop_scheduler.cancel()
+
+        if not self.is_scheduler:
+            # Clean up the keepalive thread.
+            self.keepalive_thread.stop()
+            self.keepalive_thread.join(1)
+
+            if self.keepalive_thread.is_alive():
+                self.logger.error("Keepalive thread has not stopped.")
+
+            if os.path.isfile(self.counter_file):
+                os.remove(self.counter_file)
 
         # Close the database connection last.
         self.con.close()
