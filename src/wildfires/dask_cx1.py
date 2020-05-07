@@ -507,7 +507,8 @@ WORKERPORT=$({sys.executable}<<EOF
 import os
 from time import sleep
 while not os.path.isfile("$WORKERPORTFILE"):
-    sleep(1)
+    sleep(5)
+sleep(5)
 with open("$WORKERPORTFILE") as f:
     ports = f.read().strip().split()
     if {nanny}:
