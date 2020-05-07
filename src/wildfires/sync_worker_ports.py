@@ -802,6 +802,14 @@ class PortSync:
                 # If we are not ready, check the ports on our host.
                 self.logger.info("Checking ports.")
                 self.check_ports()
+
+            self.logger.debug(f"{len(self.ssh_procs)} SSH processes were started.")
+            self.logger.debug(
+                strip_multiline(
+                    f"""SSH exit codes (None if still running):
+                    {[proc.poll() for proc in self.ssh_procs]}"""
+                )
+            )
         except Exception:
             self.logger.exception("Continuing after encountering error.")
 
@@ -816,10 +824,11 @@ class PortSync:
             bound_method()
         except OperationalError as operational_error:
             if str(operational_error) == "database is locked":
-                self.logger.warning(
+                self.logger.exception(
                     strip_multiline(
                         f"""The database remained locked for longer than
-                        {self.sqlite_timeout} s."""
+                        {self.sqlite_timeout} s during the execution of
+                        {bound_method}."""
                     )
                 )
                 self._random_sleep()
@@ -1039,6 +1048,12 @@ class PortSync:
                     f"INSERT INTO remote_forwards VALUES (?, ?, ?)",
                     (self.name, self.port, self.nanny_port),
                 )
+            self.logger.debug(
+                strip_multiline(
+                    f"""Inserted into remote_forwards:
+                    {(self.name, self.port, self.nanny_port)}."""
+                )
+            )
             # Create the remote forwarding command.
             ssh_command += ("-R " + ":".join((f"localhost:{self.port}",) * 2),)
             if self.nanny:
@@ -1046,6 +1061,7 @@ class PortSync:
                     "-R " + ":".join((f"localhost:{self.nanny_port}",) * 2),
                 )
 
+        self.logger.debug(f"Remote forward command: {ssh_command}.")
         return ssh_command
 
     def local_forwarding(self):
@@ -1091,28 +1107,34 @@ class PortSync:
 
         # Which of those ports have not been forwarded yet on our host.
         new_ports = ext_ports.difference(existing_local_forwards)
-        for new_port in new_ports:
-            # There are matching ports that have not been locally forwarded yet.
-            try:
-                # Register the new local forward in the database.
-                with self.con:
+        try:
+            self.logger.debug(f"Attempting to insert into local_forwards: {new_ports}.")
+            with self.con:
+                for new_port in new_ports:
+                    # There are matching ports that have not been locally forwarded
+                    # yet.
+                    # Register the new local forward in the database.
                     self.con.execute(
                         "INSERT INTO local_forwards VALUES (?, ?)",
                         (self.name, new_port),
                     )
-                # Create the corresponding local forwarding command.
+            self.logger.debug(f"Inserted into local_forwards: {new_ports}.")
+        except IntegrityError as integrity_error:
+            # This could happen if another process on the same node was already
+            # carrying out the identical transaction at the time we requested the
+            # transaction. If unchecked, this would lead to identical SSH
+            # forwarding commands being issued, which the TRIGGER avoids.
+            # Local forwarding happens on a first come, first served
+            # basis and therefore has to be coordinated like this (or only one
+            # worker per host could be made responsible for it).
+            self.logger.error(f"Possible race condition intercepted: {integrity_error}")
+        else:
+            # Create the corresponding local forwarding commands if there were no
+            # errors.
+            for new_port in new_ports:
                 ssh_command += ("-L " + ":".join((f"localhost:{new_port}",) * 2),)
-            except IntegrityError as integrity_error:
-                # This could happen if another process on the same node was already
-                # carrying out the identical transaction at the time we requested the
-                # transaction. If unchecked, this would lead to identical SSH
-                # forwarding commands being issued, which the TRIGGER avoids.
-                # Local forwarding happens on a first come, first served
-                # basis and therefore has to be coordinated like this (or only one
-                # worker per host could be made responsible for it).
-                self.logger.error(
-                    f"Possible race condition intercepted: {integrity_error}"
-                )
+
+        self.logger.debug(f"Local forward command: {ssh_command}.")
         return ssh_command
 
     def _abort_if_removed(self):
