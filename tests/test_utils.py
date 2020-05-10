@@ -45,17 +45,17 @@ def test_cube_translation_subset():
     np.random.seed(1)
     data = np.random.random((1, 10, 10))
     data = np.ma.MaskedArray(data, mask=np.zeros_like(data, dtype=np.bool_))
-    # Mark elements at the beginning of the latitude range, but in the middle of the
-    # longitude range as invalid.
+    # Invalidate elements at the beginning of the latitude range.
     data.mask[:, :2] = True
+    # Invalidate elements in the middle of the longitude range.
     data.mask[..., 3:6] = True
 
     cube = dummy_lat_lon_cube(data)
 
     sub_cube, _ = select_valid_subset(cube, longitudes=cube.coord("longitude").points)
 
-    comp_data = data[:, 2:]
-    comp_data = np.ma.concatenate((comp_data[..., 6:], comp_data[..., :3]), axis=-1)
+    # Piece data together again in the expected manner.
+    comp_data = np.ma.concatenate((data[:, 2:, 6:], data[:, 2:, :3]), axis=-1)
 
     # Compare data.
     assert np.all(np.isclose(comp_data, sub_cube.data))

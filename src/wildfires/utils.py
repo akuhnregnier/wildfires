@@ -6,7 +6,7 @@ import logging
 import math
 import os
 import pickle
-from collections import Counter, namedtuple
+from collections import Counter
 from copy import deepcopy
 from functools import wraps
 from textwrap import dedent
@@ -31,9 +31,7 @@ class NoCachedDataError(Exception):
 class SimpleCache:
     """Simple caching functionality without analysing arguments."""
 
-    def __init__(
-        self, filename, cache_dir=".pickle", verbose=10, pickler=pickle,
-    ):
+    def __init__(self, filename, cache_dir=".pickle", verbose=10, pickler=pickle):
         """Initialise the cacher.
 
         Args:
@@ -623,7 +621,7 @@ def translate_longitude_system(longitudes, return_indices=False):
         longitudes (1-D iterable): Longitudes to translate.
         return_indices (bool): Return the indices used in the post-translation sort.
             These can be used to translate the corresponding datasets using
-            `numpy.take_along_axis` for example.
+            `numpy.take` for example.
 
     Returns:
         translated, sorted longitudes [, argsort indices].
@@ -660,7 +658,8 @@ def reorder_cube_coord(cube, indices, new_coord_points, axis):
         indices (1-D iterable): Indices used to select new ordering of values along
             the chosen axis.
         new_coord_points (1-D iterable): New coordinates along `axis`. The length of
-            this iterable needs to match the number of indices.
+            this iterable needs to match the number of indices
+            (`len(new_coord_points) == len(indices)`).
         axis (int): Axis along which to reorder the cube.
 
     Returns:
@@ -688,20 +687,20 @@ def reorder_cube_coord(cube, indices, new_coord_points, axis):
 
     """
     indices = np.asarray(indices)
-    # To conform with the requirements of the `numpy.take_along_axis` function.
-    indices_shape = [1] * len(cube.shape)
-    indices_shape[axis] = -1
-
-    indices = indices.reshape(*indices_shape)
-    tr_new_data = np.take_along_axis(cube.data, indices, axis=axis)
+    tr_new_data = np.take(cube.data, indices, axis=axis)
 
     # Cut down to the required size, then substitute the reordered data.
     slices = [slice(None)] * len(cube.shape)
-    slices[axis] = slice(indices.shape[axis])
+    slices[axis] = slice(indices.size)
+    # XXX: Can we not modify the cube in-place?
     new_cube = deepcopy(cube)[tuple(slices)]
     new_cube.data = tr_new_data
 
-    coord_name = [coord.name() for coord in cube.coords()][axis]
+    coord_names = [coord.name() for coord in cube.coords()]
+    assert len(coord_names) == len(
+        cube.shape
+    ), "Each dimension should be associated with a coordinate."
+    coord_name = coord_names[axis]
     new_lon = new_cube.coord(coord_name)
     new_lon.points = new_coord_points
     new_lon.bounds = None
@@ -717,16 +716,21 @@ def select_valid_subset(data, axis=None, longitudes=None):
     Args:
         data (numpy.ma.core.MaskedArray or iris.cube.Cube): Data needs to have an
             array mask.
-        axis (int, tuple of int, or None): Axes to subject to selection.
+        axis (int, tuple of int, or None): Axes to subject to selection. If `None`,
+            all axes will be considered.
         longitudes (1-D iterable): Longitudes associated with the last axis of the
-            data, ie. `len(longitudes) == data.shape[-1]`. If supplied, translation of
-            the longitudes between systems ([-180, 180] <-> [0, 360]) will be
-            considered to achieve the minimum possible resultant array size. If
-            longitudes are supplied, both the (transformed - if needed) data and
-            longitudes will be returned.
+            data, ie. `len(longitudes) == data.shape[-1]`. If given, they will be
+            assumed to be circular (although this isn't checked explicitly) and the
+            corresponding (last) axis will be shifted (rolled) to achieve the most
+            dense data representation, eliminating the single biggest gap possible.
+            Gaps are determined by the `data` mask (`data.mask` or `data.data.mask`
+            for an iris Cube). If longitudes are supplied, both the (transformed - if
+            needed) data and longitudes will be returned.
 
     Returns:
-        (Translated) subset of `data` with same type [, (translated) longitudes].
+        translated (array-like): (Translated) subset of `data`.
+        translated_longitudes (array-like): (Translated) longitudes, present only if
+            `longitudes` it not None.
 
     Examples:
         >>> import numpy as np
@@ -749,24 +753,34 @@ def select_valid_subset(data, axis=None, longitudes=None):
     if isinstance(mask, (bool, np.bool_)):
         raise ValueError(f"Mask is '{mask}'. Expected an array instead.")
 
+    all_axes = tuple(range(len(data.shape)))
+
     if axis is None:
-        axis = tuple(range(len(data.shape)))
+        axis = all_axes
     elif isinstance(axis, (int, np.integer)):
         axis = (axis,)
     elif not isinstance(axis, tuple):
         raise ValueError(f"Invalid axis ('{axis}') type '{type(axis)}'.")
 
     slices = [slice(None)] * len(data.shape)
-
-    all_axes = list(range(len(data.shape)))
     lon_ax = all_axes[-1]
 
+    # Determine if longitude translation is possible and requested.
     attempt_translation = False
-    if longitudes is not None and lon_ax in axis:
-        # Figure out if longitude translation is necessary separately.
-        axis = tuple(x for x in axis if x != lon_ax)
-        attempt_translation = True
+    if longitudes is not None:
+        if len(longitudes) != data.shape[lon_ax]:
+            raise ValueError(
+                "The number of longitudes should match the last data dimension."
+            )
+        if lon_ax in axis:
+            # If longitudes are to be shifted, do not trim this axis, as the number of
+            # masked elements are what we are interested in.
+            axis = tuple(x for x in axis if x != lon_ax)
+            attempt_translation = True
 
+    # Check how much the original data could be compressed by ignoring elements along
+    # each of the `axis` boundaries. If longitude translation should be attempted
+    # later, the longitude axis is exempt from this (see `axis` definition above).
     for ax in axis:
         # Compress mask such that only the axis of interest remains.
         compressed = np.all(mask, axis=tuple(x for x in all_axes if x != ax))
@@ -774,142 +788,98 @@ def select_valid_subset(data, axis=None, longitudes=None):
         elements, n_elements = label(compressed)
         if not n_elements:
             # If no masked elements were found there is nothing to do.
-            slices[ax] = slice(None)
-        else:
-            ini_index = 0
-            fin_index = data.shape[ax]
+            continue
+        ini_index = 0
+        fin_index = data.shape[ax]
 
-            # Check the beginning.
-            if elements[0]:
-                # Since False elements are labelled as 0, we know that the first element
-                # is masked (True) here.
+        # Check the beginning.
+        if elements[0]:
+            # True (masked) elements are clustered with labels > 0.
+            # Count how many elements belong to this feature.
+            ini_index += np.sum(elements == elements[0])
 
-                # Count how many elements belong to this feature.
-                ini_index += np.sum(elements == elements[0])
+        # Ditto or the end.
+        if elements[-1]:
+            fin_index -= np.sum(elements == elements[-1])
 
-            if elements[-1]:
-                fin_index -= np.sum(elements == elements[-1])
+        slices[ax] = slice(ini_index, fin_index)
 
-            slices[ax] = slice(ini_index, fin_index)
+    # Eliminate data along non-longitude axes first, since we are only allowed to
+    # remove one block from the longitudes (the largest block) in order to maintain
+    # continuity.
+    data = data[tuple(slices)]
 
-    indices = None
+    # Compress the mask so only the longitude axis remains.
+    non_lon_axis = tuple(x for x in all_axes if x != lon_ax)
+    compressed = np.all(mask, axis=non_lon_axis)
+    elements, n_elements = label(compressed)
 
-    if attempt_translation:
-        # Check how many entries along the longitude axis could be removed for each of
-        # the two cases.
+    lon_slice = slice(None)
+    lon_slices = [slice(None)] * len(data.shape)
+    if n_elements:
+        # Find the largest contiguous invalid block.
+        invalid_counts = Counter(elements[elements != 0])
+        largest_cluster = max(invalid_counts, key=invalid_counts.__getitem__)
 
-        Result = namedtuple("Result", ("n_invalid", "ini_index", "fin_index"))
+        initial_cut = invalid_counts.get(elements[0], 0)
+        final_cut = invalid_counts.get(elements[-1], 0)
 
-        # First check the native, untranslated case.
+        if (initial_cut + final_cut) >= invalid_counts[largest_cluster]:
+            # If we can already remove the most elements now there is no point
+            # shifting longitudes later.
+            attempt_translation = False
+            lon_slice = slice(initial_cut, data.shape[lon_ax] - final_cut)
+            lon_slices[lon_ax] = lon_slice
 
-        # Compress mask such that only the axis of interest remains.
-        compressed = np.all(mask, axis=tuple(x for x in all_axes if x != lon_ax))
+    if not attempt_translation or not n_elements:
+        # If we cannot shift the longitudes, or if no masked elements were found, then
+        # there is nothing left to do.
+        if longitudes is not None:
+            return data[tuple(lon_slices)], longitudes[lon_slice]
+        return data
 
-        elements, n_elements = label(compressed)
-        if not n_elements:
-            # If no masked elements were found there is nothing to do.
-            slices[lon_ax] = slice(None)
-        else:
-            ini_index = 0
-            fin_index = data.shape[lon_ax]
+    logger.info("Carrying out longitude translation.")
 
-            n_invalid = 0
-            # Check the beginning.
-            if elements[0]:
-                # Since False elements are labelled as 0, we know that the first element
-                # is masked (True) here.
+    # Try shifting longitudes to remove masked elements. The goal is to move the
+    # largest contiguous block of invalid elements along the longitude axis to the end
+    # of the axis where it can then be sliced off.
+    last_cluster_index = np.where(elements == largest_cluster)[0][-1]
 
-                # Count how many elements belong to this feature.
-                beginning_offset = np.sum(elements == elements[0])
-                n_invalid += beginning_offset
-                ini_index += beginning_offset
+    # Shift all data along the longitude axis such that `last_cluster_index` is last.
+    shift_delta = data.shape[lon_ax] - last_cluster_index - 1
 
-            if elements[-1]:
-                end_offset = np.sum(elements == elements[-1])
-                n_invalid += end_offset
-                fin_index -= end_offset
+    # Create original indices.
+    indices = np.arange(data.shape[lon_ax], dtype=np.int64)
+    # Translate the data forwards (by subtracting the desired number of shifts).
+    indices -= shift_delta
+    # Make sure indices wrap around.
+    indices %= data.shape[lon_ax]
 
-            native_result = Result(n_invalid, ini_index, fin_index)
+    # Having shifted the indices, remove the invalid indices which are now at the end.
+    indices = indices[: -np.sum(invalid_counts[largest_cluster])]
 
-            # If there is a contiguous block of invalid values bigger than the
-            # previous result, we have to carry out longitude translation to remove
-            # it.
-            if native_result.n_invalid >= max(
-                Counter(
-                    elements[native_result.ini_index : native_result.fin_index]
-                ).values()
-            ):
-                slices[lon_ax] = slice(native_result.ini_index, native_result.fin_index)
-            else:
-                logger.info("Carrying out longitude translation.")
+    shifted_longitudes = np.take(longitudes, indices)
 
-                # Carry out the translation.
-                tr_longitudes, tr_indices = translate_longitude_system(
-                    longitudes, return_indices=True
-                )
-
-                tr_indices = tr_indices.reshape(*[1] * (len(data.shape) - 1), -1)
-                tr_mask = np.take_along_axis(mask, tr_indices, axis=lon_ax)
-
-                # Compress mask such that only the axis of interest remains.
-                compressed = np.all(
-                    tr_mask, axis=tuple(x for x in all_axes if x != lon_ax)
-                )
-
-                elements, n_elements = label(compressed)
-                assert n_elements, (
-                    "We should only be here if there exists a bigger (by definition "
-                    "with non-zero length) contiguous block of invalid elements after "
-                    "translation."
-                )
-
-                ini_index = 0
-                fin_index = data.shape[lon_ax]
-
-                n_invalid = 0
-                # Check the beginning.
-                if elements[0]:
-                    # Since False elements are labelled as 0, we know that the first element
-                    # is masked (True) here.
-
-                    # Count how many elements belong to this feature.
-                    beginning_offset = np.sum(elements == elements[0])
-                    n_invalid += beginning_offset
-                    ini_index += beginning_offset
-
-                if elements[-1]:
-                    end_offset = np.sum(elements == elements[-1])
-                    n_invalid += end_offset
-                    fin_index -= end_offset
-
-                translated_result = Result(n_invalid, ini_index, fin_index)
-
-                # Compare the translated case with the native case.
-                assert translated_result.n_invalid > native_result.n_invalid, (
-                    "We should only be here if there exists a bigger contiguous block "
-                    "of invalid elements after translation."
-                )
-                slices[lon_ax] = slice(
-                    translated_result.ini_index, translated_result.fin_index
-                )
-                indices = tr_indices
-
-    if longitudes is not None:
-        if indices is None:
-            return data[tuple(slices)], longitudes[slices[lon_ax]]
-        else:
-            # If a longitude translation was carried out, we need to translate the
-            # data accordingly before we select it using the slices.
-
-            # The `take_along_axis` operation is not compatible with iris Cubes.
-            if isinstance(data, iris.cube.Cube):
-                new_data = reorder_cube_coord(data, tr_indices, tr_longitudes, lon_ax)
-            else:
-                new_data = np.take_along_axis(data, tr_indices, axis=lon_ax)
-
-            return new_data[tuple(slices)], tr_longitudes[slices[lon_ax]]
+    if not iris.util.monotonic(shifted_longitudes, strict=True):
+        # We need to transform longitudes to be monotonic.
+        tr_longitudes, transform_indices = translate_longitude_system(
+            shifted_longitudes, return_indices=True
+        )
+        tr_indices = np.take(indices, transform_indices)
     else:
-        return data[tuple(slices)]
+        tr_longitudes = shifted_longitudes
+        tr_indices = indices
+
+    # Translate the data and longitudes using the indices.
+    if isinstance(data, iris.cube.Cube):
+        # The `take` operation is not compatible with iris Cubes.
+        new_data = reorder_cube_coord(
+            data, tr_indices, new_coord_points=tr_longitudes, axis=lon_ax
+        )
+    else:
+        new_data = np.take(data, tr_indices, axis=lon_ax)
+
+    return new_data, tr_longitudes
 
 
 def get_centres(data):
