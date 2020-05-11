@@ -66,10 +66,12 @@ from ..utils import (
 __all__ = (
     "CommitMatchError",
     "DATA_DIR",
+    "Dataset",
     "Error",
     "IGNORED_DATASETS",
     "MM_PER_HR_THRES",
     "M_PER_HR_THRES",
+    "MonthlyDataset",
     "NonUniformCoordError",
     "ObservedAreaError",
     "cube_contains_coords",
@@ -1034,6 +1036,10 @@ class Dataset(metaclass=RegisterDatasets):
     # Override the `pretty_variable_names` dictionary in each class where bespoke
     # pretty variable names are desired. Keys are the raw variables names.
     pretty_variable_names = dict()
+
+    @abstractmethod
+    def __init__(self):
+        """Instantiate the dataset by loading Iris Cubes."""
 
     def __str__(self):
         return "{} ({}, {}, {})".format(
@@ -2180,6 +2186,15 @@ class Dataset(metaclass=RegisterDatasets):
         return new_inst
 
 
+class MonthlyDataset(Dataset):
+    """A `Dataset` containing monthly data."""
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.select_monthly_from_monthly(start, end)
+
+
 class AvitabileAGB(Dataset):
     _pretty = "Avitabile AGB"
 
@@ -2396,7 +2411,7 @@ class CCI_BurnedArea_MERIS_4_1(Dataset):
         return monthly_cubes
 
 
-class CCI_BurnedArea_MODIS_5_1(Dataset):
+class CCI_BurnedArea_MODIS_5_1(MonthlyDataset):
     _pretty = "CCI MODIS 5.1"
     pretty_variable_names = {"burned_area": "CCI MODIS BA"}
     _special_coord_cubes = {
@@ -2502,13 +2517,8 @@ class CCI_BurnedArea_MODIS_5_1(Dataset):
         ]
         return vegetation_class_names
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class CHELSA(Dataset):
+class CHELSA(MonthlyDataset):
     """For primary analysis, it is advisable to use hpc
     (cx1_scipts/run_chelsa_script.sh) in order to process the tif files
     into nc files as a series of jobs, which would take an incredibly long
@@ -2720,13 +2730,8 @@ class CHELSA(Dataset):
         if process_slice == slice(None):
             self.write_cache()
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class Copernicus_SWI(Dataset):
+class Copernicus_SWI(MonthlyDataset):
     """For primary analysis, it is advisable to use hpc
     (cx1_scipts/run_swi_script.sh) in order to process the daily nc files
     into monthly nc files as a series of jobs, which would take an
@@ -2878,21 +2883,9 @@ class Copernicus_SWI(Dataset):
                 )
                 daily_cubes = load_cubes(selected_daily_files)
 
-            for cube in daily_cubes:
-                # Make metadata uniform so they can be concatenated.
-                del cube.attributes["identifier"]
-                del cube.attributes["title"]
-                del cube.attributes["time_coverage_start"]
-                del cube.attributes["time_coverage_end"]
-                del cube.attributes["platform"]
-                del cube.attributes["copyright"]
-                del cube.attributes["history"]
-                del cube.attributes["sensor"]
-                del cube.attributes["source"]
-
             # Concatenate daily cubes into larger cubes with the same
             # information (but with longer time coordinates).
-            raw_cubes = daily_cubes.concatenate()
+            raw_cubes = homogenise_cube_attributes(daily_cubes).concatenate()
 
             while raw_cubes:
                 logger.debug("Regridding:{:}".format(repr(raw_cubes[0])))
@@ -2978,13 +2971,8 @@ class Copernicus_SWI(Dataset):
             logger.debug("Writing cache for entire timespan")
             self.write_cache()
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class CRU(Dataset):
+class CRU(MonthlyDataset):
     _pretty = "CRU"
 
     def __init__(self):
@@ -3016,13 +3004,8 @@ class CRU(Dataset):
         # NOTE: Measurement times are listed as being in the middle of the
         # month, requiring no further intervention.
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class ERA5_Temperature(Dataset):
+class ERA5_Temperature(MonthlyDataset):
     _pretty = "ERA5 Temperature"
     pretty_variable_names = {
         "Mean 2 metre temperature": "Mean Temp",
@@ -3067,13 +3050,8 @@ class ERA5_Temperature(Dataset):
         self.cubes = homogenise_cube_attributes(load_cubes(files)).merge()
         self.write_cache()
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class ERA5_TotalPrecipitation(Dataset):
+class ERA5_TotalPrecipitation(MonthlyDataset):
     _pretty = "ERA5 Total Precipitation"
     pretty_variable_names = {"Total precipitation": "Precipitation"}
 
@@ -3083,13 +3061,8 @@ class ERA5_TotalPrecipitation(Dataset):
             [iris.load_cube(os.path.join(self.dir, "*.nc"))]
         )
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class ERA5_DryDayPeriod(Dataset):
+class ERA5_DryDayPeriod(MonthlyDataset):
     _pretty = "ERA5 Dry Day Period"
     pretty_variable_names = {"dry_day_period": "Dry Day Period"}
 
@@ -3219,13 +3192,8 @@ class ERA5_DryDayPeriod(Dataset):
         self.cubes = raw_cubes
         self.write_cache()
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class ERA5_CAPEPrecip(Dataset):
+class ERA5_CAPEPrecip(MonthlyDataset):
     _pretty = "ERA5 Cape x Precip"
     pretty_variable_names = {"Product of CAPE and Precipitation": "CAPE x Precip"}
 
@@ -3239,11 +3207,6 @@ class ERA5_CAPEPrecip(Dataset):
         raw_cubes = load_cubes(files)
         self.cubes = iris.cube.CubeList([raw_cubes.merge_cube()])
         self.write_cache()
-
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
 
 class ESA_CCI_Fire(Dataset):
@@ -3386,17 +3349,12 @@ class ESA_CCI_Landcover_PFT(Dataset):
         return self.interpolate_yearly_data(start, end)
 
 
-class ESA_CCI_Soilmoisture(Dataset):
+class ESA_CCI_Soilmoisture(MonthlyDataset):
     _pretty = "ESA CCI Soil Moisture"
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-SM_soilmoisture")
         self.cubes = iris.load(os.path.join(self.dir, "*.nc"))
-
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
 
 class ESA_CCI_Soilmoisture_Daily(Dataset):
@@ -3446,7 +3404,7 @@ class ESA_CCI_Soilmoisture_Daily(Dataset):
         )
 
 
-class GFEDv4(Dataset):
+class GFEDv4(MonthlyDataset):
     """Without small fires.
 
     """
@@ -3535,13 +3493,8 @@ class GFEDv4(Dataset):
         self.cubes = iris.cube.CubeList([burned_area_cube])
         self.write_cache()
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class GFEDv4s(Dataset):
+class GFEDv4s(MonthlyDataset):
     """Includes small fires.
 
     """
@@ -3632,13 +3585,8 @@ class GFEDv4s(Dataset):
         self.cubes[0].var_name = "Burnt_Area"
         self.write_cache()
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class GlobFluo_SIF(Dataset):
+class GlobFluo_SIF(MonthlyDataset):
     _pretty = "Glob Fluo SIF"
 
     def __init__(self):
@@ -3671,11 +3619,6 @@ class GlobFluo_SIF(Dataset):
         loaded_cube.data.mask |= invalid_mask
 
         self.cubes = iris.cube.CubeList([loaded_cube])
-
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
 
 class GPW_v4_pop_dens(Dataset):
@@ -3731,7 +3674,7 @@ class GPW_v4_pop_dens(Dataset):
         return final_cubelist
 
 
-class GSMaP_dry_day_period(Dataset):
+class GSMaP_dry_day_period(MonthlyDataset):
     """Calculate the length of the longest preceding dry day period.
 
     This definition only considers dry day periods within the current month, or dry
@@ -3887,13 +3830,8 @@ class GSMaP_dry_day_period(Dataset):
         self.cubes = iris.cube.CubeList([dry_day_period_cubes.merge_cube()])
         self.write_cache()
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class GSMaP_precipitation(Dataset):
+class GSMaP_precipitation(MonthlyDataset):
     _pretty = "GSMaP Precipitation"
     pretty_variable_names = {"dry_days": "Dry Days", "precip": "Precipitation"}
 
@@ -3979,11 +3917,6 @@ class GSMaP_precipitation(Dataset):
         assert len(self.cubes) == 2
 
         self.write_cache()
-
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
 
 class HYDE(Dataset):
@@ -4206,7 +4139,7 @@ class LIS_OTD_lightning_climatology(Dataset):
         return iris.cube.CubeList([output_cube])
 
 
-class LIS_OTD_lightning_time_series(Dataset):
+class LIS_OTD_lightning_time_series(MonthlyDataset):
     _pretty = "LIS/OTD Time Series"
 
     def __init__(self):
@@ -4266,13 +4199,8 @@ class LIS_OTD_lightning_time_series(Dataset):
 
         self.write_cache()
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class Liu_VOD(Dataset):
+class Liu_VOD(MonthlyDataset):
     _pretty = "Liu VOD"
     pretty_variable_names = {"VODorig": "VOD"}
 
@@ -4302,13 +4230,8 @@ class Liu_VOD(Dataset):
         loaded_cubes[0].add_dim_coord(new_time, 0)
         self.cubes = loaded_cubes
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class MCD64CMQ_C6(Dataset):
+class MCD64CMQ_C6(MonthlyDataset):
     _pretty = "MCD64CMQ C6"
     pretty_variable_names = {"Burned Area": "MCD64CMQ BA"}
 
@@ -4392,13 +4315,8 @@ class MCD64CMQ_C6(Dataset):
         self.cubes = iris.cube.CubeList([burned_area_cube])
         self.write_cache()
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class MOD15A2H_LAI_fPAR(Dataset):
+class MOD15A2H_LAI_fPAR(MonthlyDataset):
     _pretty = "MOD15A2H"
     pretty_variable_names = {
         "Fraction of Absorbed Photosynthetically Active Radiation": "FAPAR",
@@ -4417,14 +4335,10 @@ class MOD15A2H_LAI_fPAR(Dataset):
             np.diff(np.where(np.diff(months) != 1)) == 12
         ), "The year should increase every 12 samples!"
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
         # TODO: Since the day in the month for which the data is provided
         # is variable, take into account neighbouring months as well in a
         # weighted average (depending on how many days away from the middle
         # of the month these other samples are)?
-        return self.select_monthly_from_monthly(start, end)
 
 
 class Simard_canopyheight(Dataset):
@@ -4466,7 +4380,7 @@ class Thurner_AGB(Dataset):
         return self.broadcast_static_data(start, end)
 
 
-class VODCA(Dataset):
+class VODCA(MonthlyDataset):
     """Global VOD Dataset.
 
     See: https://zenodo.org/record/2575599#.XO6qXHVKibI
@@ -4540,13 +4454,8 @@ class VODCA(Dataset):
 
         return raw_cube.aggregated_by(["month_number", "year"], iris.analysis.MEAN)
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class WWLLN(Dataset):
+class WWLLN(MonthlyDataset):
     _pretty = "WWLLN Lightning"
     pretty_variable_names = {
         "frequency of lightning flashes per unit area": "lightning"
@@ -4561,11 +4470,6 @@ class WWLLN(Dataset):
             raw_cube = iris.load_cube(os.path.join(self.dir, "WWLLN_monthly.nc"))
         raw_cube.units = cf_units.Unit("1/km2")
         self.cubes = iris.cube.CubeList([raw_cube])
-
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
 
 def get_implemented_datasets(
