@@ -807,30 +807,56 @@ def cube_plotting(
         if np.all(cube.data.mask):
             raise MaskedDataError("All data is masked.")
 
-    if select_valid:
-        if not hasattr(cube.data, "mask"):
-            cube.data = np.ma.MaskedArray(cube.data, mask=False)
+    if not hasattr(cube.data, "mask"):
+        cube.data = np.ma.MaskedArray(cube.data, mask=False)
+
+    if select_valid and not np.all(~cube.data.mask):
         cube, tr_longitudes = select_valid_subset(
             cube, longitudes=cube.coord("longitude").points
         )
+        central_longitude = np.mean(tr_longitudes)
     else:
         longitudes = cube.coord("longitude").points
         if in_360_longitude_system(longitudes):
+            # Translate longitudes to centre the map on Africa when all longitudes are
+            # present and a choice has to be made.
             logger.debug("Translating longitudes from [0, 360] to [-180, 180].")
-            tr_longitudes = translate_longitude_system(longitudes, return_indices=False)
+            central_longitude = np.mean(
+                translate_longitude_system(longitudes, return_indices=False)
+            )
         else:
-            # Here, the longitudes are in the [-180, 180] system as desired, and no
-            # translation is necessary.
-            tr_longitudes = longitudes
+            central_longitude = np.mean(longitudes)
 
-    title = kwargs.get("title", cube.name())
+    title = kwargs.get("title")
+    if title is None:
+        # Construct a default title.
+        title_list = [cube.name()]
+        try:
+            time_coord = cube.coord("time")
+            min_time = (
+                time_coord.cell(0).bound[0]
+                if time_coord.cell(0).bound is not None
+                else time_coord.cell(0).point
+            )
+            max_time = (
+                time_coord.cell(-1).bound[1]
+                if time_coord.cell(-1).bound is not None
+                else time_coord.cell(-1).point
+            )
+            if min_time == max_time:
+                title_list.append(f"{min_time}")
+            else:
+                title_list.append(f"{min_time} - {max_time}")
+        except iris.exceptions.CoordinateNotFoundError:
+            # No time coordinate was found, so we cannot use it in the title.
+            pass
+
+        title = "\n".join(title_list)
 
     if projection is None:
-        central_longitude = np.mean(tr_longitudes)
         logger.debug(f"Central longitude ({title}): {central_longitude:0.2f}")
         projection = ccrs.Robinson(central_longitude=central_longitude)
 
-    cube = cube.copy()
     if average_first_coord and len(cube.shape) == 3:
         cube = cube.collapsed(cube.coords()[0], iris.analysis.MEAN)
 
@@ -942,7 +968,9 @@ def cube_plotting(
             # cmap=kwargs.get("cmap", "viridis"),
             cmap=cmap,
             norm=norm,
-            # NOTE: This transform here may differ from the projection argument.
+            # NOTE: This transform may differ from the projection argument, because it
+            # represents the coordinate system of the input data, as opposed to the
+            # coordinate system of the plot.
             transform=ccrs.PlateCarree(),
             rasterized=rasterized,
             # TODO: FIXME: Setting vmin/vmax to something close to the data extremes seems

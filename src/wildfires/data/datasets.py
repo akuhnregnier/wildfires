@@ -59,6 +59,7 @@ from ..utils import (
     in_360_longitude_system,
     match_shape,
     reorder_cube_coord,
+    strip_multiline,
     translate_longitude_system,
 )
 
@@ -178,6 +179,10 @@ class NonUniformCoordError(Error):
 
 class CommitMatchError(Error):
     """Raised when commit hashes of loaded cubes do not match."""
+
+
+class VariableNotFoundError(ValueError, Error):
+    """Raised when a requested variable could not be found."""
 
 
 def fill_cube(cube, mask):
@@ -1046,17 +1051,44 @@ class Dataset(metaclass=RegisterDatasets):
         return len(self.cubes)
 
     def __getitem__(self, index):
+        """Return a subset or single cube of `self`.
+
+        Args:
+            index (slice, str, int): Index used to retrieve (on or more) items see
+                `Returns` section below.
+
+        Returns:
+            `Dataset`: If `index` is a slice object, a subset of `self` containing the
+                cubes at the indices included in the slice will be returned.
+            `iris.cube.Cube`: If `index` is an integer or a string, the corresponding
+                cube will be returned, if found. Matching works with pretty and raw
+                names.
+
+        Raises:
+            VariableNotFoundError: If `index` is an integer or string, but the
+                specified cube could not be found.
+
+        """
         if isinstance(index, slice):
             new_dataset = self.copy(deep=False)
             new_dataset.cubes = self.cubes[index]
             return new_dataset
-        if isinstance(index, str):
-            # Substitute pretty name for raw name if needed.
-            index = self._get_raw_variable_names().get(index, index)
-            new_index = self.variable_names(which="raw").index(index)
-        else:
-            new_index = index
-        return self.cubes[new_index]
+        try:
+            if isinstance(index, str):
+                # Substitute pretty name for raw name if needed.
+                index = self._get_raw_variable_names().get(index, index)
+                new_index = self.variable_names(which="raw").index(index)
+            else:
+                new_index = index
+            return self.cubes[new_index]
+        except ValueError as exc:
+            error_msg = strip_multiline(
+                f"""No cube could be found for index '{index}'.
+                Available: integer indices {list(range(len(self.cubes)))},
+                raw names {self.variable_names(which="raw")},
+                or pretty names {self.variable_names(which="pretty")}."""
+            )
+            raise VariableNotFoundError(error_msg) from exc
 
     @classmethod
     def _get_raw_variable_names(cls):
@@ -1324,7 +1356,7 @@ class Dataset(metaclass=RegisterDatasets):
             self.cubes[i] = homogenise_cube_mask(cube)
 
     def apply_masks(self, *masks):
-        """Apply given masks on top of existing masks."""
+        """Apply given masks on top of existing masks inplace."""
         # Ensure masks are recorded in a format to enable the modifications below.
         self.homogenise_masks()
         # Check the given masks.
@@ -1341,6 +1373,7 @@ class Dataset(metaclass=RegisterDatasets):
             cube.data.mask |= reduce(
                 np.logical_or, (match_shape(mask, cube.shape) for mask in masks)
             )
+        return self
 
     def grid(self, coord="latitude"):
         try:
@@ -1620,7 +1653,7 @@ class Dataset(metaclass=RegisterDatasets):
         days = [getattr(date, "day", 1) for date in (start, end)]
         days = [day if day is not None else 1 for day in days]
 
-        assert datetime(start.year, start.month, days[0]) < datetime(
+        assert datetime(start.year, start.month, days[0]) <= datetime(
             end.year, end.month, days[1]
         ), "End date must be greater than start date."
 
@@ -1666,6 +1699,13 @@ class Dataset(metaclass=RegisterDatasets):
         inclusive_lower=True,
         inclusive_upper=True,
     ):
+        """Select specified months from `self.cubes`.
+
+        If only a single temporal coordinate matches the range specified by `start`
+        and `end`, the resulting cube(s) will lack that dimension (ie. it is
+        squeezed by Iris).
+
+        """
         self.date_order_check(start, end)
 
         assert self.frequency == "monthly"
@@ -1792,7 +1832,8 @@ class Dataset(metaclass=RegisterDatasets):
         """Return new `Dataset` containing monthly cubes between two dates.
 
         Note:
-            Returned cubes may contain lazy data.
+            Returned cubes will not contain lazy data, and this operation will realise
+            all selected data!
 
         """
         logger.info(f"Getting monthly cubes for '{self}'.")
@@ -4658,6 +4699,10 @@ def regions_GFED():
         12: "SEAS",
         13: "EQAS",
         14: "AUST",
+    }
+    # Invert the previous mapping to facilitate masking later.
+    regions.attributes["region_codes"] = {
+        code: index for index, code in regions.attributes["short_regions"].items()
     }
     return regions
 

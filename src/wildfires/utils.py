@@ -8,7 +8,7 @@ import os
 import pickle
 from collections import Counter
 from copy import deepcopy
-from functools import wraps
+from functools import partial, wraps
 from textwrap import dedent
 from time import time
 from warnings import warn
@@ -819,6 +819,8 @@ def select_valid_subset(data, axis=None, longitudes=None):
     if n_elements:
         # Find the largest contiguous invalid block.
         invalid_counts = Counter(elements[elements != 0])
+        logger.debug(f"Invalid longitude clusters: {invalid_counts}.")
+
         largest_cluster = max(invalid_counts, key=invalid_counts.__getitem__)
 
         initial_cut = invalid_counts.get(elements[0], 0)
@@ -830,6 +832,8 @@ def select_valid_subset(data, axis=None, longitudes=None):
             attempt_translation = False
             lon_slice = slice(initial_cut, data.shape[lon_ax] - final_cut)
             lon_slices[lon_ax] = lon_slice
+    else:
+        logger.debug("No invalid longitude clusters were found.")
 
     if not attempt_translation or not n_elements:
         # If we cannot shift the longitudes, or if no masked elements were found, then
@@ -939,3 +943,6 @@ def multiline(s, strip_all_indents=False):
         return " ".join([dedent(sub) for sub in s.strip().split("\n")])
     else:
         return dedent(s).strip().replace("\n", " ")
+
+
+strip_multiline = partial(multiline, strip_all_indents=True)
