@@ -9,7 +9,7 @@ from time import monotonic
 import numpy as np
 import pytest
 
-from wildfires.sync_worker_ports import PortSync, Scheduler
+from wildfires.dask_cx1.sync_worker_ports import PortSync, Scheduler
 
 
 @pytest.fixture(scope="function")

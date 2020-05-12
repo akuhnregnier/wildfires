@@ -6,8 +6,8 @@ from time import monotonic, sleep
 
 from dask.distributed import get_worker
 
+from ..ports import get_ports
 from .dask_cx1 import strip_multiline
-from .ports import get_ports
 
 
 class NoNotebookError(RuntimeError):

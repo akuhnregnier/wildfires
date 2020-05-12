@@ -24,8 +24,8 @@ from dask.utils import parse_bytes
 from dask_jobqueue.pbs import PBSCluster, PBSJob, pbs_format_bytes_ceil
 from joblib import parallel_backend
 
-from .ports import get_ports
-from .qstat import get_ncpus
+from ..ports import get_ports
+from ..qstat import get_ncpus
 
 logger = logging.getLogger(__name__)
 

@@ -23,7 +23,7 @@ setuptools.setup(
     entry_points="""
         [console_scripts]
         valid-ports=wildfires.ports:main
-        sync-worker-ports=wildfires.sync_worker_ports:main
+        sync-worker-ports=wildfires.dask_cx1.sync_worker_ports:main
       """,
     python_requires=">=3.7",
     setup_requires=["setuptools-scm"],
