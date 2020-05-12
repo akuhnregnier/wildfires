@@ -66,7 +66,7 @@ def start_jupyter_lab(
         Popen(
             shlex.split(
                 strip_multiline(
-                    f"""{jupyter_exc} lab --no-browser --port={port} "
+                    f"""{jupyter_exc} lab --no-browser --port={port}
                     --notebook-dir={notebook_dir}"""
                 )
             )
