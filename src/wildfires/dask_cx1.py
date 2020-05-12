@@ -623,6 +623,7 @@ echo $(date): Finished running ssh, starting dask-worker now.
             stdout=self.sync_stdout_file,
             stderr=self.sync_stderr_file,
         )
+        print(f"Dashboard at: {self.dashboard_link}")
 
     def __cleanup(self):
         os.remove(self.scheduler_file)
