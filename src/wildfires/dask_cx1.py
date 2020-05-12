@@ -51,10 +51,6 @@ class SchedulerConnectionError(DaskCX1Error):
     """Raised when a connection to a scheduler could not be established."""
 
 
-class WorkerPortError(DaskCX1Error):
-    """Raised when an error while determining worker port numbers."""
-
-
 def multiline(s, strip_all_indents=False):
     if strip_all_indents:
         return " ".join([dedent(sub) for sub in s.strip().split("\n")])
@@ -87,8 +83,47 @@ def walltime_seconds(walltime):
     return int(hours) * 60 * 60 + int(minutes) * 60 + int(seconds)
 
 
-def get_client(**specs):
+def get_client(fallback=False, fallback_cores=None, fallback_threaded=False, **specs):
     """Try to connect to an existing Dask scheduler with the supplied specs.
+
+    Args:
+        specs: Worker resource specifications, eg. cores=10, memory="8GB". The
+            scheduler's cluster will have access to a certain number of such workers,
+            where each worker will have access to `cores` number of threads.
+        fallback (bool or int): If True, allow falling back to a Dask LocalCluster.
+        fallback_cores (int): The number of cores to use for the fallback
+            LocalCluster. If not given (None), `wildfires.qstat.get_ncpus()` will be
+            used.
+        fallback_threaded (bool): If True, only a single multi-threaded fallback
+            LocalCluster worker will be created (number of cores as above).
+
+    Returns:
+        distributed.client.Client: Client used to connect to the scheduler.
+
+    Raises:
+        FoundSchedulerError: If no matching scheduler could be found and `fallback` is
+            False.
+        SchedulerConnectionError: If a matching scheduler was found but a connection
+            could not be established, and `fallback` is False.
+
+    """
+    try:
+        return get_remote_client(**specs)
+    except DaskCX1Error:
+        if not fallback:
+            raise
+        if fallback_cores is not None:
+            cores = fallback_cores
+        else:
+            cores = get_ncpus()
+        if fallback_threaded:
+            return Client(n_workers=1, threads_per_worker=cores)
+        else:
+            return Client(n_workers=cores, threads_per_worker=1)
+
+
+def get_remote_client(**specs):
+    """Try to connect to an existing remote Dask scheduler with the supplied specs.
 
     Args:
         specs: Worker resource specifications, eg. cores=10, memory="8GB". The
