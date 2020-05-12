@@ -14,7 +14,7 @@ from wildfires.data.datasets import dummy_lat_lon_cube
 from .utils import data_availability
 
 
-class DummyDataset2(wildfire_datasets.Dataset):
+class DummyDataset2(wildfire_datasets.MonthlyDataset):
     pretty = "Dummy2"
     pretty_variable_names = {"VarA": "A2", "VarB": "B2"}
 
@@ -29,13 +29,8 @@ class DummyDataset2(wildfire_datasets.Dataset):
             ]
         )
 
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
-
-class DummyDataset(wildfire_datasets.Dataset):
+class DummyDataset(wildfire_datasets.MonthlyDataset):
     def __init__(self):
         data = np.random.random((100, 100, 100))
         data = np.ma.MaskedArray(data, mask=data > 0.5)
@@ -47,11 +42,6 @@ class DummyDataset(wildfire_datasets.Dataset):
                 )
             ]
         )
-
-    def get_monthly_data(
-        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
-    ):
-        return self.select_monthly_from_monthly(start, end)
 
 
 @pytest.fixture(scope="function")

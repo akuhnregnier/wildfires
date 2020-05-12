@@ -8,6 +8,7 @@ In the case of linear interpolation, all adjacent points on the output grid shou
 masked, while this depends on a threshold for area weighted regridding.
 
 """
+import iris
 import numpy as np
 import pytest
 
@@ -75,10 +76,9 @@ def test_linear_masked_regrid(mdtol):
     # Carry out the area weighted interpolation.
     interp_cube = regrid(
         source_cube,
-        area_weighted=True,
         new_latitudes=get_centres(source_cube.coord("latitude").points),
         new_longitudes=get_centres(source_cube.coord("longitude").points),
-        mdtol=mdtol,
+        scheme=iris.analysis.AreaWeighted(mdtol=mdtol),
     )
 
     assert np.allclose(interp_cube.data, target_data, atol=1e-1)

@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from operator import is_, is_not
 
 import iris
 import numpy as np
@@ -59,13 +58,16 @@ class DummyDataset(Dataset):
         return self.select_monthly_from_monthly(start, end)
 
 
-@pytest.mark.parametrize("deep,id_eq_op", [(False, is_), (True, is_not)])
-def test_temporal_shifting(deep, id_eq_op):
+@pytest.mark.parametrize("deep", (False, True))
+def test_temporal_shifting(deep):
     normal = DummyDataset()
     shifted = normal.get_temporally_shifted_dataset(months=-3, deep=deep)
 
-    # Confirm that the underlying data is identical, and not copied.
-    assert id_eq_op(normal.cube.data, shifted.cube.data)
+    # Confirm that the underlying data is identical (not copied) if `deep=False`.
+    if deep:
+        assert normal.cube.data is not shifted.cube.data
+    else:
+        assert normal.cube.data is shifted.cube.data
 
     # Since the shifted datasets represents previous months' data, there will not be
     # an overlap at the very beginning of the dataset, but rather at the end.

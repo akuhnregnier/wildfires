@@ -355,7 +355,7 @@ def homogenise_cube_mask(cube):
     """Ensure cube.data is a masked array with a full mask (in-place).
 
     Note:
-        This function realises the cube's lazy data (if any).
+        This function realises lazy data.
 
     """
     array = cube.data
@@ -767,7 +767,7 @@ def regrid(
     area_weighted=False,
     new_latitudes=get_centres(np.linspace(-90, 90, 721)),
     new_longitudes=get_centres(np.linspace(-180, 180, 1441)),
-    mdtol=1,
+    scheme=None,
     regridder=None,
     return_regridder=False,
     verbose=False,
@@ -776,31 +776,36 @@ def regrid(
 
     Expects at least latitude and longitude coordinates.
 
+    For some input data, the `iris.analysis.Linear()` regridder yields very large
+    values, which seems to be related to interpolation of masked data (at the edges of
+    the domain). To combat this, the output array mask will be supplanted by one which
+    masks any points outside of the original extrema.
+
     Args:
         cube (iris.cube.Cube): Cube to regrid.
         area_weighted (bool): If True, perform first order conservative area weighted
-            regridding.
+            regridding. For more control, see `scheme` and `regridder`.
         new_latitudes (array-like): New grid latitudes.
         new_longitudes (array-like): New grid longitudes.
-        mdtol (float): Fraction of masked data to tolerate when `area_weighted` is
-            True. If more than this fraction of source cells is missing for a given
-            target cell, the target cell will be masked. If `mdtol=1`, all
-            contributing source cells need to be masked for the resultant cell to be
-            masked.
-        regridder (iris Regridder): Regridder to use. Overrides other settings like
-            `area_weighted`.
+        scheme (object with a `regridder()` method): This object should define a
+            `regridder` method with interface `scheme.regridder(src_cube, target_cube)`,
+            eg. `iris.analysis.Linear()`. Takes precedence over `area_weighted`.
+        regridder (callable): Regridder to use. Analogous to `scheme.regridder()`,
+            eg. `iris.analysis.Linear().regridder(src_cube, target_cube)`. If given,
+            `regridder` needs to take an `iris.cube.Cube` as an argument and return an
+            `iris.cube.Cube` on the target grid. Takes precedence over both
+            `area_weighted` and `scheme`.
         return_regridder (bool): If True, return the regridder which contains the
             interpolation weights. This can be re-used for the same type of regridding
             operation between the same lat-lon grids.
-        verbose (bool): If True, show a progress meter showing the remaining slices.
-            Applies only if `cube` has more coordinates than simply latitude and
-            longitude.
+        verbose (bool): Show a progress meter showing the remaining slices. Applies
+            only if `cube` also has coordinates other than latitude and longitude.
 
     Returns:
-        iris.cube.Cube: The interpolated cube.
-
-        iris.cube.Cube, iris Regridder: If `return_regridder` is True, the
-        interpolated cube and associated regridder are returned.
+        iris.cube.Cube: The interpolated cube. This will always contain a masked
+            array even if the input data did not have a mask.
+        iris Regridder: If `return_regridder` is True, the interpolated cube and
+            associated regridder are returned.
 
     Raises:
         ValueError: If a coordinate system other than `None` or `WGS84` is
@@ -869,7 +874,7 @@ def regrid(
                 area_weighted=area_weighted,
                 new_latitudes=new_latitudes,
                 new_longitudes=new_longitudes,
-                mdtol=mdtol,
+                scheme=scheme,
                 regridder=regridder,
                 return_regridder=True,
             )
@@ -938,17 +943,33 @@ def regrid(
             if not coord.has_bounds():
                 coord.guess_bounds()
 
-        if area_weighted:
-            regridder = iris.analysis.AreaWeighted(mdtol=mdtol).regridder(
-                cube, new_grid
-            )
+        if scheme is None:
+            if area_weighted:
+                regridder = iris.analysis.AreaWeighted(mdtol=1).regridder(
+                    cube, new_grid
+                )
+            else:
+                regridder = iris.analysis.Linear().regridder(cube, new_grid)
         else:
-            regridder = iris.analysis.Linear().regridder(cube, new_grid)
+            regridder = scheme.regridder(cube, new_grid)
     else:
         logger.debug("Using given regridder.")
 
     logger.debug("Cube has lazy data: {}.".format(cube.has_lazy_data()))
-    interpolated_cube = regridder(cube)
+    interpolated_cube = homogenise_cube_mask(regridder(cube))
+
+    if isinstance(regridder, iris.analysis._regrid.RectilinearRegridder):
+        # Fix the extreme values that can occur with the
+        # `iris.analysis.Linear()` regridding scheme.
+
+        # Regridding realises the data anyway, so we can use `cube.data` here.
+        omax = np.max(cube.data)
+        omin = np.min(cube.data)
+
+        extr_mask = (interpolated_cube.data > omax) | (interpolated_cube.data < omin)
+        if np.any(extr_mask):
+            logger.warning("Masking regridded values that exceeded the input range.")
+            interpolated_cube.data.mask |= extr_mask
 
     if return_regridder:
         return interpolated_cube, regridder
@@ -1639,11 +1660,39 @@ class Dataset(metaclass=RegisterDatasets):
             )
             return self.cubes
 
-    def select_data(self, latitude_range=(-90, 90), longitude_range=(-180, 180)):
-        self.cube = self.cube.intersection(latitude=latitude_range).intersection(
-            longitude=longitude_range
-        )
-        return self.cube
+    def select_data(
+        self, latitude_range=(-90, 90), longitude_range=(-180, 180), inplace=False
+    ):
+        """Select a geographical sub-set of the original data for each cube.
+
+        Args:
+            latitude_range (tuple of float): Latitude range to select.
+            longitude_range (tuple of float): Longitude range to select.
+            inplace (bool): If True, subset the cubes inplace without returning a copy
+                of the selected data.
+
+        Returns:
+            `Dataset`: Dataset with cubes containing only data for the selected
+                region. Depending on `inplace`, this may be a copy of the original
+                dataset.
+
+        """
+
+        def geo_subset(cube):
+            return cube.intersection(latitude=latitude_range).intersection(
+                longitude=longitude_range
+            )
+
+        if inplace:
+            dataset = self if inplace else self.copy_cubes_no_data()
+        else:
+            dataset = self.copy()
+
+        for i, cube in enumerate(dataset.cubes):
+            dataset.cubes[i] = (
+                geo_subset(cube) if inplace else deepcopy(geo_subset(cube))
+            )
+        return dataset
 
     def regrid(
         self,

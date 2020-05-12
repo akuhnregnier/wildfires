@@ -25,7 +25,7 @@ def area_weight_factors_4_2():
     return np.array([*factors, *factors[::-1]]).reshape(4, 1)
 
 
-@pytest.fixture()
+@pytest.fixture
 def cubes_2D(source_data, area_weight_factors_4_2):
     target_data = (source_data * area_weight_factors_4_2).reshape(2, 2, 3).sum(axis=1)
 
