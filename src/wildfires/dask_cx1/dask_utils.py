@@ -97,7 +97,7 @@ def list_notebooks(
     jupyter_exc="/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/jupyter",
     filter_port=None,
     workers=None,
-    timeout=10,
+    timeout=60,
 ):
     """List notebooks currently running off of the Jupyter executable `jupyter_exc`.
 
