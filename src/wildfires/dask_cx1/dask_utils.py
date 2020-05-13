@@ -154,8 +154,7 @@ def list_notebooks(
     else:
         # We have timed out without finding a matching notebook.
         raise NoNotebookError(
-            f"No matching notebook was found within the timeout ({timeout} s). "
-            f"Found:\n{notebooks}."
+            f"No matching notebook was found within the timeout ({timeout} s)."
         )
 
 
