@@ -67,6 +67,7 @@ __all__ = (
     "CommitMatchError",
     "DATA_DIR",
     "Dataset",
+    "DatasetNotFoundError",
     "Error",
     "IGNORED_DATASETS",
     "MM_PER_HR_THRES",
@@ -74,6 +75,7 @@ __all__ = (
     "MonthlyDataset",
     "NonUniformCoordError",
     "ObservedAreaError",
+    "VariableNotFoundError",
     "cube_contains_coords",
     "data_is_available",
     "data_map_plot",
@@ -185,6 +187,10 @@ class CommitMatchError(Error):
 
 class VariableNotFoundError(ValueError, Error):
     """Raised when a requested variable could not be found."""
+
+
+class DatasetNotFoundError(ValueError, Error):
+    """Raised when a requested dataset could not be found."""
 
 
 def fill_cube(cube, mask):

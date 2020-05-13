@@ -26,11 +26,13 @@ from joblib import Parallel, delayed
 from ..joblib.caching import CodeObj, wrap_decorator
 from ..logging_config import LOGGING
 from ..qstat import get_ncpus
-from ..utils import match_shape
+from ..utils import match_shape, strip_multiline
 from .datasets import (
     DATA_DIR,
     IGNORED_DATASETS,
     Dataset,
+    DatasetNotFoundError,
+    VariableNotFoundError,
     data_is_available,
     dataset_times,
     fill_dataset,
@@ -265,7 +267,15 @@ class Datasets:
         if isinstance(index, str):
             new_index = self.get_index(index)
         elif isinstance(index, Dataset):
-            new_index = self.datasets.index(index)
+            try:
+                new_index = self.datasets.index(index)
+            except ValueError as exc:
+                error_msg = strip_multiline(
+                    f"""Dataset '{index}' could not be found.
+                    Available: raw names {self.raw_dataset_names}
+                    or pretty names {self.pretty_dataset_names}."""
+                )
+                raise DatasetNotFoundError(error_msg) from exc
         else:
             new_index = index
         return self.datasets[new_index]
@@ -392,27 +402,55 @@ class Datasets:
 
         return formatted
 
+    def _get_dataset_raw_name(self, dataset_name):
+        """Given an input dataset name, return the matching raw dataset name."""
+        raw_names = self.raw_dataset_names
+        if dataset_name in raw_names:
+            return dataset_name
+        try:
+            return raw_names[self.pretty_dataset_names.index(dataset_name)]
+        except ValueError as exc:
+            error_msg = strip_multiline(
+                f"""Dataset '{dataset_name}' could not be found.
+                Available: raw names {raw_names}
+                or pretty names {self.pretty_dataset_names}."""
+            )
+            raise DatasetNotFoundError(error_msg) from exc
+
+    def _get_variable_raw_name(self, var_name):
+        """Given an input variable name, return the matching raw variable name."""
+        raw_names = self.raw_variable_names
+        if var_name in raw_names:
+            return var_name
+        try:
+            return raw_names[self.pretty_variable_names.index(var_name)]
+        except ValueError as exc:
+            error_msg = strip_multiline(
+                f"""Variable '{var_name}' could not be found.
+                Available: raw names {raw_names}
+                or pretty names {self.pretty_variable_names}."""
+            )
+            raise VariableNotFoundError(error_msg) from exc
+
     def field_translator(self, name, field):
         """Translate dataset and variable names into raw names if needed.
 
         Args:
             name (str): Name to translate.
-            field (str): "dataset", or "variable".
+            field {"dataset", "variable"}: Which kind of name to translate.
 
         Returns:
-            (str): Translated name. May be equal to the passed in name.
+            (str): Translated name. May equal the passed-in name.
+
+        Raises:
+            DatasetNotFoundError: If `field='dataset'` and `name` could not be found.
+            VariableNotFoundError: If `field='variable'` and `name` could not be found.
 
         """
         if field == "dataset":
-            raw_names = self.raw_dataset_names
-            if name in raw_names:
-                return name
-            return raw_names[self.pretty_dataset_names.index(name)]
+            return self._get_dataset_raw_name(name)
         elif field == "variable":
-            raw_names = self.raw_variable_names
-            if name in raw_names:
-                return name
-            return raw_names[self.pretty_variable_names.index(name)]
+            return self._get_variable_raw_name(name)
         else:
             raise ValueError(f"Unknown field '{field}'.")
 
@@ -713,6 +751,12 @@ class Datasets:
         Args:
             dataset_name (str): This name may match either the raw or the pretty name.
 
+        Returns:
+            int: Location of the matching dataset in `self.datasets`.
+
+        Raises:
+            DatasetNotFoundError: If `dataset_name` could not be found.
+
         """
         if not isinstance(dataset_name, str):
             dataset_name = dataset_name[0]
@@ -720,7 +764,13 @@ class Datasets:
             stored_names = dataset.names()
             if contains(stored_names, dataset_name):
                 return self.datasets.index(dataset)
-        raise ValueError("Dataset name '{}' not found.".format(dataset_name))
+
+        error_msg = strip_multiline(
+            f"""Dataset '{dataset_name}' could not be found.
+            Available: raw names {self.raw_dataset_names}
+            or pretty names {self.pretty_dataset_names}."""
+        )
+        raise DatasetNotFoundError(error_msg)
 
     def add(self, dataset):
         """Add a dataset to the database.
