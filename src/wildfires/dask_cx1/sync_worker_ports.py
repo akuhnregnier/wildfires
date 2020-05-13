@@ -93,6 +93,7 @@ class Scheduler:
         kwargs=None,
         max_iter=math.inf,
         action_name=None,
+        exception=False,
     ):
         """Scheduler for repeated execution of an action.
 
@@ -103,6 +104,8 @@ class Scheduler:
             kwargs (dictionary): Keyword arguments.
             max_iter (int or float): Maximum number of iterations.
             action_name (str): If set, used for debugging purposes.
+            exception (bool): Raise `SchedulerError` exceptions instead of logging at
+                the error at the 'error' level.
 
         """
         self.scheduler = scheduler(delayfunc=self._interruptible_sleep)
@@ -113,6 +116,7 @@ class Scheduler:
         self.kwargs = kwargs if kwargs is not None else {}
         self.max_iter = max_iter
         self._action_name = action_name
+        self.exception = exception
 
         self.first_time = None
         self.iterations = 0
@@ -191,10 +195,13 @@ class Scheduler:
         next_time = self.first_time + (self.n_intervals + interval_diff) * self.interval
 
         if next_time <= monotonic():
-            raise SchedulerError(
-                f"Next iteration scheduled for a time in the past. "
+            error_msg = (
+                "Next iteration scheduled for a time in the past. "
                 f"Consider increasing the interval (currently {self.interval:0.2e} s)."
             )
+            if self.exception:
+                raise SchedulerError(error_msg)
+            logger.error(error_msg)
 
         self.n_intervals = next_intervals
 
@@ -229,8 +236,10 @@ class LoggerAdapter(logging.LoggerAdapter):
 
 
 class KeepAliveThread(Thread):
-    def __init__(self, interval, target, action_name=None, **kwargs):
-        self.target_sched = Scheduler(interval, target, action_name=action_name)
+    def __init__(self, interval, target, **kwargs):
+        self.target_sched = Scheduler(
+            interval, target, action_name=kwargs.pop("action_name", None)
+        )
         super().__init__(target=self.target_sched.run, **kwargs)
 
     def stop(self):
