@@ -968,7 +968,10 @@ def regrid(
 
         extr_mask = (interpolated_cube.data > omax) | (interpolated_cube.data < omin)
         if np.any(extr_mask):
-            logger.warning("Masking regridded values that exceeded the input range.")
+            logger.warning(
+                f"Masking {np.sum(extr_mask)} regridded values that exceeded the input "
+                f"range for cube {cube.name()}."
+            )
             interpolated_cube.data.mask |= extr_mask
 
     if return_regridder:
