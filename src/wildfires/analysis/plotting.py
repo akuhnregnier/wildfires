@@ -10,6 +10,7 @@ import warnings
 import cartopy.crs as ccrs
 import iris
 import matplotlib as mpl
+import matplotlib.colors as colors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -23,16 +24,6 @@ from ..utils import (
     multiline,
     select_valid_subset,
     translate_longitude_system,
-)
-
-__all__ = (
-    "FigureSaver",
-    "cube_plotting",
-    "get_bin_edges",
-    "get_cubes_vmin_vmax",
-    "get_pdp_data",
-    "map_model_output",
-    "partial_dependence_plot",
 )
 
 logger = logging.getLogger(__name__)
@@ -1016,6 +1007,17 @@ def cube_plotting(
     if animation_output:
         return fig, ax, mesh, title_text
     return fig
+
+
+class MidpointNormalize(colors.Normalize):
+    def __init__(self, *args, midpoint=None, **kwargs):
+        self.midpoint = midpoint
+        super().__init__(*args, **kwargs)
+
+    def __call__(self, value, clip=None):
+        # Simple mapping between the color range halves and the data halves.
+        x, y = [self.vmin, self.midpoint, self.vmax], [0, 0.5, 1]
+        return np.ma.masked_array(np.interp(value, x, y))
 
 
 def get_pdp_data(

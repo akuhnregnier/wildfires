@@ -21,6 +21,7 @@ from ..qstat import get_ncpus
 from ..utils import get_land_mask, get_masked_array, get_unmasked, polygon_mask
 from .plotting import (
     FigureSaver,
+    MidpointNormalize,
     cube_plotting,
     map_model_output,
     partial_dependence_plot,
@@ -290,7 +291,14 @@ def data_processing(
     )
 
 
-def corr_plot(exog_data):
+def corr_plot(exog_data, fig_kwargs=None):
+    """Correlation plot between variables (columns).
+
+    Args:
+        exog_data (DataFrame): Each column corresponds to one variable.
+        fig_kwargs (dict): Keyword argument given to `plt.figure()`.
+
+    """
     columns = list(map(map_name, exog_data.columns))
 
     def trim(string, n=10, cont_str="..."):
@@ -299,29 +307,34 @@ def corr_plot(exog_data):
             string += cont_str
         return string
 
-    # https://stackoverflow.com/questions/55289921/matplotlib-matshow-xtick-labels-on-top-and-bottom/55289968
     n = len(columns)
-    fig, ax = plt.subplots()
 
     corr_arr = np.ma.MaskedArray(exog_data.corr().values)
     corr_arr.mask = np.zeros_like(corr_arr)
     # Ignore diagnals, since they will all be 1 anyway!
     np.fill_diagonal(corr_arr.mask, True)
 
-    im = ax.matshow(corr_arr, interpolation="none")
+    if fig_kwargs is None:
+        fig_kwargs = {}
 
-    fig.colorbar(im, pad=0.04, shrink=0.95)
+    fig, ax = plt.subplots(**fig_kwargs)
+    im = ax.matshow(
+        corr_arr,
+        interpolation="none",
+        cmap="RdYlBu_r",
+        norm=MidpointNormalize(midpoint=0.0),
+    )
+
+    fig.colorbar(im, pad=0.02, shrink=0.8, aspect=40, label="Pearson Correlation")
 
     ax.set_xticks(np.arange(n))
-    ax.set_xticklabels(map(partial(trim, n=10), columns))
+    ax.set_xticklabels(map(partial(trim, n=15), columns))
     ax.set_yticks(np.arange(n))
     ax.set_yticklabels(columns)
 
-    # Set ticks on top of axes on
+    # Activate ticks on top of axes.
     ax.tick_params(axis="x", bottom=False, top=True, labelbottom=False, labeltop=True)
-    # Rotate and align bottom ticklabels
-    # plt.setp([tick.label1 for tick in ax.xaxis.get_major_ticks()], rotation=45,
-    #          ha="right", va="center", rotation_mode="anchor")
+
     # Rotate and align top ticklabels
     plt.setp(
         [tick.label2 for tick in ax.xaxis.get_major_ticks()],
@@ -330,14 +343,6 @@ def corr_plot(exog_data):
         va="center",
         rotation_mode="anchor",
     )
-
-    # For some reason the code below does not work and produces overlapping top labels.
-    # Maybe needed to set the rotation_mode, ha, and va parameters from above?
-    # plt.xticks(range(len(columns)), map(get_trim_func(), columns), rotation=45)
-    # plt.yticks(range(len(columns)), columns)
-    # plt.colorbar(pad=0.2)
-
-    # ax.set_title("Correlation Matrix", pad=40)
     fig.tight_layout()
 
 
