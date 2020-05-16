@@ -20,6 +20,7 @@ from tqdm import tqdm
 from ..data import dummy_lat_lon_cube
 from ..logging_config import LOGGING
 from ..utils import (
+    CoordinateSystemError,
     in_360_longitude_system,
     multiline,
     select_valid_subset,
@@ -808,14 +809,18 @@ def cube_plotting(
         central_longitude = np.mean(tr_longitudes)
     else:
         longitudes = cube.coord("longitude").points
-        if in_360_longitude_system(longitudes):
-            # Translate longitudes to centre the map on Africa when all longitudes are
-            # present and a choice has to be made.
-            logger.debug("Translating longitudes from [0, 360] to [-180, 180].")
-            central_longitude = np.mean(
-                translate_longitude_system(longitudes, return_indices=False)
-            )
-        else:
+        try:
+            if in_360_longitude_system(longitudes):
+                # Translate longitudes to centre the map on Africa when all longitudes are
+                # present and a choice has to be made.
+                logger.debug("Translating longitudes from [0, 360] to [-180, 180].")
+                longitudes = translate_longitude_system(
+                    longitudes, return_indices=False
+                )
+        except CoordinateSystemError:
+            # Assume that unusual longitudes are by design, e.g. for contiguity.
+            pass
+        finally:
             central_longitude = np.mean(longitudes)
 
     title = kwargs.get("title")

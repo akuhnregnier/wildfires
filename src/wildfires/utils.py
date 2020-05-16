@@ -28,6 +28,10 @@ class NoCachedDataError(Exception):
     """Raised when the cache pickle file could not be found."""
 
 
+class CoordinateSystemError(Exception):
+    """Raised when an unknown coordinate system is encountered."""
+
+
 class SimpleCache:
     """Simple caching functionality without analysing arguments."""
 
@@ -588,6 +592,14 @@ def in_360_longitude_system(longitudes, tol=1e-4):
 
     Args:
         longitudes (1-D iterable): Longitudes to translate.
+        tol (float): Floating point tolerance.
+
+    Returns:
+        bool: True if `longitudes` are in [0, 360], False otherwise.
+
+    Raises:
+        CoordinateSystemError: If none of the intervals [-180, 180] or [0, 360] match
+            `longitudes`.
 
     Examples:
         >>> in_360_longitude_system([0, 180, 360])
@@ -599,14 +611,17 @@ def in_360_longitude_system(longitudes, tol=1e-4):
 
     """
     longitudes = np.asarray(longitudes)
+    if np.any(longitudes < (-180 - tol)):
+        raise CoordinateSystemError("Longitudes below -180 were found.")
+    if np.any(longitudes > (360 + tol)):
+        raise CoordinateSystemError("Longitudes above 360 were found.")
     if np.any(longitudes > 180):
-        assert np.all(
-            longitudes > -tol
-        ), "If longitudes over 180 are present, there should be no longitudes below 0."
+        if np.any(longitudes < -tol):
+            raise CoordinateSystemError(
+                "If longitudes over 180 are present, there should be no "
+                "longitudes below 0."
+            )
         return True
-    assert np.all(
-        longitudes > (-180 - tol)
-    ), "Longitudes below -180 were found in the [-180, 180] system."
     return False
 
 
@@ -852,6 +867,8 @@ def select_valid_subset(data, axis=None, longitudes=None):
     # Shift all data along the longitude axis such that `last_cluster_index` is last.
     shift_delta = data.shape[lon_ax] - last_cluster_index - 1
 
+    logger.debug(f"Shifting longitudes by: {shift_delta} indices.")
+
     # Create original indices.
     indices = np.arange(data.shape[lon_ax], dtype=np.int64)
     # Translate the data forwards (by subtracting the desired number of shifts).
@@ -860,12 +877,16 @@ def select_valid_subset(data, axis=None, longitudes=None):
     indices %= data.shape[lon_ax]
 
     # Having shifted the indices, remove the invalid indices which are now at the end.
-    indices = indices[: -np.sum(invalid_counts[largest_cluster])]
+    indices = indices[: -invalid_counts[largest_cluster]]
 
     shifted_longitudes = np.take(longitudes, indices)
 
+    # Remove the longitude coordinate discontinuity introduced by the shift.
+    shifted_longitudes[shift_delta:] += 360
+
     if not iris.util.monotonic(shifted_longitudes, strict=True):
         # We need to transform longitudes to be monotonic.
+        logger.debug("Translating longitude system.")
         tr_longitudes, transform_indices = translate_longitude_system(
             shifted_longitudes, return_indices=True
         )

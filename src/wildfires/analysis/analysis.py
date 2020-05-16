@@ -18,7 +18,15 @@ from sklearn.model_selection import train_test_split
 from ..data import *
 from ..logging_config import LOGGING
 from ..qstat import get_ncpus
-from ..utils import get_land_mask, get_masked_array, get_unmasked, polygon_mask
+from ..utils import (
+    box_mask,
+    get_land_mask,
+    get_masked_array,
+    get_unmasked,
+    match_shape,
+    polygon_mask,
+    strip_multiline,
+)
 from .plotting import (
     FigureSaver,
     MidpointNormalize,
@@ -32,6 +40,7 @@ __all__ = (
     "GLM",
     "RF",
     "TripleFigureSaver",
+    "constrained_map_plot",
     "corr_plot",
     "data_processing",
     "get_no_fire_mask",
@@ -43,6 +52,189 @@ __all__ = (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _match_constraints(constraints, X):
+    """Match `constraints` on `X`.
+
+    See `constrained_map_plot` for details.
+
+    Returns:
+        array-like: Array with shape `(X.shape,)` that is True for columns where
+            `constraints` are satisfied.
+
+    """
+    # Process each constraint in turn. Conditions within a dictionary are combined
+    # using AND, and separate dictionaries are combined using OR.
+    overall_selection = np.zeros(X.shape[0], dtype=np.bool_)
+    for constraint in constraints:
+        constr_selection = np.ones(X.shape[0], dtype=np.bool_)
+        for var, limits in constraint.items():
+            try:
+                variable = X[var]
+            except KeyError as exc:
+                var_err = strip_multiline(
+                    f"""The variable {var} could not be found. The given data had the
+                    following variables: {X.columns.to_list()}."""
+                )
+                raise VariableNotFoundError(var_err) from exc
+
+            # Limit the overall matches to the overlap.
+            if limits.start is not None:
+                constr_selection &= variable >= limits.start
+            if limits.stop is not None:
+                constr_selection &= variable < limits.stop
+
+        # Combine several constraints using OR.
+        overall_selection |= constr_selection
+
+    return overall_selection
+
+
+def _get_constraints_title(constraints):
+    """Get a description of `constraints`.
+
+    See `constrained_map_plot` for details.
+
+    Returns:
+        str: Description.
+
+    """
+    overall = []
+    for constraint in constraints:
+        constr_parts = []
+        for var, limits in constraint.items():
+            parts = []
+            if limits.start is not None:
+                parts.append(f"{limits.start} <")
+            parts.append(var)
+            if limits.stop is not None:
+                parts.append(f"< {limits.stop}")
+            constr_parts.append(" ".join(parts))
+        overall.append(" & ".join(constr_parts))
+    if len(overall) > 1:
+        overall = [f"({cond})" for cond in overall]
+    return " | ".join(overall)
+
+
+def constrained_map_plot(
+    constraints, X, mask, plot_variable=None, return_data=False, **kwargs
+):
+    """Plot regions on a map that satisfy given constraints.
+
+    Args:
+        constraints (dict or iterable of dict): One or more dictionaries that define
+            constraints on variables in `X`. Each dictionary key must match a column in `X`.
+            Each dictionary specifies constraints which must be simultaneously
+            satisfied (AND). If multiple dictionaries are given, any of the constraints
+            represented by the dictionaries may be satisfied (OR). Individual
+            constraints can be given as slice objects which will be compared against
+            the values within the chosen column of `X` (not its indices). Tuples
+            representing input arguments to `slice()` may also be used. For each
+            slice, the `start` and `stop` attributes are used to construct the
+            interval [start, stop).
+        X (DataFrame): Data that `constraints` will be matched against.
+        mask (array-like): This array should have a shape (`L`, `M`, `N`), where `L`
+            is the number of time periods, `M` is the number of latitudes and `N` is
+            the number of longitudes. Invalid regions should be masked, such that it
+            has `X.shape[0]` unmasked values. This is used to translate the columns in
+            `X` to the global map.
+        plot_variable (str): If given, `plot_variable` should match one of the columns
+            of `X`. The value of this variable will then be plotted in the regions
+            matching `constraints`.
+        kwargs: Additional keyword arguments will be given to
+            `wildfires.analysis.cube_plotting`.
+        return_data: Only return the newly masked data, without plotting it.
+
+    Returns:
+        array-like: Only present if `return_data`.
+
+    Raises:
+        TypeError: If `constraints` is not a dictionary with `str` keys and either
+            `slice` or `tuple` values.
+        VariableNotFoundError: If one of the `constraints` keys or `plot_variable`
+            does not match a column in `X`.
+
+    Examples:
+        >>> import numpy as np  # doctest: +SKIP
+        >>> import pandas as pd  # doctest: +SKIP
+        >>> data = np.random.random((2, 3))  # doctest: +SKIP
+        >>> X = pd.DataFrame(data, columns=['A', 'B', 'C'])  # doctest: +SKIP
+        >>> mask = np.ones((5, 5), dtype=np.bool_)  # doctest: +SKIP
+        >>> mask[0, :3] = False  # doctest: +SKIP
+        >>> # Plot regions where 'A' is in [0, 0.5).
+        >>> constrained_map_plot({'A': (0, 0.5)}, X, mask)  # doctest: +SKIP
+        >>> # Plot regions where 'A' is in [0, 0.5) AND 'B' is in [0, 0.1).
+        >>> constr = {'A': (0, 0.5), 'B': (0.1,)}  # doctest: +SKIP
+        >>> constrained_map_plot(constr, X, mask)  # doctest: +SKIP
+        >>> # Plot regions where 'A' is in [0, 0.5) OR 'B' is in [0, 0.1).
+        >>> constr = [{'A': (0, 0.5)}, {'B': (0.1,)}]  # doctest: +SKIP
+        >>> constrained_map_plot(constr, X, mask)  # doctest: +SKIP
+
+    """
+    if isinstance(constraints, dict):
+        # Allow passing either a single `dict` or a collection thereof.
+        constraints = (constraints,)
+
+    # Ensure tuples are replaced with slice objects.
+    for constraint in constraints:
+        for var, limits in constraint.items():
+            if isinstance(limits, tuple):
+                constraint[var] = slice(*limits)
+            elif not isinstance(limits, slice):
+                raise TypeError(
+                    strip_multiline(
+                        f"""Expected a tuple or slice constraint, but got
+                        '{repr(limits)}' for variable '{var}'"""
+                    )
+                )
+
+    # Parse the constraints. Returns a column that is True for matching samples.
+    constr_selection = _match_constraints(constraints, X)
+
+    # Construct the vector of data that represents the data to plot.
+    if plot_variable is not None:
+        try:
+            # Mask the unselected regions.
+            plot_data = np.ma.MaskedArray(X[plot_variable], mask=~constr_selection)
+        except KeyError as exc:
+            var_err = strip_multiline(
+                f"""The variable '{plot_variable}' could not be found. The given data
+                had the following variables: {X.columns.to_list()}."""
+            )
+            raise VariableNotFoundError(var_err) from exc
+    else:
+        # Plot 1s where data has been selected, mask the other points.
+        plot_data = np.ma.MaskedArray(
+            constr_selection.astype("float64"), mask=~constr_selection
+        )
+
+    # Transform the data to plot to a 2D map using the mask.
+    map_data = np.ma.MaskedArray(
+        np.zeros(mask.shape, dtype=np.float64), mask=mask.copy()
+    )
+    map_data[~mask] = plot_data
+
+    # Add additional masks on top, like the land mask.
+    map_data.mask |= match_shape(~get_land_mask(n_lon=mask.shape[-1]), map_data.shape)
+    # Ignore regions south of -60° S.
+    map_data.mask |= match_shape(
+        ~box_mask(lats=(-60, 90), lons=(-180, 180), n_lon=mask.shape[-1]),
+        map_data.shape,
+    )
+
+    if return_data:
+        return map_data
+    cube_plotting(
+        map_data,
+        select_valid=kwargs.pop("select_valid", True),
+        title=kwargs.pop("title", _get_constraints_title(constraints)),
+        label=kwargs.pop(
+            "label",
+            f"Mean {plot_variable}" if plot_variable is not None else "Matching Cells",
+        ),
+        **kwargs,
+    )
 
 
 def print_vifs(exog_data, thres=6):
