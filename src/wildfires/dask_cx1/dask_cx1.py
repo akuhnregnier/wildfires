@@ -360,6 +360,8 @@ def get_scheduler_file(match="above", **specs):
 
 
 class CX1PBSJob(PBSJob):
+    """Job that runs on CX1, assuming no direct inter-job communication is possible."""
+
     @wraps(PBSJob.__init__)
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -391,6 +393,8 @@ class CX1PBSJob(PBSJob):
 
 
 class CX1Cluster(PBSCluster):
+    """Cluster on CX1, assuming no direct inter-job communication is possible."""
+
     @wraps(PBSCluster.__init__)
     def __init__(self, *args, verbose_ssh=False, **kwargs):
         # This will be overwritten later, and will be used to get a constant filename.
@@ -657,3 +661,135 @@ echo $(date): Finished running ssh, starting dask-worker now.
     def adapt(self, *args, **kwargs):
         logger.warning(cluster_size_error_msg)
         super().adapt(*args, **kwargs)
+
+
+class CX1GeneralPBSJob(PBSJob):
+    """Job that runs on CX1 in the general queue with direct inter-job communication."""
+
+    @wraps(PBSJob.__init__)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        command_template = self._command_template.split()
+
+        # XXX: Replace this with the '--lifetime' switch!!
+        shutdown_seconds = kwargs.get("shutdown_seconds", 120)
+        timeout = walltime_seconds(kwargs["walltime"]) - shutdown_seconds
+
+        self._command_template = " ".join(
+            [
+                # Allow 2 minutes for setting up and cleaning up.
+                "timeout",
+                "--preserve-status",
+                f"{timeout}s",
+            ]
+            + command_template
+        )
+        # Allow for the cleanup actions initiated by the above to finish.
+        self._command_template += f"\nsleep {shutdown_seconds}"
+
+
+class CX1GeneralCluster(PBSCluster):
+    """Cluster on CX1 in the general queue with direct inter-job communication.
+
+    Start the cluster in its own job to let it request additional workers and so that
+    the initial scheduler address can be used.
+
+    """
+
+    @wraps(PBSCluster.__init__)
+    def __init__(self, *args, verbose_ssh=False, **kwargs):
+        # This will be overwritten later, and will be used to get a constant filename.
+        self._scheduler_file = None
+
+        # This where the scheduler is run, and thus where ports have to be forwarded to.
+        hostname = socket.getfqdn()
+
+        # First place any args into kwargs, then update relevant entries in kwargs to
+        # enable operation on CX1.
+        bound_args = signature(super().__init__).bind_partial(*args, **kwargs)
+        bound_args.apply_defaults()
+        mod_kwargs = bound_args.arguments
+        # Use kwargs as well (otherwise the whole kwargs dictionary would be used
+        # as another 'kwargs' keyword argument instead of the arguments therein).
+        mod_kwargs.update(mod_kwargs.pop("kwargs"))
+
+        # Set default parameters.
+        if mod_kwargs.get("cores") is not None and mod_kwargs.get("cores") != 32:
+            raise ValueError("32 cores are needed in the general queue.")
+        mod_kwargs["cores"] = 32
+
+        if mod_kwargs.get("eth0") is not None and mod_kwargs.get("eth0") != "eth0":
+            raise ValueError(
+                "The 'eth0' interface should be used for 'general' class jobs."
+            )
+        mod_kwargs["interface"] = "eth0"
+
+        if mod_kwargs.get("processes") is None:
+            mod_kwargs["processes"] = 1
+
+        mod_kwargs["memory"] = pbs_format_bytes_ceil(
+            parse_bytes(mod_kwargs.get("memory", DEFAULTS["memory"]))
+        )
+        mod_kwargs["walltime"] = mod_kwargs.get("walltime", DEFAULTS["walltime"])
+
+        # Get the number of workers.
+        n_workers = mod_kwargs["n_workers"]
+        if not n_workers > 0:
+            logger.warning(f"Expected a positive number of workers, got {n_workers}.")
+
+        mod_kwargs.update(
+            job_cls=CX1GeneralPBSJob,
+            extra=list(mod_kwargs.get("extra", [])) + "--no-dashboard".split(),
+            env_extra=f"""
+export DASK_TEMPORARY_DIRECTORY=$TMPDIR
+#
+JOBID="${{PBS_JOBID%%.*}}"
+echo $(date): JOBID $JOBID on host $(hostname).
+echo $(date): Local processes:
+pgrep -afu ahk114
+#
+""".strip().split(
+                "\n"
+            )
+            + list(mod_kwargs.get("env_extra", ())),
+            scheduler_options=dict(
+                mod_kwargs.get("scheduler_options", ())
+                if mod_kwargs.get("scheduler_options", ()) is not None
+                else (),
+            ),
+        ),
+        super().__init__(**mod_kwargs)
+
+        os.makedirs(SCHEDULER_DIR, exist_ok=True)
+        info = self.scheduler_info
+        info["worker_specs"] = mod_kwargs.copy()
+        # When saving the worker specs, we carry about little other than the type of
+        # the worker class.
+        info["worker_specs"]["job_cls"] = mod_kwargs["job_cls"].__name__
+
+        info["worker_specs"]["cluster_hostname"] = hostname
+
+        with open(self.scheduler_file, "w") as f:
+            json.dump(info, f, indent=2)
+
+        print(f"Dashboard at: {self.dashboard_link}")
+
+    def __cleanup(self):
+        os.remove(self.scheduler_file)
+
+    @wraps(PBSCluster.close)
+    def close(self, *args, **kwargs):
+        self.__cleanup()
+        super().close(*args, **kwargs)
+
+    @property
+    def scheduler_file(self):
+        """Get a unique filename for the current cluster scheduler."""
+        # If this is the first time this is being run.
+        if self._scheduler_file is None:
+            fname = self.scheduler_info["id"] + ".json"
+            assert fname not in os.listdir(
+                SCHEDULER_DIR
+            ), f"Scheduler file {fname} is already present."
+            self._scheduler_file = os.path.join(SCHEDULER_DIR, fname)
+        return self._scheduler_file

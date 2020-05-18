@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 import math
+import os
 import shlex
+from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from subprocess import Popen, check_call, check_output
+from tempfile import NamedTemporaryFile
 from time import monotonic, sleep
 
 from dask.distributed import get_worker
@@ -57,8 +60,8 @@ def start_jupyter_lab(
         worker (str): This is used to set the worker the function should be run on.
         jupyter_exc (str): Path to the Jupyter executable to use.
         notebook_dir (str): The working directory.
-        target_user (str): SSH username.
-        target_host (str): SSH hostname.
+        target_user (str): SSH username (eg. `getpass.getuser()`).
+        target_host (str): SSH hostname (eg. `socket.getfqdn()`).
 
     Returns:
         int: The port used by the JupyterLab environment.
@@ -85,6 +88,7 @@ def start_jupyter_lab(
         check_call(
             shlex.split(
                 f"ssh -f -NT -R {port}:localhost:{port} {target_user}@{target_host}"
+                "-o StrictHostKeyChecking=no"
             )
         )
         return port, get_worker().address
@@ -180,8 +184,8 @@ def setup_remote_jupyter_lab(
         workers (str): This is used to set the worker the function should be run on.
         jupyter_exc (str): Path to the Jupyter executable to use.
         notebook_dir (str): The working directory.
-        target_user (str): SSH username.
-        target_host (str): SSH hostname.
+        target_user (str): SSH username (eg. `getpass.getuser()`).
+        target_host (str): SSH hostname (eg. `socket.getfqdn()`).
 
     Returns:
         str: The running notebook(s) including their access tokens and the Dask worker
@@ -199,3 +203,117 @@ def setup_remote_jupyter_lab(
         # listed on the worker JupyterLab is running on.
         workers = worker_address
     return list_notebooks(client, jupyter_exc, port, workers)
+
+
+def start_general_lab(
+    jupyter_exc="/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/jupyter",
+    notebook_dir="~/Documents/PhD/wildfire-analysis/analyses/",
+    valid_ports_exec=(
+        "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/valid-ports"
+    ),
+    target_user="alexander",
+    target_host="maritimus.webredirect.org",
+    walltime="05:00:00",
+    start_timeout=900,
+    **cluster_kwargs,
+):
+    """Start a Dask cluster using workers of the general class.
+
+    Start a JupyterLab environment on the (first) scheduler job by default.
+
+    Args:
+        jupyter_exc (str): Path to the Jupyter executable to use.
+        notebook_dir (str): The working directory.
+        jupyter_exc (str): Path to the Jupyter executable to use.
+        valid_ports_exec (str): Path to the `valid-ports` executable.
+        target_user (str): SSH username (eg. `getpass.getuser()`).
+        target_host (str): SSH hostname (eg. `socket.getfqdn()`).
+        walltime (str): Walltime limit, eg. '05:00:00'.
+        start_timeout (float): Time in seconds to wait for the job to start in order
+            to parse the created output files for the JupyterLab address.
+        cluster_kwargs: Additional keyword arguments are passed to the
+            `CX1GeneralCluster()` initialiser.
+
+    """
+    job_name = "JupyterLab-general"
+    ssh_opts = "-f -NT -o StrictHostKeyChecking=no"
+    job_script = f"""
+#!/usr/bin/env bash
+
+#PBS -N {job_name}
+#PBS -l select=1:ncpus=32:mem=60GB
+#PBS -l walltime={walltime}
+export DASK_TEMPORARY_DIRECTORY=$TMPDIR
+#
+JOBID="${{PBS_JOBID%%.*}}"
+echo $(date): JOBID $JOBID on host $(hostname).
+#
+# Get a free port.
+#
+read JUPYTERPORT <<< $({valid_ports_exec} 1)
+#
+# Make the JupyterLab environment accessible from a user-facing node.
+#
+ssh -R $JUPYTERPORT:localhost:$JUPYTERPORT {target_user}@{target_host} {ssh_opts}
+#
+# Start JupyterLab using the determined port.
+#
+{jupyter_exc} lab --no-browser --port=$JUPYTERPORT --notebook-dir={notebook_dir}
+"""
+
+    with NamedTemporaryFile(prefix="jupyterlab_general_", suffix=".sh") as job_file:
+        with open(job_file.name, "w") as f:
+            f.write(job_script)
+        job_str = check_output(shlex.split(f"qsub -V {job_file.name}")).decode()
+
+    job_id = job_str.split(".")[0]
+    output_file = ".e".join((job_name, job_id))
+    print("Waiting for job to start...")
+    start = monotonic()
+    while (monotonic() - start) < start_timeout:
+        sleep(5)
+        if os.path.isfile(output_file):
+            with open(output_file) as f:
+                lines = [l for l in f.readlines() if "localhost" in l]
+            if lines:
+                address = "".join(lines)
+                print(address)
+                return address
+
+
+def main():
+    parser = ArgumentParser(
+        description=(
+            "Start a JupyterLab environment using a 'general' job class worker."
+        ),
+        formatter_class=ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--jupyter-exc",
+        default="/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/jupyter",
+    )
+    parser.add_argument(
+        "--notebook-dir", default="~/Documents/PhD/wildfire-analysis/analyses/"
+    )
+    parser.add_argument(
+        "--valid-ports-exec",
+        default=(
+            "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/valid-ports"
+        ),
+    )
+    parser.add_argument("--target-user", default="alexander")
+    parser.add_argument("--target-host", default="maritimus.webredirect.org")
+    parser.add_argument("--walltime", default="05:00:00")
+    parser.add_argument("--start-timeout", default=900, type=float)
+
+    args = parser.parse_args()
+
+    start_general_lab(
+        jupyter_exc=args.jupyter_exc,
+        notebook_dir=args.notebook_dir,
+        valid_ports_exec=args.valid_ports_exec,
+        target_user=args.target_user,
+        target_host=args.target_host,
+        walltime=args.walltime,
+        start_timeout=args.start_timeout,
+    )

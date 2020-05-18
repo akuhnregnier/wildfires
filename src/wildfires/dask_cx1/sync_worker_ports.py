@@ -1613,7 +1613,3 @@ def main():
         args.sqlite_timeout,
         args.counter_dir,
     ).run()
-
-
-if __name__ == "__main__":
-    main()
