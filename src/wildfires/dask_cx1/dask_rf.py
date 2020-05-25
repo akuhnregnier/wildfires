@@ -21,7 +21,7 @@ from sklearn.ensemble._forest import (
 from sklearn.model_selection import KFold
 from tqdm import tqdm
 
-__all__ = ("DaskRandomForestRegressor", "FitDaskRFGridSearchCV")
+__all__ = ("DaskRandomForestRegressor", "fit_dask_rf_grid_search_cv")
 
 
 class DaskRandomForestRegressor(RandomForestRegressor):
@@ -30,7 +30,7 @@ class DaskRandomForestRegressor(RandomForestRegressor):
 
         Note that this implementation returns futures instead of `self`, which is most
         useful when fitting a series of trees in parallel, eg. using Dask, as is done
-        in `FitDaskRFGridSearchCV` which `dask_fit()` was written for.
+        in `fit_dask_rf_grid_search_cv` which `dask_fit()` was written for.
 
         For most use cases, using `fit()`, perhaps using the Dask parallel backend,
         would be preferable, as that could parallelise the operation over a cluster
@@ -189,7 +189,7 @@ class DaskRandomForestRegressor(RandomForestRegressor):
         return tree_fs
 
 
-def FitDaskRFGridSearchCV(
+def fit_dask_rf_grid_search_cv(
     regr,
     X,
     y,
