@@ -12,7 +12,7 @@ import iris
 import numpy as np
 import pytest
 
-from wildfires.data.datasets import dummy_lat_lon_cube, regrid
+from wildfires.data.datasets import dummy_lat_lon_cube, homogenise_cube_mask, regrid
 from wildfires.utils import get_centres
 
 
@@ -82,3 +82,24 @@ def test_linear_masked_regrid(mdtol):
     )
 
     assert np.allclose(interp_cube.data, target_data, atol=1e-1)
+
+
+def test_nearest_neighbour_regrid():
+    np.random.seed(1)
+    source_cube = homogenise_cube_mask(
+        dummy_lat_lon_cube(np.random.random((3, 100, 100)))
+    )
+    source_cube.data.mask = source_cube.data.data > 0.5
+    nn_cube = regrid(source_cube)
+
+    inv_nn_cube = regrid(
+        nn_cube,
+        new_latitudes=source_cube.coord("latitude").points,
+        new_longitudes=source_cube.coord("longitude").points,
+    )
+    assert np.allclose(source_cube.data, inv_nn_cube.data, atol=1e-1)
+    for agg in (iris.analysis.MIN, iris.analysis.MAX):
+        assert np.allclose(
+            source_cube.collapsed(("latitude", "longitude"), agg).data,
+            nn_cube.collapsed(("latitude", "longitude"), agg).data,
+        )

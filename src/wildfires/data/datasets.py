@@ -770,7 +770,7 @@ def lat_lon_match(
 
 def regrid(
     cube,
-    area_weighted=False,
+    area_weighted=None,
     new_latitudes=get_centres(np.linspace(-90, 90, 721)),
     new_longitudes=get_centres(np.linspace(-180, 180, 1441)),
     scheme=None,
@@ -790,7 +790,9 @@ def regrid(
     Args:
         cube (iris.cube.Cube): Cube to regrid.
         area_weighted (bool): If True, perform first order conservative area weighted
-            regridding. For more control, see `scheme` and `regridder`.
+            regridding. If False, perform bilinear regridding. For more control, see
+            `scheme` and `regridder`. If none of `area_weighted`, `scheme`, or
+            `regridder` are given, nearest-neighbour regridding will be used.
         new_latitudes (array-like): New grid latitudes.
         new_longitudes (array-like): New grid longitudes.
         scheme (object with a `regridder()` method): This object should define a
@@ -830,6 +832,10 @@ def regrid(
     if lat_lon_match(cube, new_latitudes, new_longitudes):
         logger.info("No regridding needed for '{}'.".format(cube.name()))
         return cube
+
+    # Use nearest-neighbour by default.
+    if area_weighted is None and scheme is None and regridder is None:
+        scheme = iris.analysis.Nearest()
 
     logger.debug("Regridding '{}'.".format(cube.name()))
 
@@ -988,18 +994,18 @@ def regrid(
 @dataset_cache
 def regrid_dataset(
     dataset,
-    area_weighted=False,
     new_latitudes=get_centres(np.linspace(-90, 90, 721)),
     new_longitudes=get_centres(np.linspace(-180, 180, 1441)),
+    **kwargs,
 ):
     logger.debug(f"Regridding '{dataset}' with {len(dataset)} variable(s).")
     regridded_cubes = iris.cube.CubeList(
         [
             regrid(
                 cube,
-                area_weighted=area_weighted,
                 new_latitudes=new_latitudes,
                 new_longitudes=new_longitudes,
+                **kwargs,
             )
             for cube in dataset.cubes
         ]
@@ -1705,9 +1711,9 @@ class Dataset(metaclass=RegisterDatasets):
 
     def regrid(
         self,
-        area_weighted=False,
         new_latitudes=get_centres(np.linspace(-90, 90, 721)),
         new_longitudes=get_centres(np.linspace(-180, 180, 1441)),
+        **kwargs,
     ):
         """Replace stored cubes with regridded versions in-place.
 
@@ -1719,9 +1725,9 @@ class Dataset(metaclass=RegisterDatasets):
             for cube_slice in self.single_cube_slices():
                 self.cubes[cube_slice] = regrid_dataset(
                     self[cube_slice],
-                    area_weighted=area_weighted,
                     new_latitudes=new_latitudes,
                     new_longitudes=new_longitudes,
+                    **kwargs,
                 )
 
     @abstractmethod
