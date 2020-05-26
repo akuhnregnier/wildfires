@@ -313,14 +313,20 @@ def fit_dask_rf_grid_search_cv(
                     # processed them.
                     split_results.clear()
 
-                    with parallel_backend("threading", n_jobs=local_n_jobs):
-                        split_results["test_score"] = rf.score(
-                            X_test[split_index], y_test[split_index]
+                    # XXX: Using `parallel_backend('threading', n_jobs=local_n_jobs)`
+                    # only runs on a single thread.
+                    orig_n_jobs = rf.n_jobs
+                    rf.n_jobs = local_n_jobs
+
+                    split_results["test_score"] = rf.score(
+                        X_test[split_index], y_test[split_index]
+                    )
+                    if return_train_score:
+                        split_results["train_score"] = rf.score(
+                            X_train[split_index], y_train[split_index]
                         )
-                        if return_train_score:
-                            split_results["train_score"] = rf.score(
-                                X_train[split_index], y_train[split_index]
-                            )
+
+                    rf.n_jobs = orig_n_jobs
 
     # Collate the scores.
     for params, param_results in rf_skel.items():
