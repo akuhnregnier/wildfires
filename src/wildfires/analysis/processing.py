@@ -7,13 +7,9 @@ import logging.config
 import numpy as np
 import pandas as pd
 from sklearn.metrics import r2_score
+from tqdm import tqdm
 
-__all__ = (
-    "log_map",
-    "log_modulus",
-    "map_name",
-    "vif",
-)
+__all__ = ("log_map", "log_modulus", "map_name", "vif")
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +48,7 @@ def map_name(name, name_map=name_map):
     return name_map.get(name, name)
 
 
-def vif(exog_data):
+def vif(exog_data, verbose=False):
     """Get a dataframe containing the VIFs for the input variables.
 
     Args:
@@ -63,7 +59,15 @@ def vif(exog_data):
 
     """
     vifs = []
-    for i, name in enumerate(exog_data.columns):
+    for i, name in enumerate(
+        tqdm(
+            exog_data.columns,
+            desc="Calculating VIFs",
+            smoothing=0,
+            disable=not verbose,
+            unit="variable",
+        )
+    ):
         X_fit = exog_data.values[:, i].reshape(-1, 1)
         X_k = exog_data.values[:, [j for j in range(len(exog_data.columns)) if j != i]]
         X_k = np.hstack((np.ones(X_k.shape[0]).reshape(-1, 1), X_k))
