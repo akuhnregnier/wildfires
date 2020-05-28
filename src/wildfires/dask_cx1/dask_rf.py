@@ -319,6 +319,7 @@ def fit_dask_rf_grid_search_cv(
         total=len(tree_fs),
         unit="trees",
         desc="Training RF trees for different parameters and splits",
+        smoothing=0.01,
         disable=not verbose,
     ):
         # Collect trained trees if all the trees for a RF are done.
