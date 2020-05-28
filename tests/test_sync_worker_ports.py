@@ -509,7 +509,7 @@ def test_scheduler():
     expected_total = (max_iter - 1) * interval
     assert (
         time_taken - expected_total
-    ) / expected_total < 1e-2, (
+    ) / expected_total < 5e-2, (
         "The total time taken should be close to the expected time."
     )
     expected_times = execution_times[0] + (interval * np.arange(max_iter))

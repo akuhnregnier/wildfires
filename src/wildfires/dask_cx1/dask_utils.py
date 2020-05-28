@@ -268,6 +268,14 @@ ssh -R $JUPYTERPORT:localhost:$JUPYTERPORT {target_user}@{target_host} {ssh_opts
 
     job_id = job_str.split(".")[0]
     output_file = ".e".join((job_name, job_id))
+    print(
+        strip_multiline(
+            """Note: If the prompt 'Would you like to clear the workspace or keep
+            waiting.' is encountered, try executing
+            'rm -rf ~/.jupyter/lab/workspaces/' before clicking on the link below
+            again."""
+        )
+    )
     print("Waiting for job to start...")
     start = monotonic()
     while (monotonic() - start) < start_timeout:
