@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from contextlib import contextmanager
 from itertools import product
 from warnings import warn
 
@@ -21,7 +22,30 @@ from sklearn.ensemble._forest import (
 from sklearn.model_selection import KFold
 from tqdm import tqdm
 
-__all__ = ("DaskRandomForestRegressor", "fit_dask_rf_grid_search_cv")
+__all__ = (
+    "DaskRandomForestRegressor",
+    "fit_dask_rf_grid_search_cv",
+    "temp_sklearn_params",
+)
+
+
+@contextmanager
+def temp_sklearn_params(est, params):
+    """Temporally alter a set of parameters.
+
+    Args:
+        est (object with `set_params()` and `get_params()` method): Scikit-learn
+            estimator.
+        params (dict): The parameters to temporarily alter.
+
+    """
+    original_params = est.get_params()
+    try:
+        est.set_params(**params)
+        yield
+    finally:
+        # Reset the original parameters.
+        est.set_params(**original_params)
 
 
 class DaskRandomForestRegressor(RandomForestRegressor):
@@ -313,20 +337,24 @@ def fit_dask_rf_grid_search_cv(
                     # processed them.
                     split_results.clear()
 
-                    # XXX: Using `parallel_backend('threading', n_jobs=local_n_jobs)`
-                    # only runs on a single thread.
-                    orig_n_jobs = rf.n_jobs
-                    rf.n_jobs = local_n_jobs
+                    # NOTE: `RandomForestRegressor.predict()` calculates `n_jobs`
+                    # internally using `joblib.effective_n_jobs()` without considering
+                    # `n_jobs` from the currently enabled default backend. Therefore,
+                    # wrapping `score()` in
+                    # `parallel_backend('threading', n_jobs=local_n_jobs)` only runs
+                    # on `rf.n_jobs` threads (in the case where `rf.n_jobs = None`,
+                    # this causes the scoring to run on a single thread only),
+                    # regardless of the value of `local_n_jobs`.
 
-                    split_results["test_score"] = rf.score(
-                        X_test[split_index], y_test[split_index]
-                    )
-                    if return_train_score:
-                        split_results["train_score"] = rf.score(
-                            X_train[split_index], y_train[split_index]
+                    # Force the use of `local_n_jobs` threads in `score()` (see above).
+                    with temp_sklearn_params(rf, {"n_jobs": local_n_jobs}):
+                        split_results["test_score"] = rf.score(
+                            X_test[split_index], y_test[split_index]
                         )
-
-                    rf.n_jobs = orig_n_jobs
+                        if return_train_score:
+                            split_results["train_score"] = rf.score(
+                                X_train[split_index], y_train[split_index]
+                            )
 
     # Collate the scores.
     for params, param_results in rf_skel.items():
