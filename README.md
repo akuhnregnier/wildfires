@@ -3,6 +3,22 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blueviolet)](https://github.com/akuhnregnier/wildfires/blob/master/LICENSE)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/ambv/black)
 
+## Install
+
+wildfires requires Python >= 3.7.
+
+It needs to be installed from source (note the use of SSH instead of HTTPS), either using:
+```sh
+pip install git+ssh://git@github.com/akuhnregnier/wildfires.git@master#egg=wildfires
+```
+or after cloning (forking) for development purposes:
+```sh
+git clone git@github.com:akuhnregnier/wildfires.git
+pip install -e "wildfires"
+```
+
+Required packages are not installed using those commands, because the `requirements.yml` environment file was designed to facilitate package installation using `conda` (see [here](#installing-dependencies) or [here](#creating-a-new-conda-environment-manually)).
+
 ## Development
 
 The instructions below assume that you are using Linux and managing Python using [pyenv](https://github.com/pyenv/pyenv) and [pyenv-virtualenv](https://github.com/pyenv/pyenv-virtualenv).
