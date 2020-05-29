@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import time
 from contextlib import contextmanager
 from itertools import product
 from warnings import warn
@@ -20,12 +21,21 @@ from sklearn.ensemble._forest import (
     issparse,
 )
 from sklearn.model_selection import KFold
+from sklearn.model_selection._search import (
+    GridSearchCV,
+    _check_multimetric_scoring,
+    _fit_and_score,
+    check_cv,
+    indexable,
+    is_classifier,
+)
 from tqdm import tqdm
 
 __all__ = (
     "DaskRandomForestRegressor",
     "fit_dask_rf_grid_search_cv",
     "temp_sklearn_params",
+    "DaskGridSearchCV",
 )
 
 
@@ -231,10 +241,12 @@ def fit_dask_rf_grid_search_cv(
     trained successfully, all relevant trained trees are collected and used to perform
     the scoring.
 
+    Depending on the problem, this method may be slower than using `DaskGridSearchCV`.
+
+    This function is adapted from sklearn.model_selection._validation (28-05-2020).
+
     Args:
-        regr (`DaskRandomForestRegressor`): An instance of `DaskRandomForestRegressor`
-            that was initialised with parameters not specified in `param_grid`. These
-            parameters will be augmented with those in `param_grid`.
+        regr (`DaskRandomForestRegressor`): Estimator that will be evaluated.
         X (array-like): Training vector.
         y (array-like): Target relative to `X`.
         n_splits (int): Number of splits used for `KFold()`.
@@ -257,7 +269,6 @@ def fit_dask_rf_grid_search_cv(
             best parameters found.
 
     """
-
     params = regr.get_params()
 
     rf_params_list = [
@@ -390,3 +401,208 @@ def fit_dask_rf_grid_search_cv(
             refit_rf.fit(X, y)
         return rf_skel, refit_rf
     return rf_skel
+
+
+class DaskGridSearchCV(GridSearchCV):
+    def dask_fit(self, client, X, y=None, groups=None, **fit_params):
+        """Run a distributed fit with all sets of parameters.
+
+        Individual `fit()` and `score()` calls are carried out on single workers.
+        Workers need to specify the resource 'threads', e.g. '--resources threads=32',
+        to specify the number of threads available for model fitting and scoring per
+        worker, regardless of the number of physical cores Dask believes are available
+        (additional cores may have been requested in a job submission script, for
+        example). This number of threads is then reflected in the estimator's `n_jobs`
+        parameter to achieve parallelism on each worker.
+
+        Depending on the problem, this method may be slower than
+        `fit_dask_rf_grid_search_cv()`.
+
+        Only use this method if individual calls to `fit()` and `score()` can both be
+        parallelised (and to the same extent). Otherwise other approaches are more
+        applicable, such as dask-ml's `GridSearchCV`.
+
+        Changed parameter semantics:
+
+            `self.verbose` is interpreted to be either False or True,
+            displaying a progress bar when True.
+
+            `self.pre_dispatch` is ignored.
+
+
+        Parameters
+        ----------
+        client : `dask.distributed.Client`
+            Dask Client used to submit tasks to the scheduler.
+        X : array-like, shape = [n_samples, n_features]
+            Training vector, where n_samples is the number of samples and
+            n_features is the number of features.
+        y : array-like, shape = [n_samples] or [n_samples, n_output], optional
+            Target relative to X for classification or regression;
+            None for unsupervised learning.
+        groups : array-like, with shape (n_samples,), optional
+            Group labels for the samples used while splitting the dataset into
+            train/test set.
+        **fit_params : dict of string -> object
+            Parameters passed to the ``fit`` method of the estimator
+
+        Raises
+        ------
+        RuntimeError
+            If the Dask workers associated with `client` do not specify the 'threads'
+            resource.
+        RuntimeError
+            If the 'threads' resources specified by the Dask workers associated with
+            `client` do not match.
+
+        """
+        all_worker_resources = [
+            worker["resources"]
+            for worker in client.scheduler_info()["workers"].values()
+        ]
+        if not all("threads" in resources for resources in all_worker_resources):
+            raise RuntimeError(
+                "Expected all workers to specify the 'threads' resource, but got "
+                f"{all_worker_resources}."
+            )
+
+        all_worker_threads = [resource["threads"] for resource in all_worker_resources]
+        if not all(threads == all_worker_threads[0] for threads in all_worker_threads):
+            raise RuntimeError(
+                "Expected all workers to have the same number of threads, but got "
+                f"{all_worker_threads}."
+            )
+        n_jobs = all_worker_threads[0]
+
+        estimator = self.estimator
+        cv = check_cv(self.cv, y, classifier=is_classifier(estimator))
+
+        scorers, self.multimetric_ = _check_multimetric_scoring(
+            self.estimator, scoring=self.scoring
+        )
+
+        if self.multimetric_:
+            if self.refit is not False and (
+                not isinstance(self.refit, six.string_types)
+                or
+                # This will work for both dict / list (tuple)
+                self.refit not in scorers
+            ):
+                raise ValueError(
+                    "For multi-metric scoring, the parameter "
+                    "refit must be set to a scorer key "
+                    "to refit an estimator with the best "
+                    "parameter setting on the whole data and "
+                    "make the best_* attributes "
+                    "available for that metric. If this is not "
+                    "needed, refit should be set to False "
+                    "explicitly. %r was passed." % self.refit
+                )
+            else:
+                refit_metric = self.refit
+        else:
+            refit_metric = "score"
+
+        X, y, groups = indexable(X, y, groups)
+        n_splits = cv.get_n_splits(X, y, groups)
+
+        base_estimator = clone(self.estimator)
+
+        fit_and_score_kwargs = dict(
+            scorer=scorers,
+            fit_params=fit_params,
+            return_train_score=self.return_train_score,
+            return_n_test_samples=True,
+            return_times=True,
+            return_parameters=False,
+            error_score=self.error_score,
+            verbose=self.verbose,
+        )
+        results_container = [{}]
+
+        all_candidate_params = []
+        all_out = []
+
+        def evaluate_candidates(candidate_params):
+            candidate_params = list(candidate_params)
+            n_candidates = len(candidate_params)
+
+            if self.verbose > 0:
+                print(
+                    "Fitting {0} folds for each of {1} candidates,"
+                    " totalling {2} fits".format(
+                        n_splits, n_candidates, n_candidates * n_splits
+                    )
+                )
+
+            X_fut = client.scatter(X, broadcast=True)
+            y_fut = client.scatter(y, broadcast=True)
+
+            out_fs = [
+                client.submit(
+                    _fit_and_score,
+                    clone(base_estimator).set_params(n_jobs=n_jobs),
+                    X_fut,
+                    y_fut,
+                    train=train,
+                    test=test,
+                    parameters=parameters,
+                    resources={"threads": n_jobs},
+                    **fit_and_score_kwargs,
+                )
+                for parameters, (train, test) in product(
+                    candidate_params, cv.split(X, y, groups)
+                )
+            ]
+
+            # Get a progress bar of completed futures.
+            for f in tqdm(
+                as_completed(out_fs),
+                total=len(out_fs),
+                unit="fit",
+                desc="Carrying out grid search",
+                smoothing=0.05,
+                disable=not self.verbose,
+            ):
+                pass
+
+            # Append the finished calculations to `out` in order.
+            out = [out_f.result() for out_f in out_fs]
+
+            all_candidate_params.extend(candidate_params)
+            all_out.extend(out)
+
+            results_container[0] = self._format_results(
+                all_candidate_params, scorers, n_splits, all_out
+            )
+            return results_container[0]
+
+        self._run_search(evaluate_candidates)
+
+        results = results_container[0]
+
+        # For multi-metric evaluation, store the best_index_, best_params_ and
+        # best_score_ iff refit is one of the scorer names
+        # In single metric evaluation, refit_metric is "score"
+        if self.refit or not self.multimetric_:
+            self.best_index_ = results["rank_test_%s" % refit_metric].argmin()
+            self.best_params_ = results["params"][self.best_index_]
+            self.best_score_ = results["mean_test_%s" % refit_metric][self.best_index_]
+
+        if self.refit:
+            self.best_estimator_ = clone(base_estimator).set_params(**self.best_params_)
+            refit_start_time = time.time()
+            if y is not None:
+                self.best_estimator_.fit(X, y, **fit_params)
+            else:
+                self.best_estimator_.fit(X, **fit_params)
+            refit_end_time = time.time()
+            self.refit_time_ = refit_end_time - refit_start_time
+
+        # Store the only scorer not as a dict for single metric evaluation
+        self.scorer_ = scorers if self.multimetric_ else scorers["score"]
+
+        self.cv_results_ = results
+        self.n_splits_ = n_splits
+
+        return self
