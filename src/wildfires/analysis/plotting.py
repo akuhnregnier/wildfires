@@ -1020,9 +1020,10 @@ class MidpointNormalize(colors.Normalize):
         super().__init__(*args, **kwargs)
 
     def __call__(self, value, clip=None):
-        # Simple mapping between the color range halves and the data halves.
+        # Simple mapping between the color range halves and vmin and vmax.
+        result, _ = self.process_value(value)
         x, y = [self.vmin, self.midpoint, self.vmax], [0, 0.5, 1]
-        return np.ma.masked_array(np.interp(value, x, y))
+        return np.ma.masked_array(np.interp(value, x, y), mask=result.mask)
 
 
 def get_pdp_data(
