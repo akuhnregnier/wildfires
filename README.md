@@ -19,6 +19,13 @@ pip install -e "wildfires"
 
 Required packages are not installed using those commands, because the `requirements.yml` environment file was designed to facilitate package installation using `conda` (see [here](#installing-dependencies) or [here](#creating-a-new-conda-environment-manually)).
 
+JupyterLab ipywidgets:
+```sh
+conda install ipywidgets
+jupyter nbextension enable --py widgetsnbextension
+jupyter labextension install @jupyter-widgets/jupyterlab-manage
+```
+
 ## Development
 
 The instructions below assume that you are using Linux and managing Python using [pyenv](https://github.com/pyenv/pyenv) and [pyenv-virtualenv](https://github.com/pyenv/pyenv-virtualenv).

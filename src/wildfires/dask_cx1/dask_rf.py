@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 import time
+from collections import defaultdict
 from contextlib import contextmanager
 from itertools import product
+from threading import Event, Thread
 from warnings import warn
 
 import numpy as np
@@ -29,11 +31,11 @@ from sklearn.model_selection._search import (
     indexable,
     is_classifier,
 )
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 __all__ = (
     "DaskRandomForestRegressor",
-    "fit_dask_rf_grid_search_cv",
+    "fit_dask_sub_est_grid_search_cv",
     "temp_sklearn_params",
     "DaskGridSearchCV",
 )
@@ -64,7 +66,7 @@ class DaskRandomForestRegressor(RandomForestRegressor):
 
         Note that this implementation returns futures instead of `self`, which is most
         useful when fitting a series of trees in parallel, eg. using Dask, as is done
-        in `fit_dask_rf_grid_search_cv` which `dask_fit()` was written for.
+        in `fit_dask_sub_est_grid_search_cv` which `dask_fit()` was written for.
 
         For most use cases, using `fit()`, perhaps using the Dask parallel backend,
         would be preferable, as that could parallelise the operation over a cluster
@@ -223,8 +225,8 @@ class DaskRandomForestRegressor(RandomForestRegressor):
         return tree_fs
 
 
-def fit_dask_rf_grid_search_cv(
-    regr,
+def fit_dask_sub_est_grid_search_cv(
+    estimator,
     X,
     y,
     n_splits,
@@ -235,18 +237,17 @@ def fit_dask_rf_grid_search_cv(
     return_train_score=True,
     local_n_jobs=None,
 ):
-    """Carry out a grid search using the Dask random forest regressor.
+    """Carry out a grid search using Dask-adapted scikit-learn estimators.
 
-    The futures returned by `dask_fit` are tracked and if a whole forest has been
-    trained successfully, all relevant trained trees are collected and used to perform
-    the scoring.
+    The futures returned by `dask_fit()` are tracked and if all sub-estimators
+    belonging to an estimator have been trained successfully, the sub-estimators are
+    collated and used to perform the scoring.
 
     Depending on the problem, this method may be slower than using `DaskGridSearchCV`.
 
-    This function is adapted from sklearn.model_selection._validation (28-05-2020).
-
     Args:
-        regr (`DaskRandomForestRegressor`): Estimator that will be evaluated.
+        estimator (object implementing `dask_fit()` and `score()` methods): Estimator
+            to be evaluated.
         X (array-like): Training vector.
         y (array-like): Target relative to `X`.
         n_splits (int): Number of splits used for `KFold()`.
@@ -254,7 +255,7 @@ def fit_dask_rf_grid_search_cv(
         client (`dask.distributed.Client`): Dask Client used to submit tasks to the
             scheduler.
         verbose (bool): If True, print out progress information related to the fitting
-            of individual trees and scoring of the resulting random forest regressors.
+            of individual sub-estimators and scoring of the resulting estimators.
         refit (bool): If True, fit `regr` using the best parameters on all of `X` and
             `y`.
         return_train_score (bool): If True, compute training scores.
@@ -268,10 +269,13 @@ def fit_dask_rf_grid_search_cv(
         regr: Only present if `refit` is True. `regr` fit on `X` and `y` using the
             best parameters found.
 
-    """
-    params = regr.get_params()
+    Raises:
+        RuntimeError: If no sub-estimators are scheduled for training.
 
-    rf_params_list = [
+    """
+    estimator_params = estimator.get_params()
+
+    params_list = [
         dict(zip(param_grid, param_values))
         for param_values in product(*param_grid.values())
     ]
@@ -295,112 +299,167 @@ def fit_dask_rf_grid_search_cv(
         X_train_f.append(client.scatter(X_train[-1], broadcast=True))
         y_train_f.append(client.scatter(y_train[-1], broadcast=True))
 
-    rf_skel = {}
-    for rf_params in rf_params_list:
-        params.update(rf_params)
+    score_event = Event()
+    estimator_score_count = 0
+    results = defaultdict(lambda: defaultdict(dict))
 
+    def get_estimator_score_cb(estimator, param_key, split_index):
+        """Get a function that score the given estimator.
+
+        Args:
+            estimator (object implementing a `socre()` method): Estimator to be
+                evaluated.
+
+        Returns:
+            callable: Callable with signature (future), where `future.result()`
+                contains the trained sub-estimators that will be placed into
+                `estimator.estimators_`.
+            param_key (tuple): Tuple identifying the parameters of `estimator` that
+                were modified during the grid search.
+            split_index (int): Index of the current split.
+
+        """
+
+        def construct_and_score(future):
+            """Join the sub-estimators and score the resulting estimator.
+
+            Scores will be placed into the global `results` dict.
+
+            Score completion will be signalled using the `score_event` Event.
+
+            Args:
+                future (future): `future.result()` contains the trained sub-estimators
+                    that will be placed into `estimator.estimators_`.
+
+            """
+            nonlocal estimator_score_count
+
+            estimator.estimators_.extend([f for f in future.result()])
+
+            # NOTE: `RandomForestRegressor.predict()` calculates `n_jobs` internally
+            # using `joblib.effective_n_jobs()` without considering `n_jobs` from the
+            # currently enabled default backend. Therefore, wrapping `score()` in
+            # `parallel_backend('threading', n_jobs=local_n_jobs)` only runs on
+            # `estimator.n_jobs` threads (in the case where `estimator.n_jobs = None`,
+            # this causes the scoring to run on a single thread only), regardless of
+            # the value of `local_n_jobs`.
+
+            # Force the use of `local_n_jobs` threads in `score()` (see above).
+            with temp_sklearn_params(estimator, {"n_jobs": local_n_jobs}):
+                results[param_key]["test_score"][split_index] = estimator.score(
+                    X_test[split_index], y_test[split_index]
+                )
+                if return_train_score:
+                    results[param_key]["train_score"][split_index] = estimator.score(
+                        X_train[split_index], y_train[split_index]
+                    )
+            estimator_score_count += 1
+            score_event.set()
+
+        return construct_and_score
+
+    # Collect all sub-estimator futures for progress monitoring.
+    sub_estimator_fs = []
+
+    def estimator_fit_done_callback(futures):
+        return futures
+
+    # Task submission progress bar.
+    submit_tqdm = tqdm(
+        desc="Submitting tasks",
+        total=len(params_list) * n_splits,
+        disable=not verbose,
+        unit="task",
+        smoothing=0.01,
+    )
+
+    for grid_params in params_list:
         # Hashable version of the param dict.
-        param_key = tuple(sorted(rf_params.items()))
-        rf_skel[param_key] = {}
+        param_key = tuple(sorted(grid_params.items()))
 
         for split_index, (X_t, y_t, X_t_f, y_t_f) in enumerate(
             zip(X_train, y_train, X_train_f, y_train_f)
         ):
-            fit_rf = clone(regr).set_params(**params)
-            tree_fs = fit_rf.dask_fit(X_t, y_t, X_t_f, y_t_f, client)
+            grid_estimator = clone(estimator).set_params(
+                **{**estimator_params, **grid_params}
+            )
+            sub_est_fs = grid_estimator.dask_fit(X_t, y_t, X_t_f, y_t_f, client)
 
-            if not tree_fs:
-                raise RuntimeError("No trees were scheduled to be trained.")
+            if not sub_est_fs:
+                raise RuntimeError("No sub-estimators were scheduled to be trained.")
 
-            # When all tree futures are done, we can start scoring this RF, after collecting
-            # the trees into the parent RF estimator. This is done later.
-            rf_skel[param_key][split_index] = {"rf": fit_rf, "tree_fs": tree_fs}
+            sub_estimator_fs.extend(sub_est_fs)
 
-    # Create a list of all tree futures to iterate over.
-    tree_fs = [
-        f
-        for param_results in rf_skel.values()
-        for split_results in param_results.values()
-        for f in split_results["tree_fs"]
-    ]
+            # Collate the sub-estimator futures to process them collectively later.
+            estimator_future = client.submit(estimator_fit_done_callback, sub_est_fs)
+            estimator_future.add_done_callback(
+                get_estimator_score_cb(grid_estimator, param_key, split_index)
+            )
+            submit_tqdm.update()
 
-    # Get a progress bar of completed futures.
-    for f in tqdm(
-        as_completed(tree_fs),
-        total=len(tree_fs),
-        unit="trees",
-        desc="Training RF trees for different parameters and splits",
-        smoothing=0.01,
+    submit_tqdm.close()
+
+    def sub_estimator_progress():
+        """Progress bar for completed sub-estimators."""
+        for f in tqdm(
+            as_completed(sub_estimator_fs),
+            desc="Sub-estimators",
+            total=len(sub_estimator_fs),
+            disable=not verbose,
+            unit="sub-estimator",
+            smoothing=0.01,
+            position=1,
+        ):
+            pass
+
+    sub_estimator_progress_thread = Thread(target=sub_estimator_progress)
+    sub_estimator_progress_thread.start()
+
+    # Progress bar for completed estimator scores.
+    score_tqdm = tqdm(
+        desc="Scoring",
+        total=len(params_list) * n_splits,
         disable=not verbose,
-    ):
-        # Collect trained trees if all the trees for a RF are done.
-        for params, param_results in rf_skel.items():
-            for split_index, split_results in param_results.items():
-                if "tree_fs" in split_results and all(
-                    f.done() for f in split_results["tree_fs"]
-                ):
-                    rf = split_results["rf"]
+        unit="estimator",
+        smoothing=0.1,
+        position=0,
+    )
 
-                    rf.estimators_.extend(
-                        [f.result() for f in split_results["tree_fs"]]
-                    )
+    while estimator_score_count != len(params_list) * n_splits:
+        # Wait for a scoring operation to be completed.
+        score_event.wait()
+        # Ready the event for the next scoring.
+        score_event.clear()
+        # Update the progress bar.
+        score_tqdm.update(estimator_score_count - score_tqdm.n)
 
-                    # Delete the futures from the dict to signal that we have
-                    # processed them.
-                    split_results.clear()
+    score_tqdm.close()
 
-                    # NOTE: `RandomForestRegressor.predict()` calculates `n_jobs`
-                    # internally using `joblib.effective_n_jobs()` without considering
-                    # `n_jobs` from the currently enabled default backend. Therefore,
-                    # wrapping `score()` in
-                    # `parallel_backend('threading', n_jobs=local_n_jobs)` only runs
-                    # on `rf.n_jobs` threads (in the case where `rf.n_jobs = None`,
-                    # this causes the scoring to run on a single thread only),
-                    # regardless of the value of `local_n_jobs`.
-
-                    # Force the use of `local_n_jobs` threads in `score()` (see above).
-                    with temp_sklearn_params(rf, {"n_jobs": local_n_jobs}):
-                        split_results["test_score"] = rf.score(
-                            X_test[split_index], y_test[split_index]
-                        )
-                        if return_train_score:
-                            split_results["train_score"] = rf.score(
-                                X_train[split_index], y_train[split_index]
-                            )
+    # Join the sub-estimator progress bar thread.
+    sub_estimator_progress_thread.join()
 
     # Collate the scores.
-    for params, param_results in rf_skel.items():
-        test_scores = []
+    for estimator_params, param_results in results.items():
+        score_keys = ["test_score"]
         if return_train_score:
-            train_scores = []
-        for split_index, split_results in param_results.items():
-            if "test_score" not in split_results or (
-                return_train_score and "train_score" not in split_results
-            ):
-                raise RuntimeError(
-                    f"Scoring failed for parameters: {params} for split {split_index}."
-                )
-            test_scores.append(split_results["test_score"])
-            if return_train_score:
-                train_scores.append(split_results["train_score"])
+            score_keys.append("train_score")
 
-        # Remove the individual entries in favour of the aggregated ones below.
-        param_results.clear()
-
-        param_results["test_scores"] = test_scores
-        if return_train_score:
-            param_results["train_scores"] = train_scores
+        for score_key in score_keys:
+            param_results[score_key] = [
+                param_results[score_key][i]
+                for i in range(len(param_results[score_key]))
+            ]
 
     if refit:
         mean_test_scores = {}
-        for params, param_results in rf_skel.items():
-            mean_test_scores[params] = np.mean(param_results["test_scores"])
+        for estimator_params, param_results in results.items():
+            mean_test_scores[estimator_params] = np.mean(param_results["test_score"])
         best_params = dict(max(mean_test_scores, key=lambda k: mean_test_scores[k]))
-        refit_rf = clone(regr).set_params(**best_params)
+        refit_estimator = clone(estimator).set_params(**best_params)
         with parallel_backend("dask", scatter=[X, y]):
-            refit_rf.fit(X, y)
-        return rf_skel, refit_rf
-    return rf_skel
+            refit_estimator.fit(X, y)
+        return results, refit_estimator
+    return results
 
 
 class DaskGridSearchCV(GridSearchCV):
@@ -416,7 +475,7 @@ class DaskGridSearchCV(GridSearchCV):
         parameter to achieve parallelism on each worker.
 
         Depending on the problem, this method may be slower than
-        `fit_dask_rf_grid_search_cv()`.
+        `fit_dask_sub_est_grid_search_cv()`.
 
         Only use this method if individual calls to `fit()` and `score()` can both be
         parallelised (and to the same extent). Otherwise other approaches are more
@@ -429,6 +488,7 @@ class DaskGridSearchCV(GridSearchCV):
 
             `self.pre_dispatch` is ignored.
 
+        This function was adapted from sklearn.model_selection._validation (28-05-2020).
 
         Parameters
         ----------
