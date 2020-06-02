@@ -2,6 +2,7 @@
 import atexit
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -511,10 +512,13 @@ class CX1Cluster(PBSCluster):
             else ""
         )
 
+        threads = math.floor(mod_kwargs["cores"] / mod_kwargs["processes"])
+
         mod_kwargs.update(
             job_cls=CX1PBSJob,
             extra=list(mod_kwargs.get("extra", []))
             + "--worker-port $WORKERPORT --no-dashboard".split()
+            + f"--resources threads={threads}".split()
             + ("--nanny-port $NANNYPORT".split() if nanny else []),
             # NOTE: Simple ssh, NOT autossh is used below, since using autossh
             # resulted in the connection being dropped repeatedly as it was
@@ -737,9 +741,13 @@ class CX1GeneralCluster(PBSCluster):
         if not n_workers > 0:
             logger.warning(f"Expected a positive number of workers, got {n_workers}.")
 
+        threads = math.floor(mod_kwargs["cores"] / mod_kwargs["processes"])
+
         mod_kwargs.update(
             job_cls=CX1GeneralPBSJob,
-            extra=list(mod_kwargs.get("extra", [])) + "--no-dashboard".split(),
+            extra=list(mod_kwargs.get("extra", []))
+            + "--no-dashboard".split()
+            + f"--resources threads={threads}".split(),
             env_extra=f"""
 export DASK_TEMPORARY_DIRECTORY=$TMPDIR
 #
