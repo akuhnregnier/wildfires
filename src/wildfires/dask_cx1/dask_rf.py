@@ -304,10 +304,10 @@ def fit_dask_sub_est_grid_search_cv(
     results = defaultdict(lambda: defaultdict(dict))
 
     def get_estimator_score_cb(estimator, param_key, split_index):
-        """Get a function that score the given estimator.
+        """Get a function that scores the given estimator.
 
         Args:
-            estimator (object implementing a `socre()` method): Estimator to be
+            estimator (object implementing a `score()` method): Estimator to be
                 evaluated.
 
         Returns:
@@ -345,7 +345,9 @@ def fit_dask_sub_est_grid_search_cv(
             # the value of `local_n_jobs`.
 
             # Force the use of `local_n_jobs` threads in `score()` (see above).
-            with temp_sklearn_params(estimator, {"n_jobs": local_n_jobs}):
+            with temp_sklearn_params(estimator, {"n_jobs": local_n_jobs}), (
+                parallel_backend("threading", n_jobs=local_n_jobs),
+            ):
                 results[param_key]["test_score"][split_index] = estimator.score(
                     X_test[split_index], y_test[split_index]
                 )
