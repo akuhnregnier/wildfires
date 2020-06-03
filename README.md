@@ -23,7 +23,7 @@ JupyterLab ipywidgets:
 ```sh
 conda install ipywidgets
 jupyter nbextension enable --py widgetsnbextension
-jupyter labextension install @jupyter-widgets/jupyterlab-manage
+jupyter labextension install @jupyter-widgets/jupyterlab-manager
 ```
 
 ## Development
