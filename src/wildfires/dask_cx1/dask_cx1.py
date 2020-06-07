@@ -722,7 +722,10 @@ class CX1GeneralCluster(PBSCluster):
             raise ValueError("32 cores are needed in the general queue.")
         mod_kwargs["cores"] = 32
 
-        if mod_kwargs.get("eth0") is not None and mod_kwargs.get("eth0") != "eth0":
+        if (
+            mod_kwargs.get("interface") is not None
+            and mod_kwargs.get("interface") != "eth0"
+        ):
             raise ValueError(
                 "The 'eth0' interface should be used for 'general' class jobs."
             )
@@ -763,7 +766,7 @@ pgrep -afu ahk114
             scheduler_options=dict(
                 mod_kwargs.get("scheduler_options", ())
                 if mod_kwargs.get("scheduler_options", ()) is not None
-                else (),
+                else ()
             ),
         ),
         super().__init__(**mod_kwargs)
