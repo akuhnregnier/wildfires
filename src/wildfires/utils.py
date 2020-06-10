@@ -6,9 +6,14 @@ import logging
 import math
 import os
 import pickle
+import shlex
+from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections import Counter
 from copy import deepcopy
 from functools import partial, wraps
+from pathlib import Path
+from subprocess import check_output
+from tempfile import NamedTemporaryFile
 from textwrap import dedent
 from time import time
 from warnings import warn
@@ -967,3 +972,109 @@ def multiline(s, strip_all_indents=False):
 
 
 strip_multiline = partial(multiline, strip_all_indents=True)
+
+
+def submit_array_job(filepath, ncpus, mem, walltime, max_index, show_only=False):
+    """Submit an array job which runs the given file.
+
+    The directory above is also added to the python path so that the 'common' module
+    that is assumed to be located there may be imported.
+
+    Args:
+        filepath (Path): Path to the Python file to be executed as part of the array
+            job.
+        ncpus (int): Number of CPUs per job.
+        mem (str): Memory per job.
+        walltime (str): Walltime per job.
+        max_index (int): Maximum array index (inclusive).
+        show_only (bool): Print the job script instead of submitting it.
+
+    """
+    directory = filepath.parent
+    job_name = filepath.with_suffix("").name
+    output_dir = directory / Path(f"output_{job_name}")
+    os.makedirs(output_dir, exist_ok=True)
+
+    common_dir = directory.parent
+    assert list(
+        common_dir.glob("common.py")
+    ), "We expect to be 1 folder below 'common.py'."
+
+    job_script = f"""
+#!/usr/bin/env bash
+
+#PBS -N {job_name}
+#PBS -l select=1:ncpus={ncpus}:mem={mem}
+#PBS -l walltime={walltime}
+#PBS -J 0-{max_index}
+#PBS -e {output_dir}
+#PBS -o {output_dir}
+
+# Enable import of the right 'common' module.
+export PYTHONPATH={common_dir}:$PYTHONPATH
+
+# Finally, execute the script.
+/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/python {filepath}
+""".strip()
+    if show_only:
+        print(job_script)
+        return
+
+    with NamedTemporaryFile(prefix=f"{job_name}_", suffix=".sh") as job_file:
+        with open(job_file.name, "w") as f:
+            f.write(job_script)
+        job_str = check_output(shlex.split(f"qsub -V {job_file.name}")).decode().strip()
+
+    print(f"Submitted job {job_str}.")
+
+
+def handle_array_job_args(filepath, func, **params):
+    """Parse command line arguments as part of an array job.
+
+    When submitting a task, `submit_array_job()` is invoked with the given filepath.
+    Otherwise `func()` is called.
+
+    Args:
+        filepath (Path): Path to the Python file to be executed as part of the array
+            job.
+        func (callable): Callable with signature () that will be executed during the
+            array job.
+        **params: Parameters for `submit_array_job()`.
+
+    """
+    parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--submit", action="store_true", help="submit this array job")
+    parser.add_argument(
+        "--ncpus",
+        type=int,
+        help="how many cpus per job",
+        default=params.get("ncpus", 1),
+    )
+    parser.add_argument(
+        "--mem", help="memory per job, e.g. '5GB'", default=params.get("mem", "5GB")
+    )
+    parser.add_argument(
+        "--walltime",
+        help="walltime per job, e.g. '10:00:00'",
+        default=params.get("walltime", "03:00:00"),
+    )
+    parser.add_argument(
+        "--max-index",
+        help="maximum job index (inclusive)",
+        default=params.get("max_index", 100),
+    )
+    parser.add_argument(
+        "--show-only", action="store_true", help="only show the job script"
+    )
+    args = parser.parse_args()
+    if args.submit or args.show_only:
+        submit_array_job(
+            filepath,
+            args.ncpus,
+            args.mem,
+            args.walltime,
+            args.max_index,
+            show_only=args.show_only,
+        )
+    else:
+        func()
