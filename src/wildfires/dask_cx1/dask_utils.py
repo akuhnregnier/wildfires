@@ -17,6 +17,41 @@ class NoNotebookError(RuntimeError):
     """Raised when a matching notebook could not be found within the timeout."""
 
 
+def common_worker_threads(client):
+    """Get the common value of the 'threads' resource.
+
+    Args:
+        client (`dask.distributed.Client`): Dask Client used to submit tasks to the
+            scheduler.
+
+    Returns:
+        int: Common value of the 'threads' resource across the client's workers.
+
+    Raises:
+        RuntimeError: If the Dask workers associated with `client` do not specify the 'threads'
+            resource.
+        RuntimeError: If the 'threads' resources specified by the Dask workers associated with
+            `client` do not match.
+
+    """
+    all_worker_resources = [
+        worker["resources"] for worker in client.scheduler_info()["workers"].values()
+    ]
+    if not all("threads" in resources for resources in all_worker_resources):
+        raise RuntimeError(
+            "Expected all workers to specify the 'threads' resource, but got "
+            f"{all_worker_resources}."
+        )
+
+    all_worker_threads = [resource["threads"] for resource in all_worker_resources]
+    if not all(threads == all_worker_threads[0] for threads in all_worker_threads):
+        raise RuntimeError(
+            "Expected all workers to have the same number of threads, but got "
+            f"{all_worker_threads}."
+        )
+    return int(all_worker_threads[0])
+
+
 def get_running_procs(client=None, user="ahk114", workers=None):
     """Return a string containing `user`'s currently running processes.
 

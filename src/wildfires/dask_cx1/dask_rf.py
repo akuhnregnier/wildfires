@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import time
 from collections import defaultdict
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from itertools import product
 from threading import Event, Thread
 from warnings import warn
@@ -22,6 +22,7 @@ from sklearn.ensemble._forest import (
     check_random_state,
     issparse,
 )
+from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import KFold
 from sklearn.model_selection._search import (
     GridSearchCV,
@@ -33,11 +34,14 @@ from sklearn.model_selection._search import (
 )
 from tqdm.auto import tqdm
 
+from .dask_utils import common_worker_threads
+
 __all__ = (
     "DaskRandomForestRegressor",
     "fit_dask_sub_est_grid_search_cv",
     "temp_sklearn_params",
     "DaskGridSearchCV",
+    "dask_fit_loco",
 )
 
 
@@ -345,9 +349,12 @@ def fit_dask_sub_est_grid_search_cv(
             # the value of `local_n_jobs`.
 
             # Force the use of `local_n_jobs` threads in `score()` (see above).
-            with temp_sklearn_params(estimator, {"n_jobs": local_n_jobs}), (
-                parallel_backend("threading", n_jobs=local_n_jobs),
-            ):
+            with ExitStack() as stack:
+                stack.enter_context(
+                    temp_sklearn_params(estimator, {"n_jobs": local_n_jobs})
+                )
+                stack.enter_context(parallel_backend("threading", n_jobs=local_n_jobs))
+
                 results[param_key]["test_score"][split_index] = estimator.score(
                     X_test[split_index], y_test[split_index]
                 )
@@ -518,23 +525,7 @@ class DaskGridSearchCV(GridSearchCV):
             `client` do not match.
 
         """
-        all_worker_resources = [
-            worker["resources"]
-            for worker in client.scheduler_info()["workers"].values()
-        ]
-        if not all("threads" in resources for resources in all_worker_resources):
-            raise RuntimeError(
-                "Expected all workers to specify the 'threads' resource, but got "
-                f"{all_worker_resources}."
-            )
-
-        all_worker_threads = [resource["threads"] for resource in all_worker_resources]
-        if not all(threads == all_worker_threads[0] for threads in all_worker_threads):
-            raise RuntimeError(
-                "Expected all workers to have the same number of threads, but got "
-                f"{all_worker_threads}."
-            )
-        n_jobs = all_worker_threads[0]
+        n_jobs = common_worker_threads(client)
 
         estimator = self.estimator
         cv = check_cv(self.cv, y, classifier=is_classifier(estimator))
@@ -668,3 +659,174 @@ class DaskGridSearchCV(GridSearchCV):
         self.n_splits_ = n_splits
 
         return self
+
+
+def dask_fit_loco(
+    estimator, X_train, y_train, client, leave_out, local_n_jobs=None, verbose=False
+):
+    """Simple LOCO feature importances.
+
+    Args:
+        estimator (object implementing `dask_fit()` and `score()` methods): Estimator
+            to be evaluated.
+        train_X (pandas DataFrame): DataFrame containing the training data.
+        train_y (pandas Series or array-like): Target data.
+        client (`dask.distributed.Client`): Dask Client used to submit tasks to the
+            scheduler.
+        leave_out (iterable of column names): Column names to exclude. An empty string
+            indicates that all columns should be used (baseline).
+        local_n_jobs (int): Since scoring has a 'sharedmem' requirement (ie. threading
+            backend), parallelisation can be achieved locally using the threading
+            backend with `local_n_jobs` threads.
+        verbose (bool): If True, print out progress information related to the fitting
+            of individual sub-estimators and scoring of the resulting estimators.
+
+    Returns:
+        mse: Mean squared error of the training set predictions.
+
+    """
+    score_event = Event()
+    estimator_score_count = 0
+    results = defaultdict(lambda: defaultdict(dict))
+
+    y_train = np.asarray(y_train)
+    y_train_f = client.scatter(y_train, broadcast=True)
+
+    def get_estimator_score_cb(estimator, column):
+        """Get a function that scores the given estimator.
+
+        Args:
+            estimator (object implementing a `socre()` method): Estimator to be
+                evaluated.
+
+        Returns:
+            callable: Callable with signature (future), where `future.result()`
+                contains the trained sub-estimators that will be placed into
+                `estimator.estimators_`.
+            column (str): Column to discard.
+
+        """
+
+        def construct_and_score(future):
+            """Join the sub-estimators and score the resulting estimator.
+
+            Scores will be placed into the global `results` dict.
+
+            Score completion will be signalled using the `score_event` Event.
+
+            Args:
+                future (future): `future.result()` contains the trained sub-estimators
+                    that will be placed into `estimator.estimators_`.
+
+            """
+            nonlocal estimator_score_count
+
+            estimator.estimators_.extend([f for f in future.result()])
+
+            # NOTE: `RandomForestRegressor.predict()` calculates `n_jobs` internally
+            # using `joblib.effective_n_jobs()` without considering `n_jobs` from the
+            # currently enabled default backend. Therefore, wrapping `score()` in
+            # `parallel_backend('threading', n_jobs=local_n_jobs)` only runs on
+            # `estimator.n_jobs` threads (in the case where `estimator.n_jobs = None`,
+            # this causes the scoring to run on a single thread only), regardless of
+            # the value of `local_n_jobs`.
+
+            # Force the use of `local_n_jobs` threads in `score()` (see above).
+            with ExitStack() as stack:
+                stack.enter_context(
+                    temp_sklearn_params(estimator, {"n_jobs": local_n_jobs})
+                )
+                stack.enter_context(parallel_backend("threading", n_jobs=local_n_jobs))
+
+                sel_X_train = np.asarray(
+                    X_train[[col for col in X_train.columns if col != column]]
+                )
+                results[column]["score"] = estimator.score(sel_X_train, y_train)
+                results[column]["mse"] = mean_squared_error(
+                    y_true=y_train, y_pred=estimator.predict(sel_X_train)
+                )
+            estimator_score_count += 1
+            score_event.set()
+
+        return construct_and_score
+
+    # Collect all sub-estimator futures for progress monitoring.
+    sub_estimator_fs = []
+
+    def estimator_fit_done_callback(futures):
+        return futures
+
+    # Task submission progress bar.
+    submit_tqdm = tqdm(
+        desc="Submitting tasks",
+        total=len(leave_out),
+        disable=not verbose,
+        unit="task",
+        smoothing=0.01,
+    )
+
+    for column in leave_out:
+        grid_estimator = clone(estimator)
+        sel_X_train = np.asarray(
+            X_train[[col for col in X_train.columns if col != column]]
+        )
+        sel_X_train_f = client.scatter(sel_X_train)
+        # XXX: Exclude column!!
+        sub_est_fs = grid_estimator.dask_fit(
+            sel_X_train, y_train, sel_X_train_f, y_train_f, client
+        )
+
+        if not sub_est_fs:
+            raise RuntimeError("No sub-estimators were scheduled to be trained.")
+
+        sub_estimator_fs.extend(sub_est_fs)
+
+        # Collate the sub-estimator futures to process them collectively later.
+        estimator_future = client.submit(estimator_fit_done_callback, sub_est_fs)
+        estimator_future.add_done_callback(
+            get_estimator_score_cb(grid_estimator, column)
+        )
+        submit_tqdm.update()
+
+    submit_tqdm.close()
+
+    def sub_estimator_progress():
+        """Progress bar for completed sub-estimators."""
+        for f in tqdm(
+            as_completed(sub_estimator_fs),
+            desc="Sub-estimators",
+            total=len(sub_estimator_fs),
+            disable=not verbose,
+            unit="sub-estimator",
+            smoothing=0.01,
+            position=1,
+        ):
+            pass
+
+    sub_estimator_progress_thread = Thread(target=sub_estimator_progress)
+    sub_estimator_progress_thread.start()
+
+    # Progress bar for completed estimator scores.
+    score_tqdm = tqdm(
+        desc="Scoring",
+        total=len(leave_out),
+        disable=not verbose,
+        unit="estimator",
+        smoothing=0.1,
+        position=0,
+    )
+
+    while estimator_score_count != len(leave_out):
+        # Wait for a scoring operation to be completed.
+        score_event.wait()
+        # Ready the event for the next scoring.
+        score_event.clear()
+        # Update the progress bar.
+        score_tqdm.update(estimator_score_count - score_tqdm.n)
+
+    score_tqdm.close()
+
+    # Join the sub-estimator progress bar thread.
+    sub_estimator_progress_thread.join()
+
+    return results
