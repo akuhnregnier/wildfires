@@ -59,11 +59,16 @@ def get_qstat_ncpus():
 
         if pbs_jobid:
             # Try to retrieve number of cpus from our job id.
-            if pbs_jobid not in jobs:
+            partial_jobid = pbs_jobid.split(".")[0].split("[")[0]
+            assert (
+                sum(partial_jobid in jobid for jobid in jobs) <= 1
+            ), "Two jobs should never share the same id number."
+            if not any(partial_jobid in jobid for jobid in jobs):
                 logger.warning(
                     f"PBS job id '{pbs_jobid}' was not found in list of jobs."
                 )
             else:
+                pbs_jobid = [jobid for jobid in jobs if partial_jobid in jobid][0]
                 job = jobs[pbs_jobid]
                 if "exec_host" in job:
                     # Compare hostname recorded in the job.
