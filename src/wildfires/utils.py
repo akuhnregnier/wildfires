@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import pickle
+import re
 import shlex
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections import Counter
@@ -981,8 +982,8 @@ def submit_array_job(filepath, ncpus, mem, walltime, max_index, show_only=False)
     that is assumed to be located there may be imported.
 
     Args:
-        filepath (Path): Path to the Python file to be executed as part of the array
-            job.
+        filepath (pathlib.Path): Path to the Python file to be executed as part of the
+            array job.
         ncpus (int): Number of CPUs per job.
         mem (str): Memory per job.
         walltime (str): Walltime per job.
@@ -1078,3 +1079,64 @@ def handle_array_job_args(filepath, func, **params):
         )
     else:
         func()
+
+
+def shorten_features(features):
+    """Abbreviate feature names.
+
+    Args:
+        features (str or iterable of str): Feature names to abbreviate.
+
+    Returns:
+        str: If `features` is of type `str`, the abbreviated string is returned.
+        list of str: Otherwise, a list of abbreviated strings is returned.
+
+    """
+    if isinstance(features, str):
+        features = (features,)
+
+    def month_repl(match_obj):
+        return f"{match_obj.group(1)} M"
+
+    def delta_repl(match_obj):
+        return f"Δ{match_obj.group(1)} M"
+
+    replacements = {
+        "-(\d+) - .*Month$": delta_repl,
+        "-(\d+) Month$": month_repl,
+        "VOD Ku-band": "VOD",
+        "Diurnal Temp Range": "DTR",
+        "Dry Day Period": "Dry Days",
+        re.escape("SWI(1)"): "SWI",
+    }
+    formatted = []
+    for feature in features:
+        for pattern, repl in replacements.items():
+            feature = re.sub(pattern, repl, feature)
+        formatted.append(feature)
+
+    if len(formatted) == 1:
+        return formatted[0]
+    return formatted
+
+
+def shorten_columns(df, inplace=False):
+    """Apply `shorten_features()` to a DataFrame.
+
+    Args:
+        df (pandas DataFrame): DataFrame containing the columns to abbreviate.
+        inplace (bool): Perform the rename operation inplace.
+
+    Returns:
+        pandas DataFrame: If `inplace` if False (default), the renamed DataFrame is
+            returned.
+        None: If `inplace` is True, None is returned.
+
+    """
+    return df.rename(
+        columns=dict(
+            (orig, short)
+            for orig, short in zip(df.columns, shorten_features(df.columns))
+        ),
+        inplace=inplace,
+    )
