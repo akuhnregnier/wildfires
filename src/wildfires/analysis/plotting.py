@@ -6,6 +6,7 @@ import logging.config
 import math
 import os
 import warnings
+from pathlib import Path
 
 import cartopy.crs as ccrs
 import iris
@@ -93,14 +94,14 @@ class FigureSaver:
         directories, debug state, and saving options.
 
         Args:
-            filenames ((iterable of) str or None): If None, the FigureSaver instance
-                must be called with a list of filenames and used as a context manager
-                for automatic saving. Otherwise, the number of strings passed must
-                match the number of opened figures at the termination of the context
-                manager.
-            directory ((iterable of) str or None): The directory to save figures in.
-                If None, use `FigureSaver.directory`. New directories will be created if
-                they do not exist.
+            filenames ((iterable of) str or pathlib.Path, or None): If None, the
+                FigureSaver instance must be called with a list of filenames and used
+                as a context manager for automatic saving. Otherwise, the number of
+                strings or Paths given must match the number of figures opened within
+                the context.
+            directory ((iterable of) str or pathlib.Path, or None): The directory to
+                save figures in. If None, use `FigureSaver.directory`. New directories
+                will be created if they do not exist.
             debug (bool or None): Select the pre-set settings with which figures will
                 be saved. If None, use `FigureSaver.debug`.
             kwargs: Optional kwargs which are passed to plt.savefig().
@@ -133,11 +134,13 @@ class FigureSaver:
         directories = directories if directories is not None else self.directory
 
         self.directories = (
-            (directories,) if isinstance(directories, str) else directories
+            (directories,) if isinstance(directories, (str, Path)) else directories
         )
 
         if filenames is not None:
-            self.filenames = (filenames,) if isinstance(filenames, str) else filenames
+            self.filenames = (
+                (filenames,) if isinstance(filenames, (str, Path)) else filenames
+            )
 
             if len(self.directories) != 1 and len(self.directories) != len(
                 self.filenames
