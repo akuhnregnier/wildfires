@@ -125,3 +125,6 @@ cx1_files*/
 
 # Package version.
 _version.py
+
+# Dask worker files.
+dask-worker-space
