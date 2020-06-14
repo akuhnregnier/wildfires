@@ -848,6 +848,9 @@ def fit_dask_sub_est_random_search_cv(
                 )
                 stack.enter_context(parallel_backend("threading", n_jobs=local_n_jobs))
 
+                if timeout.is_set():
+                    return
+
                 if not (
                     param_key in results
                     and "test_score" in results[param_key]
@@ -857,6 +860,9 @@ def fit_dask_sub_est_random_search_cv(
                         X_test[split_index], y_test[split_index]
                     )
                 if return_train_score:
+                    if timeout.is_set():
+                        return
+
                     if not (
                         param_key in results
                         and "train_score" in results[param_key]
