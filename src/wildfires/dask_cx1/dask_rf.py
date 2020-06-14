@@ -1023,7 +1023,7 @@ def fit_dask_sub_est_random_search_cv(
             # As the results were already cached, try to submit another batch.
             continue
         total_cores = sum(client.ncores().values())  # This may change with time.
-        target_tasks = total_cores + 0.8 * total_cores ** 0.7  # Prefetching of tasks.
+        target_tasks = 2 * total_cores  # Prefetching of tasks.
         with sub_est_lock:
             currently_active = sub_est_tqdm.total - sub_est_tqdm.n
         # If we are currently running more tasks than our target, determine how long
