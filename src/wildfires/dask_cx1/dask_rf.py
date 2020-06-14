@@ -2,6 +2,7 @@
 import logging
 import math
 import pickle
+import shutil
 import sys
 import time
 from collections import defaultdict, deque
@@ -486,6 +487,23 @@ def fit_dask_sub_est_grid_search_cv(
     return dict(results)
 
 
+def safe_write(obj, target, prefix=None, suffix=None):
+    """Write `obj` to the path `target` via a temporary file using pickle.
+
+    Args:
+        obj: Object to pickle.
+        target (str or pathlib.Path): Destination path.
+        prefix (str or None): String to prepend to the temporary filename.
+        suffix (str or None): String to append to the temporary filename.
+
+    """
+    with NamedTemporaryFile(
+        mode="wb", prefix=prefix, suffix=suffix, delete=False
+    ) as tmp_file:
+        pickle.dump(obj, tmp_file, -1)
+    shutil.move(tmp_file.name, target)
+
+
 class CachedResults(defaultdict):
     """Nested defaultdict with dict default_factory and caching methods."""
 
@@ -530,11 +548,7 @@ class CachedResults(defaultdict):
     def cache(self):
         """Cache the scores."""
         if self.cache_dir is not None:
-            with NamedTemporaryFile(
-                mode="wb", prefix="score_cache_", suffix=".pkl", delete=False
-            ) as tmp_file:
-                pickle.dump(dict(self), tmp_file, -1)
-                Path(tmp_file.name).replace(self.score_file)
+            safe_write(dict(self), self.score_file, prefix="scores_", suffix=".pkl")
 
     def get_estimator(self, key):
         """Retrieve a fitted estimator.
@@ -569,11 +583,9 @@ class CachedResults(defaultdict):
             else:
                 cached_estimators = {}
             cached_estimators[key] = estimator
-            with NamedTemporaryFile(
-                mode="wb", prefix="model_cache_", suffix=".pkl", delete=False
-            ) as tmp_file:
-                pickle.dump(cached_estimators, tmp_file, -1)
-                Path(tmp_file.name).replace(self.estimator_file)
+            safe_write(
+                cached_estimators, self.estimator_file, prefix="models_", suffix=".pkl"
+            )
 
     def collate_scores(self, train_scores=None):
         """Collate results from different splits into combined lists.
