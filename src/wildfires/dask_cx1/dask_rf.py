@@ -7,6 +7,7 @@ import time
 from collections import defaultdict, deque
 from concurrent.futures import CancelledError
 from contextlib import ExitStack, contextmanager
+from copy import deepcopy
 from itertools import product
 from numbers import Number
 from operator import itemgetter
@@ -585,8 +586,8 @@ class CachedResults(defaultdict):
             dict: Collated results.
 
         """
-        results = {}
-        results.update(self)
+        results = dict(self)
+        results = deepcopy(results)
 
         for estimator_params, param_results in results.items():
             score_keys = ["test_score"]

@@ -8,82 +8,66 @@ import pytest
 from wildfires.dask_cx1.dask_rf import CachedResults
 
 
-@pytest.mark.parametrize(
-    "estimator_class,n_splits,cache_dir",
-    [(None, None, None), (object, 10, Path(mkdtemp()) / "cache_test")],
-)
-def test_defaultdict(estimator_class, n_splits, cache_dir):
+@pytest.fixture(params=[True, False])
+def tempdir(request):
+    """Run tests with enabled or disabled caching."""
+    if request.param:
+        temp = Path(mkdtemp()) / "cache_test"
+        yield temp
+        if temp.is_dir():
+            rmtree(temp)
+    else:
+        yield None
+
+
+def test_defaultdict(tempdir):
     """Test that the 2 nested defaultdicts work."""
-    results = CachedResults(
-        estimator_class=estimator_class, n_splits=n_splits, cache_dir=cache_dir
-    )
+    results = CachedResults(estimator_class=object, n_splits=10, cache_dir=tempdir)
     results["a"]["b"]["c"] = 10
-    if cache_dir is not None:
-        rmtree(cache_dir)
 
 
-@pytest.mark.parametrize(
-    "estimator_class,n_splits,cache_dir",
-    [(None, None, None), (object, 10, Path(mkdtemp()) / "cache_test")],
-)
-def test_score_cache(estimator_class, n_splits, cache_dir):
+def test_score_cache(tempdir):
     """Test caching of scores."""
-    results = CachedResults(
-        estimator_class=estimator_class, n_splits=n_splits, cache_dir=cache_dir
-    )
+    results = CachedResults(estimator_class=object, n_splits=10, cache_dir=tempdir)
     results["a"]["b"]["c"] = 123
     results.cache()
-    if cache_dir is None:
+    if tempdir is None:
         assert (
-            CachedResults(
-                estimator_class=estimator_class, n_splits=n_splits, cache_dir=cache_dir
-            )
-            == {}
+            CachedResults(estimator_class=object, n_splits=10, cache_dir=tempdir) == {}
         )
     else:
         assert CachedResults(
-            estimator_class=estimator_class, n_splits=n_splits, cache_dir=cache_dir
+            estimator_class=object, n_splits=10, cache_dir=tempdir
         ) == {"a": {"b": {"c": 123}}}
-    if cache_dir is not None:
-        rmtree(cache_dir)
 
 
-@pytest.mark.parametrize(
-    "estimator_class,n_splits,cache_dir",
-    [(None, None, None), (object, 10, Path(mkdtemp()) / "cache_test")],
-)
-def test_estimator_cache(estimator_class, n_splits, cache_dir):
+def test_estimator_cache(tempdir):
     """Test estimator caching."""
-    results = CachedResults(
-        estimator_class=estimator_class, n_splits=n_splits, cache_dir=cache_dir
-    )
+    results = CachedResults(estimator_class=object, n_splits=10, cache_dir=tempdir)
     with pytest.raises(KeyError):
         results.get_estimator("a")
 
     results.store_estimator("a", 123)
 
-    if cache_dir is None:
+    if tempdir is None:
         with pytest.raises(KeyError):
             results.get_estimator("a")
     else:
         assert results.get_estimator("a") == 123
 
-    if cache_dir is not None:
-        rmtree(cache_dir)
 
-
-@pytest.mark.parametrize(
-    "estimator_class,n_splits,cache_dir",
-    [(None, None, None), (object, 10, Path(mkdtemp()) / "cache_test")],
-)
-def test_results_copy(estimator_class, n_splits, cache_dir):
-    results = CachedResults(
-        estimator_class=estimator_class, n_splits=n_splits, cache_dir=cache_dir
-    )
+def test_results_copy(tempdir):
+    results = CachedResults(estimator_class=object, n_splits=10, cache_dir=tempdir)
     results["a"]["b"]["c"] = 123
     copy = results.copy()
     assert copy == results
     assert copy.__dict__ == results.__dict__
 
-    if cache_dir is not None:
-        rmtree(cache_dir)
+
+def test_score_collation(tempdir):
+    """Test collation of scores."""
+    results = CachedResults(estimator_class=object, n_splits=10, cache_dir=tempdir)
+    for i in range(4):
+        results["parameters"]["test_score"][i] = i
+
+    assert results.collate_scores()["parameters"]["test_score"] == list(range(4))
