@@ -667,7 +667,9 @@ def fit_dask_sub_est_random_search_cv(
         n_iter (int or None): The number of parameters to try. Will only be considered
             if `max_time` is `None`. If `None` is given for both `max_time` (or
             `max_time` is 0) and `n_iter`, relevant saved results (if any are found in
-            `cache_dir`) will be returned.
+            `cache_dir`) will be returned. If `max_time` is `None` and `n_iter` is 0,
+            saved results will be returned and `estimator` will be fit using the best
+            saved parameters (if any).
         verbose (bool): If True, print out progress information related to the fitting
             of individual sub-estimators and scoring of the resulting estimators.
         refit (bool): If True, fit `estimator` using the best parameters on all of `X`
@@ -1082,21 +1084,24 @@ def fit_dask_sub_est_random_search_cv(
                 timeout_or_tasks.wait()
                 timeout_or_tasks.clear()
 
-    if max_time is None:
-        # If `n_iter` was used, wait for the desired number of parameters to be processed.
-        score_complete.wait()
-    else:
-        # Wait for the timeout or scoring to finish.
-        while not (score_complete.is_set() or timeout.is_set()):
-            timeout_or_score.wait()
-        # In case scoring finished before the timeout, cancel it.
-        timeout_thread.cancel()
+    if n_iter != 0:
+        if max_time is None:
+            # If `n_iter` only was used, wait for the desired number of parameters to
+            # be processed.
+            score_complete.wait()
+        else:
+            # Wait for the timeout or scoring to finish.
+            while not (score_complete.is_set() or timeout.is_set()):
+                timeout_or_score.wait()
+            # In case scoring finished before the timeout, cancel it.
+            timeout_thread.cancel()
 
     for progress_tqdm in (submit_tqdm, score_tqdm, sub_est_tqdm):
         progress_tqdm.close()
 
     # Cancel futures.
-    client.cancel(all_futures, force=True)
+    if all_futures:
+        client.cancel(all_futures, force=True)
 
     if refit:
         refit_estimator = clone(estimator).set_params(**results.get_best_params())
