@@ -1100,11 +1100,18 @@ def fit_dask_sub_est_random_search_cv(
 
     if refit:
         refit_estimator = clone(estimator).set_params(**results.get_best_params())
-        with parallel_backend("dask", scatter=[X, y]):
-            refit_estimator.fit(X, y)
-        results.store_estimator(
-            tuple(sorted(refit_estimator.get_params().items())), refit_estimator
-        )
+        refit_est_key = tuple(sorted(refit_estimator.get_params().items()))
+        try:
+            refit_estimator = results.get_estimator(refit_est_key)
+            logger.debug(f"Loaded estimator with params {refit_est_key} from cache.")
+        except KeyError:
+            logger.debug(
+                f"Estimator with params {refit_est_key} could not be found. Fitting "
+                "now."
+            )
+            with parallel_backend("dask", scatter=[X, y]):
+                refit_estimator.fit(X, y)
+            results.store_estimator(refit_est_key, refit_estimator)
         return results.collate_scores(), refit_estimator
     return results.collate_scores()
 
