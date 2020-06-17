@@ -34,7 +34,7 @@ from sklearn.ensemble._forest import (
     check_random_state,
     issparse,
 )
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import KFold, ParameterGrid, ParameterSampler
 from sklearn.model_selection._search import (
     GridSearchCV,
@@ -620,7 +620,8 @@ class CachedResults(defaultdict):
         results = self.collate_scores()
         mean_test_scores = {}
         for estimator_params, param_results in results.items():
-            mean_test_scores[estimator_params] = np.mean(param_results[key])
+            if len(param_results[key]) == self.n_splits:
+                mean_test_scores[estimator_params] = np.mean(param_results[key])
         return dict(max(mean_test_scores, key=lambda k: mean_test_scores[k]))
 
 
@@ -1392,9 +1393,10 @@ def dask_fit_loco(
                 sel_X_train = np.asarray(
                     X_train[[col for col in X_train.columns if col != column]]
                 )
-                results[column]["score"] = estimator.score(sel_X_train, y_train)
+                y_pred = estimator.predict(sel_X_train)
+                results[column]["score"] = r2_score(y_true=y_train, y_pred=y_pred)
                 results[column]["mse"] = mean_squared_error(
-                    y_true=y_train, y_pred=estimator.predict(sel_X_train)
+                    y_true=y_train, y_pred=y_pred
                 )
             estimator_score_count += 1
             score_event.set()
