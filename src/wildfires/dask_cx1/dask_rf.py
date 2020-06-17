@@ -49,6 +49,7 @@ from tqdm.auto import tqdm
 from .dask_utils import common_worker_threads
 
 __all__ = (
+    "CachedResults",
     "DaskGridSearchCV",
     "DaskRandomForestRegressor",
     "dask_fit_loco",
