@@ -9,13 +9,15 @@ import shlex
 import socket
 import sys
 from contextlib import contextmanager
+from copy import deepcopy
 from functools import partial, wraps
 from getpass import getuser
 from inspect import signature
 from operator import eq, ge, lt
 from random import choice
 from string import ascii_lowercase
-from subprocess import Popen
+from subprocess import Popen, check_call, check_output
+from tempfile import NamedTemporaryFile
 from textwrap import dedent
 from time import sleep
 from urllib.parse import urlparse, urlunparse
@@ -667,31 +669,6 @@ echo $(date): Finished running ssh, starting dask-worker now.
         super().adapt(*args, **kwargs)
 
 
-class CX1GeneralPBSJob(PBSJob):
-    """Job that runs on CX1 in the general queue with direct inter-job communication."""
-
-    @wraps(PBSJob.__init__)
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        command_template = self._command_template.split()
-
-        # XXX: Replace this with the '--lifetime' switch!!
-        shutdown_seconds = kwargs.get("shutdown_seconds", 120)
-        timeout = walltime_seconds(kwargs["walltime"]) - shutdown_seconds
-
-        self._command_template = " ".join(
-            [
-                # Allow 2 minutes for setting up and cleaning up.
-                "timeout",
-                "--preserve-status",
-                f"{timeout}s",
-            ]
-            + command_template
-        )
-        # Allow for the cleanup actions initiated by the above to finish.
-        self._command_template += f"\nsleep {shutdown_seconds}"
-
-
 class CX1GeneralCluster(PBSCluster):
     """Cluster on CX1 in the general queue with direct inter-job communication.
 
@@ -701,7 +678,7 @@ class CX1GeneralCluster(PBSCluster):
     """
 
     @wraps(PBSCluster.__init__)
-    def __init__(self, *args, verbose_ssh=False, **kwargs):
+    def __init__(self, *args, **kwargs):
         # This will be overwritten later, and will be used to get a constant filename.
         self._scheduler_file = None
 
@@ -722,6 +699,10 @@ class CX1GeneralCluster(PBSCluster):
             raise ValueError("32 cores are needed in the general queue.")
         mod_kwargs["cores"] = 32
 
+        if mod_kwargs.get("memory") is None:
+            mod_kwargs["memory"] = "62GiB"
+        mod_kwargs["memory"] = pbs_format_bytes_ceil(parse_bytes(mod_kwargs["memory"]))
+
         if (
             mod_kwargs.get("interface") is not None
             and mod_kwargs.get("interface") != "eth0"
@@ -734,24 +715,36 @@ class CX1GeneralCluster(PBSCluster):
         if mod_kwargs.get("processes") is None:
             mod_kwargs["processes"] = 1
 
-        mod_kwargs["memory"] = pbs_format_bytes_ceil(
-            parse_bytes(mod_kwargs.get("memory", DEFAULTS["memory"]))
-        )
-        mod_kwargs["walltime"] = mod_kwargs.get("walltime", DEFAULTS["walltime"])
-
         # Get the number of workers.
         n_workers = mod_kwargs["n_workers"]
         if not n_workers > 0:
             logger.warning(f"Expected a positive number of workers, got {n_workers}.")
 
+        if mod_kwargs.get("walltime") is None:
+            mod_kwargs["walltime"] = DEFAULTS["walltime"]
+
+        lifetime = mod_kwargs.get(
+            "lifetime",
+            walltime_seconds(mod_kwargs["walltime"])
+            - mod_kwargs.get("shutdown_seconds", 120),
+        )
+
+        stagger = mod_kwargs.get(
+            "lifetime_stagger",
+            max(60, min(600, round(0.1 * walltime_seconds(mod_kwargs["walltime"])))),
+        )
+
         threads = math.floor(mod_kwargs["cores"] / mod_kwargs["processes"])
 
         mod_kwargs.update(
-            job_cls=CX1GeneralPBSJob,
+            job_cls=PBSJob,
             extra=list(mod_kwargs.get("extra", []))
             + "--no-dashboard".split()
-            + f"--resources threads={threads}".split(),
-            env_extra=f"""
+            + f"--resources threads={threads}".split()
+            + f"--lifetime {lifetime}".split()
+            + f"--lifetime-stagger {stagger}".split(),
+            env_extra=list(mod_kwargs.get("env_extra", ()))
+            + f"""
 export DASK_TEMPORARY_DIRECTORY=$TMPDIR
 #
 JOBID="${{PBS_JOBID%%.*}}"
@@ -761,8 +754,7 @@ pgrep -afu ahk114
 #
 """.strip().split(
                 "\n"
-            )
-            + list(mod_kwargs.get("env_extra", ())),
+            ),
             scheduler_options=dict(
                 mod_kwargs.get("scheduler_options", ())
                 if mod_kwargs.get("scheduler_options", ()) is not None
@@ -804,3 +796,56 @@ pgrep -afu ahk114
             ), f"Scheduler file {fname} is already present."
             self._scheduler_file = os.path.join(SCHEDULER_DIR, fname)
         return self._scheduler_file
+
+
+class CX1GeneralArrayCluster(CX1GeneralCluster):
+    """Cluster on CX1 in the general queue with direct inter-job communication.
+
+    Start the cluster in its own job to let it request additional workers and so that
+    the initial scheduler address can be used.
+
+    Jobs are submitted using array jobs.
+
+    """
+
+    @wraps(CX1GeneralCluster.__init__)
+    def __init__(self, *args, **kwargs):
+        self.array_jobs = {}
+        super().__init__(*args, **kwargs)
+
+    @wraps(PBSCluster.scale)
+    def scale(self, n_workers):
+        if n_workers == 0:
+            # Terminate all jobs.
+            concat_jobs = " ".join(self.array_jobs)
+            logger.debug(f"Terminating jobs {concat_jobs}.")
+            check_call(shlex.split(f"qdel {concat_jobs}"))
+            return
+
+        if n_workers == 1:
+            raise ValueError("At least 2 jobs are required for array job submission.")
+
+        kwargs = deepcopy(self._kwargs)
+        # Add the array job directive (indices are inclusive).
+        kwargs["env_extra"] = [f"#PBS -J 0-{n_workers - 1}"] + list(
+            kwargs.get("env_extra", ())
+        )
+        with NamedTemporaryFile(
+            prefix=f"dask_general_array_job_", suffix=".sh"
+        ) as job_file:
+            with open(job_file.name, "w") as f:
+                f.write(
+                    self.job_cls(
+                        scheduler=self.scheduler.address,
+                        name="$PBS_ARRAY_INDEX",
+                        **kwargs,
+                    ).job_script()
+                )
+
+            job_str = (
+                check_output(shlex.split(f"qsub -V {job_file.name}")).decode().strip()
+            )
+            logger.debug(f"Submitted job {job_str}.")
+
+            # Record this job.
+            self.array_jobs[job_str] = n_workers
