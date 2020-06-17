@@ -551,6 +551,18 @@ class CachedResults(defaultdict):
         if self.cache_dir is not None:
             safe_write(dict(self), self.score_file, prefix="scores_", suffix=".pkl")
 
+    def _load_estimator_cache(self):
+        """Load the estimator cache pickle file.
+
+        Returns:
+            dict: Mapping from estimator parameters to fitted parameters.
+
+        """
+        if self.cache_dir is None or not self.estimator_file.is_file():
+            raise KeyError("Caching is disabled or non-existent.")
+        with open(self.estimator_file, "rb") as f:
+            return pickle.load(f)
+
     def get_estimator(self, key):
         """Retrieve a fitted estimator.
 
@@ -564,10 +576,7 @@ class CachedResults(defaultdict):
             KeyError: If `key` is not found within the cache or caching is disabled.
 
         """
-        if self.cache_dir is None or not self.estimator_file.is_file():
-            raise KeyError("Caching is disabled or non-existent.")
-        with open(self.estimator_file, "rb") as f:
-            return pickle.load(f)[key]
+        return self._load_estimator_cache()[key]
 
     def store_estimator(self, key, estimator):
         """Cache a fitted estimator.
