@@ -978,7 +978,7 @@ strip_multiline = partial(multiline, strip_all_indents=True)
 def submit_array_job(filepath, ncpus, mem, walltime, max_index, show_only=False):
     """Submit an array job which runs the given file.
 
-    The directory above is also added to the python path so that the 'common' module
+    The directory above is also added to the python path so that the 'specific' module
     that is assumed to be located there may be imported.
 
     Args:
@@ -996,10 +996,10 @@ def submit_array_job(filepath, ncpus, mem, walltime, max_index, show_only=False)
     output_dir = directory / Path(f"output_{job_name}")
     os.makedirs(output_dir, exist_ok=True)
 
-    common_dir = directory.parent
+    specific_dir = directory.parent
     assert list(
-        common_dir.glob("common.py")
-    ), "We expect to be 1 folder below 'common.py'."
+        specific_dir.glob("specific.py")
+    ), "We expect to be 1 folder below 'specific.py'."
 
     job_script = f"""
 #!/usr/bin/env bash
@@ -1011,8 +1011,8 @@ def submit_array_job(filepath, ncpus, mem, walltime, max_index, show_only=False)
 #PBS -e {output_dir}
 #PBS -o {output_dir}
 
-# Enable import of the right 'common' module.
-export PYTHONPATH={common_dir}:$PYTHONPATH
+# Enable import of the right 'specific' module.
+export PYTHONPATH={specific_dir}:$PYTHONPATH
 
 # Finally, execute the script.
 /rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/python {filepath}
