@@ -13,6 +13,7 @@ from collections import Counter
 from copy import deepcopy
 from functools import partial, wraps
 from pathlib import Path
+from pickle import UnpicklingError
 from subprocess import check_output
 from tempfile import NamedTemporaryFile
 from textwrap import dedent
@@ -77,8 +78,12 @@ class SimpleCache:
 
         """
         if self.available():
-            with open(self.pickle_path, "rb") as f:
-                return self.pickler.load(f)
+            try:
+                with open(self.pickle_path, "rb") as f:
+                    return self.pickler.load(f)
+            except UnpicklingError:
+                logger.warning(f"Data at '{self.pickle_path}' could not be loaded.")
+                raise NoCachedDataError(f"{self.pickle_path} contained corrupted data.")
         raise NoCachedDataError(f"{self.pickle_path} does not exist.")
 
     def save(self, obj):
