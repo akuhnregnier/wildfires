@@ -357,10 +357,8 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     fig = cube_plotting(
         ba_predicted,
         cmap="brewer_RdYlBu_11_r",
-        label="Burnt Area Fraction",
         title=None,
         log=True,
-        coastline_kwargs={"linewidth": coast_linewidth},
         vmin=vmin,
         vmax=vmax,
         min_edge=vmin,
@@ -373,15 +371,15 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
     fig = cube_plotting(
         ba_data,
         cmap="brewer_RdYlBu_11_r",
-        label="Burnt Area Fraction",
         title=None,
         log=True,
-        coastline_kwargs={"linewidth": coast_linewidth},
         vmin=vmin,
         vmax=vmax,
         min_edge=vmin,
         extend="min",
         boundaries=boundaries,
+        colorbar_kwargs={"label": "Burnt Area Fraction"},
+        coastline_kwargs={"linewidth": coast_linewidth},
     )
     figs.append(fig)
 
@@ -398,11 +396,11 @@ def map_model_output(ba_predicted, ba_data, model_name, coast_linewidth):
         perc_diffs,
         cmap="brewer_RdYlBu_11_r",
         title=None,
-        coastline_kwargs={"linewidth": coast_linewidth},
         log=True,
         boundaries=diff_boundaries,
         extend="min" if np.max(perc_diffs) <= max(diff_boundaries) else "both",
-        label="(Observed - Predicted) / Observed",
+        colorbar_kwargs={"label": "(Observed - Predicted) / Observed"},
+        coastline_kwargs={"linewidth": coast_linewidth},
     )
     figs.append(fig)
     return figs
@@ -708,90 +706,122 @@ def get_bin_edges(
 def cube_plotting(
     cube,
     log=False,
-    rasterized=True,
-    coastline_kwargs={},
     dummy_lat_lims=(-90, 90),
     dummy_lon_lims=(-180, 180),
+    vmin=None,
+    vmax=None,
     vmin_vmax_percentiles=(0, 100),
-    projection=None,
-    animation_output=False,
-    ax=None,
-    mesh=None,
-    new_colorbar=True,
-    title_text=None,
-    transform_vmin_vmax=False,
     nbins=10,
     log_auto_bins=True,
     boundaries=None,
     min_edge=None,
     extend=None,
+    projection=None,
+    cmap="viridis",
+    fig=None,
+    ax=None,
+    title=None,
     average_first_coord=True,
     select_valid=False,
+    transform_vmin_vmax=False,
+    animation_output=False,
+    mesh=None,
+    title_text=None,
+    colorbar_kwargs=None,
+    coastline_kwargs=None,
     **kwargs,
 ):
-    """Pretty plotting.
+    """Plotting of cubes.
 
     Eg. for temperature, use
     cmap='Reds'
-    label=r"T ($\degree$C)"
+    colorbar_kwargs{"label": r"T ($\degree$C)"}
 
     Args:
         cube: Cube to plot.
         log: True to log.
-        rasterized: Rasterize pcolormesh (but not the text).
         dummy_lat_lims: Tuple passed to dummy_lat_lon_cube function in case the input
             argument is not a cube.
         dummy_lon_lims: Tuple passed to dummy_lat_lon_cube function in case the input
             argument is not a cube.
-        vmin_vmax_percentiles (tuple or None): The two percentiles, used to set the minimum
-            and maximum values on the colorbar. If `None`, use the minimum and maximum
-            of the data (equivalent to percentiles of (0, 100)). Explicitly passed-in
-            `vmin` and `vmax` parameters take precedence.
-        projection: A projection as defined in `cartopy.crs`. If None (default),
-            ccrs.Robinson() will be used, where the central longitude will be defined
-            as the average of the cube longitudes.
-        animation_output (bool): Output additional variables required to create an
-            animation.
-        ax (matplotlib axis): Axis to plot onto.
-        mesh (matplotlib.collections.QuadMesh): If given, update the mesh instead of
-            creating a new one.
-        new_colorbar (bool): If True, create a new colorbar. Turn off for animation.
-        title_text (matplotlib.text.Text): Title text.
-        transform_vmin_vmax (bool): If `transform_vmin_vmax` and `log`, apply the log
-            function used to transform the data to `vmin` and `vmax` (in `kwargs`)
-            as well.
+        vmin: Minimum value for colorbar.
+        vmax: Maximum value for colorbar.
+        vmin_vmax_percentiles (tuple or None): The two percentiles used to set the
+            minimum and maximum values on the colorbar. If `None`, use the minimum and
+            maximum of the data (equivalent to percentiles of (0, 100)). `vmin` and
+            `vmax` parameters take precedence.
         nbins (int): Number of bins. Does not apply if `log` and `log_auto_bins`.
         log_auto_bins (bool): Make log bins stick to integers.
         boundaries (iterable or None): If None, bin boundaries will be computed
-            automatically. Supersedes all other options relating to boundary creation,
-            like `log' or `vmin'.
+            automatically. If given, this supersedes all other options relating to
+            boundary creation, like `log' or `vmin'.
         min_edge (float or None): Minimum log bin exponent. See `get_bin_edges`.
-        extend (None or str): If None, determined based on given vmin/vmax. If vmin is
-            given, for example, `extend='min'`. If vmax is given, for example,
-            `extend='max'`. If both vmin & vmax are given, `extend='both'`. This value
-            can be set manually to one of the aforementioned options.
-        average_first_coord (bool): Average out first coordinate if there are 3
-            dimensions.
-        select_valid (bool): If True, select central contiguous unmasked subset of
+        extend (None or str): If None, this is determined based on `vmin` and `vmax`.
+            If `vmin` is given, for example, `extend='min'`. If `vmax` is given, for
+            example, `extend='max'`. If both `vmin` & `vmax` are given,
+            `extend='both'`. This value can be set manually to one of the
+            aforementioned options.
+        projection: A projection as defined in `cartopy.crs`. If None (default),
+            `cartopy.crs.Robinson()` will be used, where the central longitude will be
+            defined as the average of the cube longitudes (see `select_valid`).
+        cmap (matplotlib Colormap or str): Colormap to use, e.g. 'Reds',
+            'Reds_r', etc. 'viridis' is used by default.
+        fig (matplotlib Figure): Figure to plot onto. If `None`, a new Figure will be
+            created. If `fig` is `None` but `ax` is not None, the Figure `ax` belongs
+            to will be used.
+        ax (matplotlib Axes): Axis to plot onto. If None, a new axis with `projection`
+            will be created using the current Figure (see `fig`).
+        title (str or None): Title text. If None, will be created automatically from
+            `cube`. If `False`, no title will be plotted.
+        average_first_coord (bool): Take the mean across the first coordinate if there
+            are 3 dimensions.
+        select_valid (bool): If True, select the central contiguous unmasked subset of
             data.
-        possible kwargs:
-            title: str or None of False. If None or False, no title will be plotted.
-            cmap: Example: 'viridis', 'Reds', 'Reds_r', etc... Can also be a
-                `matplotlib.colors.Colormap` instance.
-            vmin: Minimum value for colorbar.
-            vmax: Maximum value for colorbar.
-            cbar_tick_size: Colorbar tick param text size.
-            cbar_label_size:
-        possible colorbar kwargs:
-            label:
-            orientation:
-            fraction:
-            pad:
-            shrink:
-            aspect:
-            anchor:
-            panchor:
-            format:
+        transform_vmin_vmax (bool): If True and `log` is True, apply the log function
+            used to transform the data to `vmin` and `vmax` as well.
+        animation_output (bool): If `True`, additional variables required to create an
+            animation are returned (Figure, Axes, QuadMesh, Text).
+        mesh (matplotlib.collections.QuadMesh): If given, update the mesh instead of
+            creating a new one.
+        title_text (matplotlib.text.Text): Title text instance. When `title` is not
+            `False`, `title_text` will be updated using either `title` or the
+            automatically generated title (if `title` is `None`).
+        colorbar_kwargs (dict, bool, or None): If `None`, create a new colorbar using
+            internal default options. These options may be altered by supplying a
+            corresponding dict. Colorbar creation is disabled (e.g. for animation) by
+            giving `False`.
+
+            The following values are not given to `colorbar()`:
+                cbar_tick_size: Colorbar tick param text size.
+                cbar_label_size: Colorbar label size.
+
+            These will be given to `colorbar()`:
+                label: `cube.units` by default.
+                orientation: `vertical` by default.
+                fraction: 0.15 by default.
+                pad: 0.07 by default.
+                shrink: 0.9 if `orientation='horizontal'` and 0.7 otherwise by default.
+                aspect: 30 by default.
+                anchor: (0.5, 1.0) by default.
+                panchor: (0.5, 0.0) by default.
+                format: '%.1e' if `log` and `None` otherwise by default.
+                ax: Parent axis which will be resized to make room for the colorbar.
+                cax: Axes into which the colorbar will be drawn.
+        coastline_kwargs (dict, bool, or None): If `None`, draw coastlines using
+            internal defaults. If False, do not draw coastlines. Otherwise override
+            defaults for coastline plotting using `ax.coastlines()`.
+        **kwargs: Additional keyword arguments are given to `pcolormesh()`.
+
+    Returns:
+        matplotlib Figure: Figure used for plotting. See `fig`.
+        matplotlib Axes: Only present if `animation_output`.
+        matplotlib QuadMesh: Only present if `animation_output`.
+        matplotlib Text: Title Text. Only present if `animation_output`.
+
+    Raises:
+        MaskedDataError: If all input data is masked.
+        ValueError: If `cmap` is a str and `extend` is not in {'neither', 'min',
+            'max', 'both'}.
 
     """
     if not isinstance(cube, iris.cube.Cube):
@@ -804,6 +834,16 @@ def cube_plotting(
 
     if not hasattr(cube.data, "mask"):
         cube.data = np.ma.MaskedArray(cube.data, mask=False)
+
+    if colorbar_kwargs is None:
+        colorbar_kwargs = {}
+    elif colorbar_kwargs is False:
+        colorbar_kwargs = {"_disabled": True}
+
+    if coastline_kwargs is None:
+        coastline_kwargs = {}
+    elif coastline_kwargs is False:
+        coastline_kwargs = {"_disabled": True}
 
     if select_valid and not np.all(~cube.data.mask):
         cube, tr_longitudes = select_valid_subset(
@@ -826,7 +866,6 @@ def cube_plotting(
         finally:
             central_longitude = np.mean(longitudes)
 
-    title = kwargs.get("title")
     if title is None:
         # Construct a default title.
         title_list = [cube.name()]
@@ -859,11 +898,12 @@ def cube_plotting(
     if average_first_coord and len(cube.shape) == 3:
         cube = cube.collapsed(cube.coords()[0], iris.analysis.MEAN)
 
-    if ax is None:
+    if fig is None and ax is None:
         fig = plt.figure()
-        ax = plt.axes(projection=projection)
-    else:
+    elif fig is None:
         fig = ax.get_figure()
+    if ax is None:
+        ax = plt.axes(projection=projection)
 
     if mesh is not None:
         mesh.set_array(cube.data.ravel())
@@ -877,8 +917,10 @@ def cube_plotting(
 
         data_vmin, data_vmax = get_cubes_vmin_vmax([cube], vmin_vmax_percentiles)
 
-        vmin = kwargs.get("vmin", data_vmin)
-        vmax = kwargs.get("vmax", data_vmax)
+        if vmin is None:
+            vmin = data_vmin
+        if vmax is None:
+            vmax = data_vmax
 
         if boundaries is None:
             boundaries = get_bin_edges(
@@ -901,9 +943,7 @@ def cube_plotting(
             if vmin is not None and vmax is not None:
                 extend = "both"
 
-        raw_cmap = kwargs.get("cmap", "viridis")
-
-        if isinstance(raw_cmap, str):
+        if isinstance(cmap, str):
             if extend == "neither":
                 n_colors = len(boundaries) - 1
             elif extend == "min":
@@ -918,18 +958,18 @@ def cube_plotting(
             # Allow manual flipping of colormap.
             cmap_sample_lims = [0, 1]
             try:
-                orig_cmap = plt.get_cmap(raw_cmap)
+                orig_cmap = plt.get_cmap(cmap)
             except ValueError:
-                logger.debug(f"Exception while trying to access cmap '{raw_cmap}'.")
-                if isinstance(raw_cmap, str) and "_r" in raw_cmap:
+                logger.debug(f"Exception while trying to access cmap '{cmap}'.")
+                if isinstance(cmap, str) and "_r" in cmap:
                     # Try to reverse the colormap manually, in case a reversed colormap
                     # was requested using the '_r' suffix, but this is not available.
-                    raw_cmap = raw_cmap[:-2]
-                    orig_cmap = plt.get_cmap(raw_cmap)
+                    cmap = cmap[:-2]
+                    orig_cmap = plt.get_cmap(cmap)
 
                     # Flip limits to achieve reversal effect.
                     cmap_sample_lims = [1, 0]
-                    logger.debug(f"Manually reversing cmap '{raw_cmap}'.")
+                    logger.debug(f"Manually reversing cmap '{cmap}'.")
                 else:
                     raise
 
@@ -950,7 +990,6 @@ def cube_plotting(
                 extend=extend,
             )
         else:
-            cmap = raw_cmap
             norm = mpl.colors.Normalize(
                 vmin=np.min(boundaries), vmax=np.max(boundaries)
             )
@@ -964,50 +1003,57 @@ def cube_plotting(
             gridlons,
             gridlats,
             cube.data,
-            # cmap=kwargs.get("cmap", "viridis"),
-            cmap=cmap,
-            norm=norm,
-            # NOTE: This transform may differ from the projection argument, because it
-            # represents the coordinate system of the input data, as opposed to the
-            # coordinate system of the plot.
-            transform=ccrs.PlateCarree(),
-            rasterized=rasterized,
-            # TODO: FIXME: Setting vmin/vmax to something close to the data extremes seems
-            # to mess up norm / cmap... - Ignore for now??
-            vmin=vmin,
-            vmax=vmax,
+            **{
+                "cmap": cmap,
+                "norm": norm,
+                # NOTE: This transform may differ from the projection argument, because it
+                # represents the coordinate system of the input data, as opposed to the
+                # coordinate system of the plot.
+                "transform": ccrs.PlateCarree(),
+                "rasterized": True,
+                # TODO: FIXME: Setting vmin/vmax to something close to the data extremes seems
+                # to mess up norm / cmap... - Ignore for now??
+                "vmin": vmin,
+                "vmax": vmax,
+                **kwargs,
+            },
         )
+    if "_disabled" not in coastline_kwargs:
+        ax.coastlines(**{"resolution": "110m", **coastline_kwargs})
 
-    ax.coastlines(resolution="110m", **coastline_kwargs)
+    if "_disabled" not in colorbar_kwargs:
+        colorbar_kwargs = {
+            "label": str(cube.units),
+            "orientation": "vertical",
+            "fraction": 0.15,
+            "pad": 0.07,
+            "aspect": 30,
+            "anchor": (0.5, 1.0),
+            "panchor": (0.5, 0.0),
+            "format": "%.1e" if log else None,
+            "cax": colorbar_kwargs.get("cax"),
+            "ax": ax,
+            **colorbar_kwargs,
+        }
 
-    colorbar_kwargs = {
-        "label": kwargs.get("label", str(cube.units)),
-        "orientation": kwargs.get("orientation", "vertical"),
-        "fraction": kwargs.get("fraction", 0.15),
-        "pad": kwargs.get("pad", 0.07),
-        "shrink": kwargs.get("shrink", 0.9)
-        if kwargs.get("orientation", "vertical") == "horizontal"
-        else kwargs.get("shrink", 0.7),
-        "aspect": kwargs.get("aspect", 30),
-        "anchor": kwargs.get("anchor", (0.5, 1.0)),
-        "panchor": kwargs.get("panchor", (0.5, 0.0)),
-        "format": "%.1e" if log else None,
-        "cax": kwargs.get("cax"),
-        "ax": ax,
-    }
-    # TODO: https://matplotlib.org/3.1.0/gallery/axes_grid1/simple_colorbar.html
-    # TODO: Use this to attach the colorbar to the axes, not the figure. Errors were
-    # encountered due to cartopy geoaxes.
-    if new_colorbar:
-        cbar = fig.colorbar(mesh, **colorbar_kwargs)
-        if "cbar_tick_size" in kwargs:
-            cbar.ax.tick_params(labelsize=kwargs["cbar_tick_size"])
-        if "cbar_label_size" in kwargs:
-            cbar.set_label(
-                label=colorbar_kwargs["label"], size=kwargs["cbar_label_size"]
+        if "shrink" not in colorbar_kwargs:
+            colorbar_kwargs["shrink"] = (
+                0.9 if colorbar_kwargs.get("orientation") == "horizontal" else 0.7
             )
+
+        # TODO: https://matplotlib.org/3.1.0/gallery/axes_grid1/simple_colorbar.html
+        # TODO: Use this to attach the colorbar to the axes, not the figure. Errors were
+        # encountered due to cartopy geoaxes.
+        cbar = fig.colorbar(mesh, **colorbar_kwargs)
+        if "cbar_tick_size" in colorbar_kwargs:
+            cbar.ax.tick_params(labelsize=colorbar_kwargs["cbar_tick_size"])
+        if "cbar_label_size" in colorbar_kwargs:
+            cbar.set_label(
+                label=colorbar_kwargs["label"], size=colorbar_kwargs["cbar_label_size"]
+            )
+
     if title:
-        if isinstance(title, mpl.text.Text):
+        if isinstance(title_text, mpl.text.Text):
             title_text.set_text(title)
         else:
             title_text = fig.suptitle(title)
@@ -1347,13 +1393,13 @@ def sample_plotting():
         cube,
         log=True,
         title="Testing",
-        orientation="horizontal",
         nbins=9,
         log_auto_bins=True,
         cmap="brewer_RdYlBu_11",
         # vmin=None,
         vmin=-500,
         vmax=50,
+        colorbar_kwargs={"orientation": "horizontal"},
     )
     plt.show()
 
@@ -1376,7 +1422,11 @@ def sample_region_plotting():
     cube.data.mask[:, :50] = True
     cube.data.mask[:, 150:] = True
     cube_plotting(
-        cube, log=True, title="Testing", orientation="horizontal", select_valid=True
+        cube,
+        log=True,
+        title="Testing",
+        select_valid=True,
+        colorbar_kwargs={"orientation": "horizontal"},
     )
     plt.show()
 

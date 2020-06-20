@@ -328,9 +328,9 @@ if __name__ == "__main__":
                     mpl.rc("figure", figsize=(7.4, 3.3))
                     cube_plotting(
                         data,
-                        coastline_kwargs=dict(linewidth=0.5),
                         cmap=cmap,
-                        label=plot_type,
                         title=name,
                         boundaries=np.arange(0, 12),
+                        coastline_kwargs=dict(linewidth=0.5),
+                        colorbar_kwargs={"label": plot_type},
                     )

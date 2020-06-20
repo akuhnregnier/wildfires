@@ -225,15 +225,22 @@ def constrained_map_plot(
 
     if return_data:
         return map_data
+
+    given_colorbar_kwargs = kwargs.pop("colorbar_kwargs", {})
+
     cube_plotting(
         map_data,
-        select_valid=kwargs.pop("select_valid", True),
-        title=kwargs.pop("title", _get_constraints_title(constraints)),
-        label=kwargs.pop(
-            "label",
-            f"Mean {plot_variable}" if plot_variable is not None else "Matching Cells",
-        ),
-        **kwargs,
+        **{
+            "select_valid": True,
+            "title": _get_constraints_title(constraints),
+            "colorbar_kwargs": {
+                "label": f"Mean {plot_variable}"
+                if plot_variable is not None
+                else "Matching Cells",
+                **given_colorbar_kwargs,
+            },
+            **kwargs,
+        },
     )
 
 
@@ -749,13 +756,13 @@ if __name__ == "__main__":
         mpl.rcParams["figure.figsize"] = (5, 3.33)
         fig = cube_plotting(
             cube,
-            cmap="brewer_RdYlBu_11_r",
             log=True,
-            label="Burnt Area Fraction",
+            boundaries=[1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1],
+            cmap="brewer_RdYlBu_11_r",
             title=None,
             extend="min",
+            colorbar_kwargs={"label": "Burnt Area Fraction"},
             coastline_kwargs={"linewidth": normal_coast_linewidth},
-            boundaries=[1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1],
         )
 
     cube = masked_datasets.select_variables("AGBtree", inplace=False).cube
@@ -765,8 +772,8 @@ if __name__ == "__main__":
             cube,
             cmap="viridis",
             log=True,
-            label=r"kg m$^{-2}$",
             title="AGBtree",
+            colorbar_kwargs={"label": r"kg m$^{-2}$"},
             coastline_kwargs={"linewidth": normal_coast_linewidth},
         )
 
@@ -788,8 +795,8 @@ if __name__ == "__main__":
             cube,
             cmap="viridis",
             log=True,
-            label=r"kg m$^{-2}$",
             title="AGBtree (interpolated)",
+            colorbar_kwargs={"label": r"kg m$^{-2}$"},
             coastline_kwargs={"linewidth": normal_coast_linewidth},
         )
 
