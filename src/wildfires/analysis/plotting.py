@@ -718,6 +718,8 @@ def cube_plotting(
     extend=None,
     projection=None,
     cmap="viridis",
+    cmap_midpoint=None,
+    cmap_symmetric=False,
     fig=None,
     ax=None,
     title=None,
@@ -766,6 +768,12 @@ def cube_plotting(
             defined as the average of the cube longitudes (see `select_valid`).
         cmap (matplotlib Colormap or str): Colormap to use, e.g. 'Reds',
             'Reds_r', etc. 'viridis' is used by default.
+        cmap_midpoint (float or None): The value corresponding to the middle of the
+            colormap range will be the value in `boundaries` closest to
+            `cmap_midpoint`.
+        cmap_symmetric (bool): If True, the coverage of the colormap relative to the
+            `cmap_midpoint` will depend on `boundaries`. Only applies if
+            `cmap_midpoint` is not `None`.
         fig (matplotlib Figure): Figure to plot onto. If `None`, a new Figure will be
             created. If `fig` is `None` but `ax` is not None, the Figure `ax` belongs
             to will be used.
@@ -944,19 +952,9 @@ def cube_plotting(
                 extend = "both"
 
         if isinstance(cmap, str):
-            if extend == "neither":
-                n_colors = len(boundaries) - 1
-            elif extend == "min":
-                n_colors = len(boundaries)
-            elif extend == "max":
-                n_colors = len(boundaries)
-            elif extend == "both":
-                n_colors = len(boundaries) + 1
-            else:
-                raise ValueError(f"Unknown value for `extend` {repr(extend)}.")
 
             # Allow manual flipping of colormap.
-            cmap_sample_lims = [0, 1]
+            cmap_slice = slice(None)
             try:
                 orig_cmap = plt.get_cmap(cmap)
             except ValueError:
@@ -968,10 +966,23 @@ def cube_plotting(
                     orig_cmap = plt.get_cmap(cmap)
 
                     # Flip limits to achieve reversal effect.
-                    cmap_sample_lims = [1, 0]
+                    cmap_slice = slice(0, None, -1)
                     logger.debug(f"Manually reversing cmap '{cmap}'.")
                 else:
                     raise
+
+            logger.debug(f"Boundaries:{boundaries}.")
+
+            if extend == "neither":
+                n_colors = len(boundaries) - 1
+            elif extend == "min":
+                n_colors = len(boundaries)
+            elif extend == "max":
+                n_colors = len(boundaries)
+            elif extend == "both":
+                n_colors = len(boundaries) + 1
+            else:
+                raise ValueError(f"Unknown value for `extend` {repr(extend)}.")
 
             if n_colors > orig_cmap.N:
                 logger.warning(
@@ -983,11 +994,54 @@ def cube_plotting(
                     orig_cmap = plt.get_cmap("viridis")
                 logger.warning(f"Reverting colormap to {orig_cmap.name}.")
 
-            logger.debug(f"Boundaries:{boundaries}.")
+            cmap_sample_lims = [0, 1]
+
+            if cmap_symmetric and cmap_midpoint is not None:
+                # Adjust the colormap sample limits such that the deviation from 0.5
+                # is proportional to the magnitude of the maximum deviation from the
+                # midpoint.
+                diffs = np.array(
+                    (boundaries[0] - cmap_midpoint, boundaries[-1] - cmap_midpoint)
+                )
+                max_diff = max(np.abs(diffs))
+                scaled = diffs / max_diff
+                cmap_sample_lims = 0.5 + scaled * 0.5
+
+            if cmap_midpoint is None:
+                colors = orig_cmap(np.linspace(*cmap_sample_lims[cmap_slice], n_colors))
+            else:
+                # Find closest boundary.
+                closest_bound_index = np.argmin(
+                    np.abs(np.asarray(boundaries) - cmap_midpoint)
+                )
+
+                lower_range = 0.5 - cmap_sample_lims[0]
+                n_lower = closest_bound_index + (1 if extend in ("min", "both") else 0)
+
+                upper_range = cmap_sample_lims[1] - 0.5
+                n_upper = (
+                    len(boundaries)
+                    - 1
+                    - closest_bound_index
+                    + (1 if extend in ("max", "both") else 0)
+                )
+
+                colors = np.vstack(
+                    (
+                        orig_cmap(
+                            cmap_sample_lims[0]
+                            + np.arange(n_lower) * (2 * lower_range / (1 + 2 * n_lower))
+                        ),
+                        orig_cmap(
+                            cmap_sample_lims[1]
+                            - np.arange(n_upper - 1, -1, -1)
+                            * (2 * upper_range / (1 + 2 * n_upper))
+                        ),
+                    )
+                )[cmap_slice]
+
             cmap, norm = from_levels_and_colors(
-                boundaries,
-                orig_cmap(np.linspace(*cmap_sample_lims, n_colors)),
-                extend=extend,
+                levels=boundaries, colors=colors, extend=extend
             )
         else:
             norm = mpl.colors.Normalize(
