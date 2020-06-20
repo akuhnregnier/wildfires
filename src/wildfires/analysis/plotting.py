@@ -986,7 +986,7 @@ def cube_plotting(
 
             if n_colors > orig_cmap.N:
                 logger.warning(
-                    f"Expected at most {orig_cmap.N} " f"colors, but got {n_colors}."
+                    f"Expected at most {orig_cmap.N} colors, but got {n_colors}."
                 )
                 if n_colors <= 20:
                     orig_cmap = plt.get_cmap("tab20")
@@ -1006,6 +1006,8 @@ def cube_plotting(
                 max_diff = max(np.abs(diffs))
                 scaled = diffs / max_diff
                 cmap_sample_lims = 0.5 + scaled * 0.5
+
+            logger.debug(f"cmap_midpoint: {cmap_midpoint}. n_colors: {n_colors}.")
 
             if cmap_midpoint is None:
                 colors = orig_cmap(np.linspace(*cmap_sample_lims[cmap_slice], n_colors))
