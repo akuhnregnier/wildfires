@@ -966,7 +966,7 @@ def cube_plotting(
                     orig_cmap = plt.get_cmap(cmap)
 
                     # Flip limits to achieve reversal effect.
-                    cmap_slice = slice(0, None, -1)
+                    cmap_slice = slice(None, None, -1)
                     logger.debug(f"Manually reversing cmap '{cmap}'.")
                 else:
                     raise
