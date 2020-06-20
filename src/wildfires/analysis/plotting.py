@@ -1011,6 +1011,7 @@ def cube_plotting(
 
             if cmap_midpoint is None:
                 colors = orig_cmap(np.linspace(*cmap_sample_lims[cmap_slice], n_colors))
+                logger.debug(f"No explicit midpoint, {len(colors)} colors.")
             else:
                 # Find closest boundary.
                 closest_bound_index = np.argmin(
@@ -1041,6 +1042,7 @@ def cube_plotting(
                         ),
                     )
                 )[cmap_slice]
+                logger.debug(f"Explicit midpoint, {len(colors)} colors.")
 
             cmap, norm = from_levels_and_colors(
                 levels=boundaries, colors=colors, extend=extend
