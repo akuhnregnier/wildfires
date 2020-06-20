@@ -3,6 +3,8 @@ import math
 import os
 import shlex
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
+from getpass import getuser
+from socket import getfqdn
 from subprocess import Popen, check_call, check_output
 from tempfile import NamedTemporaryFile
 from time import monotonic, sleep
@@ -248,9 +250,12 @@ def start_general_lab(
     ),
     target_user="alexander",
     target_host="maritimus.webredirect.org",
+    ssh_target_user="",
+    ssh_target_host="home",
+    ssh_target_port=21240,
     walltime="05:00:00",
-    start_timeout=900,
-    **cluster_kwargs,
+    start_timeout=1200,
+    show_only=False,
 ):
     """Start a Dask cluster using workers of the general class.
 
@@ -263,13 +268,23 @@ def start_general_lab(
         valid_ports_exec (str): Path to the `valid-ports` executable.
         target_user (str): SSH username (eg. `getpass.getuser()`).
         target_host (str): SSH hostname (eg. `socket.getfqdn()`).
+        ssh_target_user (str): SSH port forwarding target user. Current user if `None`.
+        ssh_target_host (str): SSH port forwarding target host. Current host if `None`.
+        ssh_target_port (int): SSH port forwarding port to use on the target host. A
+            random available port at the time of initial function execution if `None`.
         walltime (str): Walltime limit, eg. '05:00:00'.
         start_timeout (float): Time in seconds to wait for the job to start in order
             to parse the created output files for the JupyterLab address.
-        cluster_kwargs: Additional keyword arguments are passed to the
-            `CX1GeneralCluster()` initialiser.
+        show_only (bool): If True, only display the job script.
 
     """
+    if ssh_target_user is None:
+        ssh_target_user = getuser()
+    if ssh_target_host is None:
+        ssh_target_host = getfqdn()
+    if ssh_target_port is None:
+        ssh_target_port = get_ports()[0]
+
     job_name = "JupyterLab-general"
     ssh_opts = "-f -NT -o StrictHostKeyChecking=no"
     job_script = f"""
@@ -291,11 +306,17 @@ read JUPYTERPORT <<< $({valid_ports_exec} 1)
 #
 ssh -R $JUPYTERPORT:localhost:$JUPYTERPORT {target_user}@{target_host} {ssh_opts}
 #
+# Establish an additional SSH connection to the node.
+#
+ssh -R {ssh_target_port}:localhost:22 {ssh_target_user + '@' if ssh_target_user else ''}{ssh_target_host} {ssh_opts}
+#
 # Start JupyterLab using the determined port.
 #
 {jupyter_exc} lab --no-browser --port=$JUPYTERPORT --notebook-dir={notebook_dir}
 """
-
+    if show_only:
+        print(job_script)
+        return
     with NamedTemporaryFile(prefix="jupyterlab_general_", suffix=".sh") as job_file:
         with open(job_file.name, "w") as f:
             f.write(job_script)
@@ -305,11 +326,16 @@ ssh -R $JUPYTERPORT:localhost:$JUPYTERPORT {target_user}@{target_host} {ssh_opts
     output_file = ".e".join((job_name, job_id))
     print(
         strip_multiline(
+            f"""Node should be accessible from '{ssh_target_host}' using
+            ssh -p {ssh_target_port} {getuser()}@localhost."""
+        ),
+        strip_multiline(
             """Note: If the prompt 'Would you like to clear the workspace or keep
             waiting.' is encountered, try executing
             'rm -rf ~/.jupyter/lab/workspaces/' before clicking on the link below
             again."""
-        )
+        ),
+        sep="\n",
     )
     print("Waiting for job to start...")
     start = monotonic()
@@ -348,6 +374,7 @@ def main():
     parser.add_argument("--target-host", default="maritimus.webredirect.org")
     parser.add_argument("--walltime", default="05:00:00")
     parser.add_argument("--start-timeout", default=900, type=float)
+    parser.add_argument("--show-only", action="store_true")
 
     args = parser.parse_args()
 
@@ -359,4 +386,5 @@ def main():
         target_host=args.target_host,
         walltime=args.walltime,
         start_timeout=args.start_timeout,
+        show_only=args.show_only,
     )
