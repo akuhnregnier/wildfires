@@ -1015,7 +1015,7 @@ def cube_plotting(
             else:
                 # Find closest boundary.
                 closest_bound_index = np.argmin(
-                    np.abs(np.asarray(boundaries) - cmap_midpoint)
+                    np.abs(np.asarray(boundaries[cmap_slice]) - cmap_midpoint)
                 )
 
                 lower_range = 0.5 - cmap_sample_lims[0]
