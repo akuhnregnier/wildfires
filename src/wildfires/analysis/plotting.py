@@ -758,11 +758,9 @@ def cube_plotting(
             automatically. If given, this supersedes all other options relating to
             boundary creation, like `log' or `vmin'.
         min_edge (float or None): Minimum log bin exponent. See `get_bin_edges`.
-        extend (None or str): If None, this is determined based on `vmin` and `vmax`.
-            If `vmin` is given, for example, `extend='min'`. If `vmax` is given, for
-            example, `extend='max'`. If both `vmin` & `vmax` are given,
-            `extend='both'`. This value can be set manually to one of the
-            aforementioned options.
+        extend (None or {"neither", "min", "max"}): The colormap extension. If `None`,
+            `extend` is determined based on `boundaries` (which may be automatically
+            determined from other arguments if not given) and `cube`.
         projection: A projection as defined in `cartopy.crs`. If None (default),
             `cartopy.crs.Robinson()` will be used, where the central longitude will be
             defined as the average of the cube longitudes (see `select_valid`).
@@ -942,17 +940,19 @@ def cube_plotting(
             )
 
         if extend is None:
-            if vmin is None and vmax is None:
-                extend = "neither"
-            if vmin is not None and vmax is None:
+            # Determine automatically from boundaries and the input cube.
+            ext_min = boundaries[0] > np.min(cube.data)
+            ext_max = boundaries[-1] < np.max(cube.data)
+            if ext_min and not ext_max:
                 extend = "min"
-            if vmax is not None and vmin is None:
+            elif ext_max and not ext_min:
                 extend = "max"
-            if vmin is not None and vmax is not None:
+            elif ext_min and ext_max:
                 extend = "both"
+            else:
+                extend = "neither"
 
         if isinstance(cmap, str):
-
             # Allow manual flipping of colormap.
             cmap_slice = slice(None)
             try:
