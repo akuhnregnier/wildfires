@@ -729,6 +729,7 @@ def cube_plotting(
     animation_output=False,
     mesh=None,
     title_text=None,
+    return_cbar=False,
     colorbar_kwargs=None,
     coastline_kwargs=None,
     **kwargs,
@@ -792,6 +793,7 @@ def cube_plotting(
         title_text (matplotlib.text.Text): Title text instance. When `title` is not
             `False`, `title_text` will be updated using either `title` or the
             automatically generated title (if `title` is `None`).
+        return_cbar (bool): If True, return the colorbar.
         colorbar_kwargs (dict, bool, or None): If `None`, create a new colorbar using
             internal default options. These options may be altered by supplying a
             corresponding dict. Colorbar creation is disabled (e.g. for animation) by
@@ -820,9 +822,16 @@ def cube_plotting(
 
     Returns:
         matplotlib Figure: Figure used for plotting. See `fig`.
-        matplotlib Axes: Only present if `animation_output`.
-        matplotlib QuadMesh: Only present if `animation_output`.
-        matplotlib Text: Title Text. Only present if `animation_output`.
+
+        If `return_cbar`:
+            matplotlib Figure: Figure used for plotting. See `fig`.
+            matplotlib colorbar:
+
+        If `animation_output`:
+            matplotlib Figure: Figure used for plotting. See `fig`.
+            matplotlib Axes:
+            matplotlib QuadMesh:
+            matplotlib Text: Title Text.
 
     Raises:
         MaskedDataError: If all input data is masked.
@@ -1109,6 +1118,8 @@ def cube_plotting(
             cbar.set_label(
                 label=colorbar_kwargs["label"], size=colorbar_kwargs["cbar_label_size"]
             )
+    else:
+        cbar = None
 
     if title:
         if isinstance(title_text, mpl.text.Text):
@@ -1118,6 +1129,8 @@ def cube_plotting(
 
     if animation_output:
         return fig, ax, mesh, title_text
+    if return_cbar:
+        return fig, cbar
     return fig
 
 
