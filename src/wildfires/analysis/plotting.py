@@ -104,7 +104,7 @@ class FigureSaver:
                 will be created if they do not exist.
             debug (bool or None): Select the pre-set settings with which figures will
                 be saved. If None, use `FigureSaver.debug`.
-            kwargs: Optional kwargs which are passed to plt.savefig().
+            **kwargs: Optional kwargs which are passed to plt.savefig().
 
         """
         # Backwards compatibility.
@@ -159,7 +159,7 @@ class FigureSaver:
         self.options = self.debug_options.copy() if self.debug else self.options.copy()
         self.options.update(kwargs)
 
-    def __call__(self, filenames=None, sub_directory=None):
+    def __call__(self, filenames=None, sub_directory=None, **kwargs):
         """Return a copy containing the given filenames for figure saving.
 
         An optional sub-directory can also be specified for figures saved by the
@@ -177,6 +177,7 @@ class FigureSaver:
             filenames ((iterable of) str): Filenames used to save created figures.
             sub_directory (str): If given, figures will be saved in a sub-directory
                 `sub_directory` of the pre-specified directory/directories.
+            **kwargs: Optional kwargs which are passed to plt.savefig().
 
         """
         new_inst = type(self)(
@@ -186,7 +187,7 @@ class FigureSaver:
             else self.directories,
             debug=self.debug,
         )
-        new_inst.options = self.options
+        new_inst.options = {**self.options, **kwargs}
         return new_inst
 
     @property
@@ -238,7 +239,7 @@ class FigureSaver:
             fig = plt.figure(fignum)
             self.save_figure(fig, filename, directory)
 
-    def save_figure(self, fig, filename, directory=None, sub_directory=None):
+    def save_figure(self, fig, filename, directory=None, sub_directory=None, **kwargs):
         """Save a single figure.
 
         Args:
@@ -247,6 +248,7 @@ class FigureSaver:
             directory (str): Directory to save the figure in.
             sub_directory (str): If given, figures will be saved in a sub-directory
                 `sub_directory` of the pre-specified directory/directories.
+            **kwargs: Optional kwargs which are passed to plt.savefig().
 
         Raises:
             ValueError: If multiple default directories were specified and no explicit
@@ -265,6 +267,9 @@ class FigureSaver:
 
         os.makedirs(directory, exist_ok=True)
 
+        if "." in filename:
+            filename = "".join(filename.split(".")[:-1])
+
         filepath = (
             os.path.expanduser(
                 os.path.abspath(os.path.expanduser(os.path.join(directory, filename)))
@@ -277,9 +282,12 @@ class FigureSaver:
         fig.savefig(
             filepath,
             **{
-                option: value
-                for option, value in self.options.items()
-                if option != "filetype"
+                **{
+                    option: value
+                    for option, value in self.options.items()
+                    if option != "filetype"
+                },
+                **kwargs,
             },
         )
 
