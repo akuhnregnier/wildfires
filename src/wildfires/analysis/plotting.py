@@ -938,141 +938,152 @@ def cube_plotting(
         gridlons = cube.coord("longitude").contiguous_bounds()
         gridlats = cube.coord("latitude").contiguous_bounds()
 
-        data_vmin, data_vmax = get_cubes_vmin_vmax([cube], vmin_vmax_percentiles)
+        if vmin is None and vmax is None:
+            data_vmin, data_vmax = get_cubes_vmin_vmax([cube], vmin_vmax_percentiles)
+            if vmin is None:
+                vmin = data_vmin
+            if vmax is None:
+                vmax = data_vmax
 
-        if vmin is None:
-            vmin = data_vmin
-        if vmax is None:
-            vmax = data_vmax
+        if "norm" not in kwargs:
+            if boundaries is None:
+                boundaries = get_bin_edges(
+                    cube.data,
+                    vmin,
+                    vmax,
+                    "auto" if log and log_auto_bins else nbins,
+                    log,
+                    "symmetric" if min_edge is None else "manual",
+                    min_edge=min_edge,
+                )
 
-        if boundaries is None:
-            boundaries = get_bin_edges(
-                cube.data,
-                vmin,
-                vmax,
-                "auto" if log and log_auto_bins else nbins,
-                log,
-                "symmetric" if min_edge is None else "manual",
-                min_edge=min_edge,
-            )
+            if extend is None:
+                # Determine automatically from boundaries and the input cube.
+                ext_min = boundaries[0] > np.min(cube.data)
+                ext_max = boundaries[-1] < np.max(cube.data)
+                if ext_min and not ext_max:
+                    extend = "min"
+                elif ext_max and not ext_min:
+                    extend = "max"
+                elif ext_min and ext_max:
+                    extend = "both"
+                else:
+                    extend = "neither"
 
-        if extend is None:
-            # Determine automatically from boundaries and the input cube.
-            ext_min = boundaries[0] > np.min(cube.data)
-            ext_max = boundaries[-1] < np.max(cube.data)
-            if ext_min and not ext_max:
-                extend = "min"
-            elif ext_max and not ext_min:
-                extend = "max"
-            elif ext_min and ext_max:
-                extend = "both"
-            else:
-                extend = "neither"
-
-        if isinstance(cmap, str):
-            # Allow manual flipping of colormap.
-            cmap_slice = slice(None)
-            try:
-                orig_cmap = plt.get_cmap(cmap)
-            except ValueError:
-                logger.debug(f"Exception while trying to access cmap '{cmap}'.")
-                if isinstance(cmap, str) and "_r" in cmap:
-                    # Try to reverse the colormap manually, in case a reversed colormap
-                    # was requested using the '_r' suffix, but this is not available.
-                    cmap = cmap[:-2]
+            if isinstance(cmap, str):
+                # Allow manual flipping of colormap.
+                cmap_slice = slice(None)
+                try:
                     orig_cmap = plt.get_cmap(cmap)
+                except ValueError:
+                    logger.debug(f"Exception while trying to access cmap '{cmap}'.")
+                    if isinstance(cmap, str) and "_r" in cmap:
+                        # Try to reverse the colormap manually, in case a reversed
+                        # colormap was requested using the '_r' suffix, but this is
+                        # not available.
+                        cmap = cmap[:-2]
+                        orig_cmap = plt.get_cmap(cmap)
 
-                    # Flip limits to achieve reversal effect.
-                    cmap_slice = slice(None, None, -1)
-                    logger.debug(f"Manually reversing cmap '{cmap}'.")
+                        # Flip limits to achieve reversal effect.
+                        cmap_slice = slice(None, None, -1)
+                        logger.debug(f"Manually reversing cmap '{cmap}'.")
+                    else:
+                        raise
+
+                logger.debug(f"Boundaries:{boundaries}.")
+
+                if extend == "neither":
+                    n_colors = len(boundaries) - 1
+                elif extend == "min":
+                    n_colors = len(boundaries)
+                elif extend == "max":
+                    n_colors = len(boundaries)
+                elif extend == "both":
+                    n_colors = len(boundaries) + 1
                 else:
-                    raise
+                    raise ValueError(f"Unknown value for `extend` {repr(extend)}.")
 
-            logger.debug(f"Boundaries:{boundaries}.")
-
-            if extend == "neither":
-                n_colors = len(boundaries) - 1
-            elif extend == "min":
-                n_colors = len(boundaries)
-            elif extend == "max":
-                n_colors = len(boundaries)
-            elif extend == "both":
-                n_colors = len(boundaries) + 1
-            else:
-                raise ValueError(f"Unknown value for `extend` {repr(extend)}.")
-
-            if n_colors > orig_cmap.N:
-                logger.warning(
-                    f"Expected at most {orig_cmap.N} colors, but got {n_colors}."
-                )
-                if n_colors <= 20:
-                    orig_cmap = plt.get_cmap("tab20")
-                else:
-                    orig_cmap = plt.get_cmap("viridis")
-                logger.warning(f"Reverting colormap to {orig_cmap.name}.")
-
-            cmap_sample_lims = [0, 1]
-
-            if cmap_symmetric and cmap_midpoint is not None:
-                # Adjust the colormap sample limits such that the deviation from 0.5
-                # is proportional to the magnitude of the maximum deviation from the
-                # midpoint.
-                diffs = np.array(
-                    (boundaries[0] - cmap_midpoint, boundaries[-1] - cmap_midpoint)
-                )
-                max_diff = max(np.abs(diffs))
-                scaled = diffs / max_diff
-                cmap_sample_lims = 0.5 + scaled * 0.5
-
-            logger.debug(f"cmap_midpoint: {cmap_midpoint}. n_colors: {n_colors}.")
-
-            if cmap_midpoint is None:
-                colors = orig_cmap(np.linspace(*cmap_sample_lims[cmap_slice], n_colors))
-                logger.debug(f"No explicit midpoint, {len(colors)} colors.")
-            else:
-                # Find closest boundary.
-                closest_bound_index = np.argmin(
-                    np.abs(np.asarray(boundaries[cmap_slice]) - cmap_midpoint)
-                )
-
-                lower_range = 0.5 - cmap_sample_lims[0]
-                n_lower = closest_bound_index + (1 if extend in ("min", "both") else 0)
-
-                upper_range = cmap_sample_lims[1] - 0.5
-                n_upper = (
-                    len(boundaries)
-                    - 1
-                    - closest_bound_index
-                    + (1 if extend in ("max", "both") else 0)
-                )
-
-                colors = np.vstack(
-                    (
-                        orig_cmap(
-                            cmap_sample_lims[0]
-                            + np.arange(n_lower) * (2 * lower_range / (1 + 2 * n_lower))
-                        ),
-                        orig_cmap(
-                            cmap_sample_lims[1]
-                            - np.arange(n_upper - 1, -1, -1)
-                            * (2 * upper_range / (1 + 2 * n_upper))
-                        ),
+                if n_colors > orig_cmap.N:
+                    logger.warning(
+                        f"Expected at most {orig_cmap.N} colors, but got {n_colors}."
                     )
-                )[cmap_slice]
-                logger.debug(f"Explicit midpoint, {len(colors)} colors.")
+                    if n_colors <= 20:
+                        orig_cmap = plt.get_cmap("tab20")
+                    else:
+                        orig_cmap = plt.get_cmap("viridis")
+                    logger.warning(f"Reverting colormap to {orig_cmap.name}.")
 
-            cmap, norm = from_levels_and_colors(
-                levels=boundaries, colors=colors, extend=extend
-            )
-        else:
-            norm = mpl.colors.Normalize(
-                vmin=np.min(boundaries), vmax=np.max(boundaries)
-            )
+                cmap_sample_lims = [0, 1]
 
-        # This forces data points 'exactly' (very close) to the upper limit of the last
-        # bin to be recognised as part of that bin, as opposed to out of bounds.
-        if extend == "neither":
-            norm.clip = True
+                if cmap_symmetric and cmap_midpoint is not None:
+                    # Adjust the colormap sample limits such that the deviation from
+                    # 0.5 is proportional to the magnitude of the maximum deviation
+                    # from the midpoint.
+                    diffs = np.array(
+                        (boundaries[0] - cmap_midpoint, boundaries[-1] - cmap_midpoint)
+                    )
+                    max_diff = max(np.abs(diffs))
+                    scaled = diffs / max_diff
+                    cmap_sample_lims = 0.5 + scaled * 0.5
+
+                logger.debug(f"cmap_midpoint: {cmap_midpoint}. n_colors: {n_colors}.")
+
+                if cmap_midpoint is None:
+                    colors = orig_cmap(
+                        np.linspace(*cmap_sample_lims[cmap_slice], n_colors)
+                    )
+                    logger.debug(f"No explicit midpoint, {len(colors)} colors.")
+                else:
+                    # Find closest boundary.
+                    closest_bound_index = np.argmin(
+                        np.abs(np.asarray(boundaries[cmap_slice]) - cmap_midpoint)
+                    )
+
+                    lower_range = 0.5 - cmap_sample_lims[0]
+                    n_lower = closest_bound_index + (
+                        1 if extend in ("min", "both") else 0
+                    )
+
+                    upper_range = cmap_sample_lims[1] - 0.5
+                    n_upper = (
+                        len(boundaries)
+                        - 1
+                        - closest_bound_index
+                        + (1 if extend in ("max", "both") else 0)
+                    )
+
+                    colors = np.vstack(
+                        (
+                            orig_cmap(
+                                cmap_sample_lims[0]
+                                + np.arange(n_lower)
+                                * (2 * lower_range / (1 + 2 * n_lower))
+                            ),
+                            orig_cmap(
+                                cmap_sample_lims[1]
+                                - np.arange(n_upper - 1, -1, -1)
+                                * (2 * upper_range / (1 + 2 * n_upper))
+                            ),
+                        )
+                    )[cmap_slice]
+                    logger.debug(f"Explicit midpoint, {len(colors)} colors.")
+
+                cmap, norm = from_levels_and_colors(
+                    levels=boundaries, colors=colors, extend=extend
+                )
+            else:
+                norm = mpl.colors.Normalize(
+                    vmin=np.min(boundaries), vmax=np.max(boundaries)
+                )
+
+            # This forces data points 'exactly' (very close) to the upper limit of the
+            # last bin to be recognised as part of that bin, as opposed to out of
+            # bounds.
+            if extend == "neither":
+                norm.clip = True
+
+            if "norm" not in kwargs:
+                kwargs["norm"] = norm
 
         mesh = ax.pcolormesh(
             gridlons,
@@ -1080,10 +1091,9 @@ def cube_plotting(
             cube.data,
             **{
                 "cmap": cmap,
-                "norm": norm,
-                # NOTE: This transform may differ from the projection argument, because it
-                # represents the coordinate system of the input data, as opposed to the
-                # coordinate system of the plot.
+                # NOTE: This transform may differ from the projection argument,
+                # because it represents the coordinate system of the input data, as
+                # opposed to the coordinate system of the plot.
                 "transform": ccrs.PlateCarree(),
                 "rasterized": True,
                 # TODO: FIXME: Setting vmin/vmax to something close to the data extremes seems
