@@ -1859,8 +1859,7 @@ class Dataset(metaclass=RegisterDatasets):
     def interpolate_yearly_data(self, start, end):
         """Linear interpolation onto the target months.
 
-        Daily information is ignored (truncated, ie. days are assumed to be
-        1).
+        Daily information is ignored (truncated, ie. days are assumed to be 1).
 
         Limits are inclusive.
 
@@ -1892,6 +1891,19 @@ class Dataset(metaclass=RegisterDatasets):
             )
 
         final_cubelist = interp_cubes.concatenate()
+
+        # Ignore extrema resulting from the interpolation (e.g. Iris linear
+        # interpolation suffers from this problem sometimes).
+        for cube in final_cubelist:
+            original_data = self.cubes.extract_strict(
+                iris.Constraint(name=cube.name())
+            ).data
+            omin, omax = np.min(original_data), np.max(original_data)
+            # Augment the original mask.
+            cube.data.mask = (
+                cube.data.mask | (cube.data.data < omin) | (cube.data.data > omax)
+            )
+
         return final_cubelist
 
     def single_cube_slices(self):
@@ -3385,6 +3397,12 @@ class ESA_CCI_Landcover_PFT(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-LC_landcover", "0d25_lc2pft")
+
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
         loaded_cubes = iris.load(os.path.join(self.dir, "*.nc"))
 
         time_coord = None
@@ -3406,6 +3424,16 @@ class ESA_CCI_Landcover_PFT(Dataset):
 
         self.time_unit_str = time_coord.units.name
         self.calendar = time_coord.units.calendar
+
+        for cube in self.cubes:
+            # Fill masked elements with the minimum value.
+            fill_val = np.min(cube.data)
+            cube.data.data[cube.data.mask] = fill_val
+            logger.warning(f"Filling dataset: {self}, cube: {cube} with: {fill_val}")
+            # Reset mask.
+            cube.data.mask = np.zeros_like(cube.data.mask)
+
+        self.write_cache()
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
@@ -4569,7 +4597,9 @@ def get_implemented_datasets(
     return dataset_list
 
 
-def dataset_times(datasets=None, dataset_names=None, lat_lon=False):
+def dataset_times(
+    datasets=None, dataset_names=None, lat_lon=False, bounds_from_monthly=True
+):
     """Compile dataset time span information.
 
     Args:
@@ -4578,6 +4608,9 @@ def dataset_times(datasets=None, dataset_names=None, lat_lon=False):
         dataset_names (iterable of `str` or None): The names used for the datasets,
             the number of which should match the number of items in `datasets`. If
             None, use the `dataset.pretty` name for each `Dataset` in `datasets`.
+        lat_lon (bool): Collect lat/lon grid information.
+        bounds_from_monthly (bool): Only use monthly datasets to set the minimum and
+            maximum temporal bounds.
 
     Returns:
         If valid starting and end times can be found for at least one of the datasets:
@@ -4602,6 +4635,8 @@ def dataset_times(datasets=None, dataset_names=None, lat_lon=False):
     )
     min_times, max_times = [], []
     for dataset in datasets:
+        if dataset.frequency in ("static", "yearly", "climatology"):
+            continue
         dataset_times = tuple(
             getattr(dataset, time_type) for time_type in ("min_time", "max_time")
         )

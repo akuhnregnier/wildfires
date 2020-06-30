@@ -382,6 +382,7 @@ def data_processing(
     verbose=True,
     use_fire_mask=False,
     use_land_mask=True,
+    nn_fill=False,
     masks=None,
 ):
     """Create datasets for further analysis and model fitting."""
@@ -426,17 +427,27 @@ def data_processing(
     # TODO: Filling should be implemented on a per-dataset basis, for example
     # substituting 0 biomass in deserts for masked values, instead of the generic
     # nearest-neighbour approach here.
-    filled_datasets = masked_datasets.copy(deep=True).fill(
-        *masks_to_apply, reference_variable=target_variable
-    )
+    if nn_fill:
+        filled_datasets = masked_datasets.copy(deep=True).fill(
+            *masks_to_apply, reference_variable=target_variable
+        )
+    else:
+        filled_datasets = masked_datasets.copy(deep=True)
 
     # Creating exog and endog pandas containers.
     burned_area_cube = filled_datasets.select_variables(
         target_variable, inplace=False
     ).cube
-    endog_data = pd.Series(get_unmasked(burned_area_cube.data))
-    master_mask = burned_area_cube.data.mask
+    if nn_fill:
+        master_mask = burned_area_cube.data.mask
+    else:
+        master_mask = reduce(
+            np.logical_or, (cube.data.mask for cube in filled_datasets.cubes)
+        )
+        for cube in filled_datasets.cubes:
+            cube.data.mask = master_mask
 
+    endog_data = pd.Series(get_unmasked(burned_area_cube.data))
     exog_datasets = filled_datasets.remove_variables(target_variable, inplace=False)
     data = []
     for cube in exog_datasets.cubes:
