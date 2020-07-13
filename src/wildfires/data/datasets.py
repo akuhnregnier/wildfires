@@ -53,9 +53,11 @@ from era5analysis import MonthlyMeanMinMaxDTRWorker, retrieval_processing, retri
 from ..joblib.caching import CodeObj, wrap_decorator
 from ..joblib.iris_backend import register_backend
 from ..utils import (
+    box_mask,
     ensure_datetime,
     get_bounds_from_centres,
     get_centres,
+    get_land_mask,
     in_360_longitude_system,
     match_shape,
     reorder_cube_coord,
@@ -1011,6 +1013,185 @@ def regrid_dataset(
         ]
     )
     return regridded_cubes
+
+
+def _temporal_nn(source_data, target_index, interpolate_mask, n_months, verbose=False):
+    """Temporal NN interpolation of a single month.
+
+    Args:
+        source_data ((s, m, n) array of float): Source data to use for the interpolation.
+        target_index (int): Temporal index (axis=0) corresponding to the timestep to
+            fill using interpolation.
+        interpolate_mask ((m, n) array of bool): Boolean mask that is true where
+            interpolation should take place.
+        n_months (int): Number of months to look forwards and backwards to find valid
+            data. The total number of months selected for each interpolation step will
+            be `2 * n_months + 1` (including the current timestep).
+        verbose (bool): If True, show progress bar.
+
+    Returns:
+        numpy masked array: (N,) masked array containing the interpolated values for
+            each of the `N` True elements in `interpolate_mask`.
+
+    """
+    n_interp = interpolate_mask.sum()
+    monthly_target_data = np.ma.MaskedArray(np.empty(n_interp), mask=True)
+
+    for i, indices in enumerate(
+        tqdm(
+            zip(*np.where(interpolate_mask)),
+            total=n_interp,
+            leave=False,
+            disable=not verbose,
+        )
+    ):
+        adjacent_data = source_data[
+            (slice(target_index, target_index + 2 * n_months + 1), *indices)
+        ]
+        # Try to find at least one match in the fewest months possible.
+        for d in range(1, n_months + 1):
+            selection_mask = (
+                adjacent_data.mask[n_months - d],
+                adjacent_data.mask[n_months + d],
+            )
+            if all(selection_mask):
+                # All data is masked, so there is no valid data to choose from.
+                continue
+            selection = np.ma.MaskedArray(
+                [adjacent_data[n_months - d], adjacent_data[n_months + d]]
+            )
+            # Fill in the missing element.
+            monthly_target_data[i] = np.mean(selection)
+            # Stop looking for matches.
+            break
+    return monthly_target_data
+
+
+@dataset_cache
+def temporal_nn(
+    dataset, target_timespan, n_months, mask=None, threshold=0, verbose=False
+):
+    """Temporal NN interpolation of missing data.
+
+    Args:
+        dataset (wildfires.data.Dataset): Dataset containing a single cube to
+            interpolate.
+        target_timespan (tuple of datetime): Start and end datetimes between which to
+            interpolate.
+        n_months (int): Number of months to look forwards and backwards to find valid
+            data. The total number of months selected for each interpolation step will
+            be `2 * n_months + 1` (including the current timestep).
+        mask ((m, n) array of bool): Mask that is True where interpolation should occur.
+            If None, interpolation is not carried out over water and south of 60
+            degrees latitude.
+        threshold (float): Threshold in [0, 1] denoting the minimum fraction (not
+            inclusive) of missing data in `source_masks` for which to carry out
+            interpolation. Larger thresholds can be used to restrict interpolation
+            geographically to regions with poor data availability.
+        verbose (bool or int): If True, show progress bars. Giving 0 is equivalent to
+            giving False (i.e. no progress bars), giving 1 shows a progress bar for
+            the individual months, while giving 2 shows an additional progress bar for
+            the individual samples within each month.
+
+    Returns:
+        iris CubeList: CubeList containing the interpolated data for the time period
+            `target_timespan` in a single iris Cube.
+
+    Raises:
+        ValueError: If `dataset` does not contain exactly 1 cube.
+        ValueError: If `n_months` is not an integer.
+        RuntimeError: If there was insufficient data to satisfy either the target or
+            the source time period.
+
+    """
+    if len(dataset.cubes) != 1:
+        raise ValueError(f"Expected 1 cube, got {len(dataset.cubes)}.")
+
+    if not isinstance(n_months, (int, np.integer)):
+        raise ValueError(
+            f"`n_months` should be an integer. Got type '{type(n_months)}'."
+        )
+
+    if isinstance(verbose, int):
+        m_verbose = False  # Month verbosity.
+        s_verbose = False  # Sample verbosity.
+        if verbose > 0:
+            m_verbose = True
+        if verbose > 1:
+            s_verbose = True
+    elif verbose:
+        m_verbose = True
+        s_verbose = True
+
+    # Set up data.
+    source = dataset.copy(deep=False)
+    target = dataset.copy(deep=True)
+
+    # Discard unneeded months.
+    source_timespan = (
+        target_timespan[0] - relativedelta(months=n_months),
+        target_timespan[1] + relativedelta(months=n_months),
+    )
+    source.limit_months(*source_timespan)
+    target.limit_months(*target_timespan)
+
+    target_months = (
+        (target_timespan[1].year - target_timespan[0].year) * 12
+        + target_timespan[1].month
+        - target_timespan[0].month
+    )
+
+    source_months = target_months + n_months * 2
+
+    # Sanity check.
+    assert source_months == (
+        (source_timespan[1].year - source_timespan[0].year) * 12
+        + source_timespan[1].month
+        - source_timespan[0].month
+    )
+
+    # Check that a sufficient number of months were present.
+    if not target.cube.shape[0] == (target_months + 1):
+        raise RuntimeError("Missing data for the target time period.")
+    if not source.cube.shape[0] == (source_months + 1):
+        raise RuntimeError("Missing data for the source time period.")
+
+    if not target.cube.coords("month_number"):
+        iris.coord_categorisation.add_month_number(target.cube, "time")
+    target.homogenise_masks()
+
+    # Set up the source mask (where to interpolate).
+    if mask is None:
+        # Add the land mask.
+        mask = match_shape(
+            get_land_mask(n_lon=dataset.cube.shape[-1]), dataset.cube.shape[1:]
+        )
+        # Ignore regions south of -60° S.
+        mask &= match_shape(
+            box_mask(lats=(-60, 90), lons=(-180, 180), n_lon=dataset.cube.shape[-1]),
+            mask.shape,
+        )
+
+    interpolate_masks = {}
+    for month_number in range(1, 13):
+        single_months = target.cube.extract(iris.Constraint(month_number=month_number))
+        missing_fraction = np.mean(single_months.data.mask & mask, axis=0)
+        interpolate_masks[month_number] = missing_fraction > threshold
+
+    # Iterate over the months to fill.
+    current = target_timespan[0]
+    for target_index in tqdm(range(target_months), disable=not m_verbose):
+        month_number = current.month
+        target.cube.data[target_index][interpolate_masks[month_number]] = _temporal_nn(
+            source.cube.data,
+            target_index,
+            interpolate_masks[month_number],
+            n_months,
+            verbose=s_verbose,
+        )
+        current += relativedelta(months=1)
+
+    return target.cubes
 
 
 regrid_dataset.__doc__ = "Dataset wrapper\n" + regrid.__doc__
@@ -2258,6 +2439,82 @@ class Dataset(metaclass=RegisterDatasets):
             },
         )()
         new_inst.cubes = orig_inst.cubes
+
+        return new_inst
+
+    def get_temporally_interpolated_dataset(
+        self, target_timespan, n_months, mask=None, threshold=0, verbose=False
+    ):
+        """Temporal NN interpolation of missing data.
+
+        Args:
+            target_timespan (tuple of datetime): Start and end datetimes between which
+                to interpolate.
+            n_months (int): Number of months to look forwards and backwards to find
+                valid data. The total number of months selected for each interpolation
+                step will be `2 * n_months + 1` (including the current timestep).
+            mask ((m, n) array of bool): Mask that is True where interpolation should
+                occur. If None, interpolation is not carried out over water and south
+                of 60 degrees latitude.
+            threshold (float): Threshold in [0, 1] denoting the minimum fraction (not
+                inclusive) of missing data in `source_masks` for which to carry out
+                interpolation. Larger thresholds can be used to restrict interpolation
+                geographically to regions with poor data availability.
+            verbose (bool or int): If True, show progress bars. Giving 0 is equivalent
+                to giving False (i.e. no progress bars), giving 1 shows a progress bar
+                for the individual months, while giving 2 shows an additional progress
+                bar for the individual samples within each month.
+
+        Returns:
+            An instance of a subclass of `type(self)` containing the interpolated cubes.
+
+        Raises:
+            ValueError: If `dataset` does not contain exactly 1 cube.
+            ValueError: If `n_months` is not an integer.
+            RuntimeError: If there was insufficient data to satisfy either the target or
+                the source time period.
+
+        """
+        orig_inst = self.copy_cubes_no_data()
+        interp_cubes = iris.cube.CubeList()
+        # Handle each cube different, since each cube may have unique time coordinates
+        # (different bands for example).
+        for cube_slice in orig_inst.single_cube_slices():
+            if not orig_inst[cube_slice].cube.coords("time"):
+                continue
+            cube = temporal_nn(
+                orig_inst[cube_slice],
+                target_timespan,
+                n_months,
+                mask=mask,
+                threshold=threshold,
+                verbose=verbose,
+            )[0]
+
+            def cube_name_mod_func(s):
+                return s + f" {n_months}NN"
+
+            cube.long_name = cube_name_mod_func(cube.name())
+            cube.standard_name = None
+            cube.var_name = None
+
+            interp_cubes.append(cube)
+
+        # Instantiate new dataset instance. This will lack any instantiation, which
+        # must be replicated by manually assigning to the cubes attribute below.
+        new_inst = type(
+            self.name + f"__{n_months}NN",
+            (type(self),),
+            {
+                "__init__": lambda self: None,
+                "_pretty": self.pretty + f" {n_months}NN",
+                "pretty_variable_names": dict(
+                    (cube_name_mod_func(raw), cube_name_mod_func(pretty))
+                    for raw, pretty in type(self).pretty_variable_names.items()
+                ),
+            },
+        )()
+        new_inst.cubes = interp_cubes
 
         return new_inst
 
