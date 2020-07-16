@@ -3423,7 +3423,7 @@ class NewERA5_DryDayPeriod(MonthlyDataset):
                     "be fully descriptive for 'time'."
                 ),
             )
-            for filename in tqdm(filenames):
+            for filename in tqdm(filenames[:10]):
                 raw_cube = iris.load_cube(filename)
                 n_days = raw_cube.shape[0]
                 n_lats = raw_cube.shape[1]
@@ -3452,6 +3452,7 @@ class NewERA5_DryDayPeriod(MonthlyDataset):
                 cur_dry_day_period = np.zeros((n_lats, n_lons), dtype=np.int64)
                 start_dry_day_period = np.zeros_like(cur_dry_day_period)
                 end_dry_day_period = np.zeros_like(cur_dry_day_period)
+                contiguous_period = np.zeros_like(cur_dry_day_period)
 
                 for slice_object in slices:
                     time_slice = slice_object[0]
@@ -3466,11 +3467,15 @@ class NewERA5_DryDayPeriod(MonthlyDataset):
                     # The number of dry days.
                     period_length = time_slice.stop - time_slice.start
 
-                    # Determine where to record the period in.
+                    # Determine where to record the period.
 
                     if period_length > cur_dry_day_period[latitude, longitude]:
                         # If the period is longer than the current period.
                         cur_dry_day_period[latitude, longitude] = period_length
+
+                    if time_slice.start == 0 and time_slice.stop == n_days:
+                        # If the period is contiguous across the month.
+                        contiguous_period[latitude, longitude] = True
 
                     if time_slice.start == 0:
                         # If the period begins at the start of the month.
@@ -3509,6 +3514,11 @@ class NewERA5_DryDayPeriod(MonthlyDataset):
 
                 # Prepare for the next month's analysis.
                 prev_dry_day_period = end_dry_day_period
+                # For contiguous dry day periods, the next month needs to consider
+                # the previous months' periods as well.
+                prev_dry_day_period[contiguous_period.astype('bool')] = (
+                    start_dry_day_period[contiguous_period.astype('bool')]
+                )
 
                 # Create new Cube with the same latitudes and longitudes, and an
                 # averaged time.
