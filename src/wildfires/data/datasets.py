@@ -3414,7 +3414,6 @@ class NewERA5_DryDayPeriod(MonthlyDataset):
         dry_day_period_cubes = iris.cube.CubeList()
 
         prev_dry_day_period = None
-        prev_end = None
 
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -3435,9 +3434,7 @@ class NewERA5_DryDayPeriod(MonthlyDataset):
                 # negligible overall (especially since the first year is probably not
                 # being used anyway).
                 if prev_dry_day_period is None:
-                    assert prev_end is None
                     prev_dry_day_period = np.zeros((n_lats, n_lons), dtype=np.int64)
-                    prev_end = np.zeros((n_lats, n_lons), dtype=np.bool_)
 
                 # Calculate dry days using metre per hour threshold, since the daily
                 # data here is an average of the hourly total precipitation data.
