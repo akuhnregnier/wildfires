@@ -3423,7 +3423,8 @@ class NewERA5_DryDayPeriod(MonthlyDataset):
                     "be fully descriptive for 'time'."
                 ),
             )
-            for filename in tqdm(filenames[:10]):
+            # XXX:
+            for filename in tqdm(filenames[:20]):
                 raw_cube = iris.load_cube(filename)
                 n_days = raw_cube.shape[0]
                 n_lats = raw_cube.shape[1]
