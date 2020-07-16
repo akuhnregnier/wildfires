@@ -3395,6 +3395,165 @@ class ERA5_TotalPrecipitation(MonthlyDataset):
         )
 
 
+class NewERA5_DryDayPeriod(MonthlyDataset):
+    _pretty = "ERA5 Dry Day Period"
+    pretty_variable_names = {"dry_day_period": "Dry Day Period"}
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, "ERA5", "tp_daily")
+        self.cubes = self.read_cache()
+        if self.cubes:
+            return
+
+        # Sort so that time is increasing.
+        filenames = sorted(
+            glob.glob(os.path.join(self.dir, "**", "*_daily_mean.nc"), recursive=True)
+        )
+
+        logger.info("Constructing dry day period cube.")
+        dry_day_period_cubes = iris.cube.CubeList()
+
+        prev_dry_day_period = None
+        prev_end = None
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=(
+                    "Collapsing a non-contiguous coordinate. Metadata may not "
+                    "be fully descriptive for 'time'."
+                ),
+            )
+            for filename in tqdm(filenames):
+                raw_cube = iris.load_cube(filename)
+                n_days = raw_cube.shape[0]
+                n_lats = raw_cube.shape[1]
+                n_lons = raw_cube.shape[2]
+
+                # The first time around only, create empty arrays. This will introduce
+                # some negative bias for the first month(s), but this should be
+                # negligible overall (especially since the first year is probably not
+                # being used anyway).
+                if prev_dry_day_period is None:
+                    assert prev_end is None
+                    prev_dry_day_period = np.zeros((n_lats, n_lons), dtype=np.int64)
+                    prev_end = np.zeros((n_lats, n_lons), dtype=np.bool_)
+
+                # Calculate dry days using metre per hour threshold, since the daily
+                # data here is an average of the hourly total precipitation data.
+                dry_days = raw_cube.data < M_PER_HR_THRES
+
+                # Find contiguous blocks in the time dimension where dry_days is True.
+                structure = np.zeros((3, 3, 3), dtype=np.int64)
+                structure[:, 1, 1] = 1
+                labelled = scipy.ndimage.label(dry_days, structure=structure)
+                slices = scipy.ndimage.find_objects(labelled[0])
+
+                # Keep track of the dry day period including any terminal dry day
+                # periods of the previous month and the dry day periods reaching the
+                # end of the current month.
+                cur_dry_day_period = np.zeros((n_lats, n_lons), dtype=np.int64)
+                start_dry_day_period = np.zeros_like(cur_dry_day_period)
+                end_dry_day_period = np.zeros_like(cur_dry_day_period)
+
+                for slice_object in slices:
+                    time_slice = slice_object[0]
+                    lat_slice = slice_object[1]
+                    lon_slice = slice_object[2]
+                    assert lat_slice.stop - lat_slice.start == 1
+                    assert lon_slice.stop - lon_slice.start == 1
+
+                    latitude = lat_slice.start
+                    longitude = lon_slice.start
+
+                    # The number of dry days.
+                    period_length = time_slice.stop - time_slice.start
+
+                    # Determine where to record the period in.
+
+                    if period_length > cur_dry_day_period[latitude, longitude]:
+                        # If the period is longer than the current period.
+                        cur_dry_day_period[latitude, longitude] = period_length
+
+                    if time_slice.start == 0:
+                        # If the period begins at the start of the month.
+                        assert not start_dry_day_period[latitude, longitude], (
+                            "There should be at most one period at the beginning of "
+                            "the month."
+                        )
+                        start_dry_day_period[latitude, longitude] = period_length
+
+                    if time_slice.stop == n_days:
+                        # If the period ends at the end of the month.
+                        assert not end_dry_day_period[latitude, longitude], (
+                            "There should be at most one period at the end of "
+                            "the month."
+                        )
+                        end_dry_day_period[latitude, longitude] = period_length
+
+                # Once the data for the current month has been processed, look at the
+                # previous month to see if dry day periods may be joined up.
+                overlap = prev_dry_day_period.astype(
+                    "bool"
+                ) & start_dry_day_period.astype("bool")
+                start_dry_day_period[overlap] += prev_dry_day_period[overlap]
+
+                # Pick the maximum period out of the concatenated start periods and the
+                # current month's periods.
+                dry_day_period = np.max(
+                    np.vstack(
+                        (
+                            start_dry_day_period[np.newaxis],
+                            cur_dry_day_period[np.newaxis],
+                        )
+                    ),
+                    axis=0,
+                )
+
+                # Prepare for the next month's analysis.
+                prev_dry_day_period = end_dry_day_period
+
+                # Create new Cube with the same latitudes and longitudes, and an
+                # averaged time.
+                coords = [
+                    (raw_cube.coord("latitude"), 0),
+                    (raw_cube.coord("longitude"), 1),
+                ]
+
+                # Modify the time coordinate such that it is recorded with
+                # respect to a common date, as opposed to relative to the
+                # beginning of the respective month as is the case for the
+                # cube loaded above.
+
+                # Take the new 'mean' time as the average of the first and last time.
+                min_time = raw_cube.coord("time").cell(0).point
+                max_time = raw_cube.coord("time").cell(-1).point
+                centre_datetime = min_time + ((max_time - min_time) / 2)
+
+                new_time = cf_units.date2num(
+                    centre_datetime, self.time_unit_str, self.calendar
+                )
+                time_coord = iris.coords.DimCoord(
+                    new_time, units=self.time_unit, standard_name="time"
+                )
+
+                dry_day_period_cube = iris.cube.Cube(
+                    dry_day_period,
+                    dim_coords_and_dims=coords,
+                    units=cf_units.Unit("days"),
+                    var_name="dry_day_period",
+                    aux_coords_and_dims=[(time_coord, None)],
+                )
+                dry_day_period_cube.units = cf_units.Unit("days")
+
+                dry_day_period_cubes.append(dry_day_period_cube)
+
+        raw_cubes = iris.cube.CubeList([dry_day_period_cubes.merge_cube()])
+
+        self.cubes = raw_cubes
+        self.write_cache()
+
+
 class ERA5_DryDayPeriod(MonthlyDataset):
     _pretty = "ERA5 Dry Day Period"
     pretty_variable_names = {"dry_day_period": "Dry Day Period"}
