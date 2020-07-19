@@ -1147,3 +1147,38 @@ def shorten_columns(df, inplace=False):
         ),
         inplace=inplace,
     )
+
+
+def replace_cube_coord(cube, new_coord, coord_name=None):
+    """Name-based re-implementation of `iris.cube.Cube.replace_coord`.
+
+    This relies on using `new_coord.name()` to retrieve the old coordinate (or
+    `coord_name`, explicitly) instead of simply `new_coord` which fails to work for
+    some cases.
+
+    Args:
+        cube (iris.cube.Cube): Cube for which to replace coordinates.
+        new_coord (iris coord): New coordinate.
+        coord_name (str, optional): Name of the coordinate to replace.
+
+    Returns:
+        iris.cube.Cube: The Cube containing the new coordinate is returned. Note that
+        the operation is also performed in-place.
+
+    """
+    if coord_name is None:
+        coord_name = new_coord.name()
+
+    old_coord = cube.coord(coord_name)
+    dims = cube.coord_dims(old_coord)
+    was_dimensioned = old_coord in cube.dim_coords
+    cube._remove_coord(old_coord)
+    if was_dimensioned and isinstance(new_coord, iris.coords.DimCoord):
+        cube.add_dim_coord(new_coord, dims[0])
+    else:
+        cube.add_aux_coord(new_coord, dims)
+
+    for factory in cube.aux_factories:
+        factory.update(old_coord, new_coord)
+
+    return cube
