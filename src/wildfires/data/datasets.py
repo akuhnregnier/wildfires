@@ -1048,6 +1048,8 @@ def _temporal_nn(source_data, target_index, interpolate_mask, n_months, verbose=
         adjacent_data = source_data[
             (slice(target_index, target_index + 2 * n_months + 1), *indices)
         ]
+        assert adjacent_data.mask[n_months], "Data to interpolate must be masked."
+
         # Try to find at least one match in the fewest months possible.
         for d in range(1, n_months + 1):
             selection_mask = (
@@ -1182,10 +1184,14 @@ def temporal_nn(
     current = target_timespan[0]
     for target_index in tqdm(range(target_months), disable=not m_verbose):
         month_number = current.month
-        target.cube.data[target_index][interpolate_masks[month_number]] = _temporal_nn(
+        interpolate_mask = (
+            interpolate_masks[month_number]
+            & source.cube.data.mask[target_index + n_months]
+        )
+        target.cube.data[target_index][interpolate_mask] = _temporal_nn(
             source.cube.data,
             target_index,
-            interpolate_masks[month_number],
+            interpolate_mask,
             n_months,
             verbose=s_verbose,
         )
