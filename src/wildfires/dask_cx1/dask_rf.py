@@ -9,7 +9,7 @@ from collections import defaultdict, deque
 from concurrent.futures import CancelledError
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
-from itertools import product
+from itertools import combinations, product
 from numbers import Number
 from operator import itemgetter
 from pathlib import Path
@@ -52,6 +52,7 @@ __all__ = (
     "CachedResults",
     "DaskGridSearchCV",
     "DaskRandomForestRegressor",
+    "dask_fit_combinations",
     "dask_fit_loco",
     "fit_dask_sub_est_grid_search_cv",
     "fit_dask_sub_est_random_search_cv",
@@ -330,14 +331,14 @@ def fit_dask_sub_est_grid_search_cv(
         Args:
             estimator (object implementing a `score()` method): Estimator to be
                 evaluated.
+            param_key (tuple): Tuple identifying the parameters of `estimator` that
+                were modified during the grid search.
+            split_index (int): Index of the current split.
 
         Returns:
             callable: Callable with signature (future), where `future.result()`
                 contains the trained sub-estimators that will be placed into
                 `estimator.estimators_`.
-            param_key (tuple): Tuple identifying the parameters of `estimator` that
-                were modified during the grid search.
-            split_index (int): Index of the current split.
 
         """
 
@@ -1359,12 +1360,12 @@ def dask_fit_loco(
         Args:
             estimator (object implementing a `socre()` method): Estimator to be
                 evaluated.
+            column (str): Column to discard.
 
         Returns:
             callable: Callable with signature (future), where `future.result()`
                 contains the trained sub-estimators that will be placed into
                 `estimator.estimators_`.
-            column (str): Column to discard.
 
         """
 
@@ -1493,3 +1494,316 @@ def dask_fit_loco(
     sub_estimator_progress_thread.join()
 
     return results
+
+
+def dask_fit_combinations(
+    estimator,
+    X_train,
+    y_train,
+    X_test,
+    y_test,
+    client,
+    choose,
+    local_n_jobs=None,
+    verbose=False,
+    cache_dir=None,
+):
+    """Fit all combinations of input features.
+
+    Args:
+        estimator (object implementing `dask_fit()` and `score()` methods): Estimator
+            to be evaluated.
+        train_X (pandas DataFrame): Training data.
+        train_y (pandas Series or array-like): Training target data.
+        test_X (pandas DataFrame): Test data.
+        test_y (pandas Series or array-like): Test target data.
+        client (`dask.distributed.Client`): Dask Client used to submit tasks to the
+            scheduler.
+        choose (int): Number of features to choose at a time.
+        local_n_jobs (int): Since scoring has a 'sharedmem' requirement (ie. threading
+            backend), parallelisation can be achieved locally using the threading
+            backend with `local_n_jobs` threads.
+        verbose (bool): If True, print out progress information related to the fitting
+            of individual sub-estimators and scoring of the resulting estimators.
+        cache_dir (str, pathlib.Path, or None): Directory to save score results in.
+
+    Returns:
+        mse: Mean squared error of the training set predictions.
+
+    """
+    cache_file = (
+        Path(cache_dir)
+        / "combinations"
+        / type(estimator).__name__
+        / str(choose)
+        / "scores.pkl"
+    )
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+    def read_scores():
+        if not cache_file.is_file():
+            return defaultdict(dict)
+        with open(cache_file, "rb") as f:
+            return pickle.load(f)
+
+    def write_scores(scores):
+        with open(cache_file, "wb") as f:
+            pickle.dump(scores, f, -1)
+
+    feature_combinations = list(combinations(sorted(X_train.columns), choose))
+
+    scores = read_scores()
+    if len(scores) == len(feature_combinations):
+        return scores
+
+    y_t_f = client.scatter(y_train, broadcast=True)
+
+    score_complete = Event()
+
+    # Define progress bars.
+
+    # Task submission progress bar.
+    submit_tqdm = tqdm(
+        desc="Submitting tasks",
+        total=0,
+        disable=not verbose,
+        unit="task",
+        smoothing=0.01,
+        position=0,
+    )
+
+    # Progress bar for completed estimator scores.
+    score_tqdm = tqdm(
+        desc="Scoring",
+        total=0,
+        disable=not verbose,
+        unit="estimator",
+        smoothing=0.1,
+        position=1,
+    )
+    score_lock = Lock()
+
+    # Sub-estimator progress bar.
+    sub_est_tqdm = tqdm(
+        desc="Sub-estimators",
+        total=0,
+        disable=not verbose,
+        unit="sub-estimator",
+        smoothing=0.01,
+        position=2,
+    )
+    sub_est_lock = Lock()
+
+    def get_estimator_score_cb(estimator, combination):
+        """Get a function that scores the given estimator.
+
+        Args:
+            estimator (object implementing a `score()` method): Estimator to be
+                evaluated.
+            combination (tuple of str): Column names.
+
+        Returns:
+            callable: Callable with signature (future), where `future.result()`
+                contains the trained sub-estimators that will be placed into
+                `estimator.estimators_`.
+
+        """
+
+        def construct_and_score(future):
+            """Join the sub-estimators and score the resulting estimator.
+
+            Scores will be placed into the global `scores` dict.
+
+            Score completion will be signalled using the `score_event` Event.
+
+            Args:
+                future (future): `future.result()` contains the trained sub-estimators
+                    that will be placed into `estimator.estimators_`.
+
+            """
+            estimator.estimators_.extend([f for f in future.result()])
+
+            # NOTE: `RandomForestRegressor.predict()` calculates `n_jobs` internally
+            # using `joblib.effective_n_jobs()` without considering `n_jobs` from the
+            # currently enabled default backend. Therefore, wrapping `score()` in
+            # `parallel_backend('threading', n_jobs=local_n_jobs)` only runs on
+            # `estimator.n_jobs` threads (in the case where `estimator.n_jobs = None`,
+            # this causes the scoring to run on a single thread only), regardless of
+            # the value of `local_n_jobs`.
+
+            # Force the use of `local_n_jobs` threads in `score()` (see above).
+            with ExitStack() as stack:
+                stack.enter_context(
+                    temp_sklearn_params(estimator, {"n_jobs": local_n_jobs})
+                )
+                stack.enter_context(parallel_backend("threading", n_jobs=local_n_jobs))
+
+                y_test_pred = estimator.predict(X_test[list(combination)].to_numpy())
+                scores[combination]["test_score"] = {
+                    "r2": r2_score(y_test, y_test_pred),
+                    "mse": mean_squared_error(y_test, y_test_pred),
+                }
+
+                y_train_pred = estimator.predict(X_train[list(combination)].to_numpy())
+                scores[combination]["train_score"] = {
+                    "r2": r2_score(y_train, y_train_pred),
+                    "mse": mean_squared_error(y_train, y_train_pred),
+                }
+
+            # Cache results.
+            write_scores(scores)
+
+            with score_lock:
+                score_tqdm.update()
+                if score_tqdm.n == score_tqdm.total:
+                    score_complete.set()
+
+        return construct_and_score
+
+    critical_target = math.inf
+    critical_target_lock = Lock()
+    critical_task_count = Event()
+
+    def update_sub_est_progress(future):
+        """Progress bar for completed sub-estimators."""
+        nonlocal critical_target
+        with sub_est_lock:
+            sub_est_tqdm.update()
+
+        # Only test this criterion after the target has been updated.
+        if not critical_task_count.is_set():
+            with critical_target_lock, sub_est_lock:
+                if sub_est_tqdm.n > critical_target:
+                    critical_task_count.set()
+
+    def estimator_fit_done_callback(futures):
+        """Used to collate sub-estimators belonging to a single estimator."""
+        return futures
+
+    # Collect futures to cancel them all later.
+    all_futures = []
+
+    def submit_tasks():
+        """Submit a set of sub-estimators.
+
+        This is done for each parameter combination and split separately.
+
+        Yields:
+            int: The number of submitted sub-estimators.
+            float: The time taken to submit the tasks.
+
+        """
+        for combination in feature_combinations:
+            if all(
+                score_key in scores[combination]
+                for score_key in ["test_score", "train_score"]
+            ):
+                # If everything is already cached, signal that scoring is complete.
+                with score_lock:
+                    if score_tqdm.n == score_tqdm.total:
+                        score_complete.set()
+                # Skip cached results.
+                yield 0
+                continue
+
+            comb_estimator = clone(estimator)
+
+            # Scatter the data.
+            X_t = X_train[list(combination)].to_numpy()
+            X_t_f = client.scatter(X_t)
+
+            # Submit the fitting of the sub estimators.
+            sub_est_fs = comb_estimator.dask_fit(X_t, y_train, X_t_f, y_t_f, client)
+
+            if not sub_est_fs:
+                raise RuntimeError("No sub-estimators were scheduled to be trained.")
+
+            submit_tqdm.total += comb_estimator.get_params()["n_estimators"]
+            submit_tqdm.update(0)
+
+            # Update progress meter upon task completion.
+            for sub_est_f in sub_est_fs:
+                sub_est_f.add_done_callback(update_sub_est_progress)
+
+            # Keep track of the sub-estimator tasks and their number.
+            with sub_est_lock:
+                sub_est_tqdm.total += len(sub_est_fs)
+                sub_est_tqdm.update(0)
+
+            # Increment the outstanding number of score operations.
+            with score_lock:
+                score_complete.clear()
+                score_tqdm.total += 1
+                score_tqdm.update(0)
+
+            # Collate the sub-estimator futures to process them collectively later.
+            estimator_future = client.submit(estimator_fit_done_callback, sub_est_fs)
+            # Add the estimator scoring callback.
+            estimator_future.add_done_callback(
+                get_estimator_score_cb(comb_estimator, combination)
+            )
+
+            all_futures.extend(sub_est_fs)
+            all_futures.append(estimator_future)
+
+            submit_tqdm.update(len(sub_est_fs))
+
+            yield len(sub_est_fs)
+
+    # Submit tasks.
+    submission_start = time.time()
+    n_avg = 10
+    avg_fit_times = deque(maxlen=n_avg)
+    avg_weights = np.exp(-6 * np.linspace(0, 1, n_avg))
+    for n_sub_est in submit_tasks():
+        if n_sub_est == 0:
+            # As the results were already cached, try to submit another batch.
+            continue
+        total_cores = sum(client.ncores().values())  # This may change with time.
+        target_tasks = 2 * total_cores  # Prefetching of tasks.
+        with sub_est_lock:
+            currently_active = sub_est_tqdm.total - sub_est_tqdm.n
+        # If we are currently running more tasks than our target, determine how long
+        # to wait before submitting additional tasks. Otherwise submit more tasks
+        # immediately.
+        if currently_active > target_tasks:
+            # Determine the number of tasks to complete before new tasks are
+            # scheduled.
+            with critical_target_lock, sub_est_lock:
+                n_done = max((sub_est_tqdm.n, 1))
+
+                # Average time per fit.
+                last_avg_fit_time = (time.time() - submission_start) / n_done
+                if len(avg_fit_times) == 0:
+                    avg_fit_times.extend([last_avg_fit_time] * n_avg)
+                else:
+                    avg_fit_times.appendleft(last_avg_fit_time)
+
+                # Critical number of active tasks. Take into account average task
+                # duration and a margin of 2 seconds.
+
+                # Average the most recent average fit times (ignoring weighting by
+                # number of samples).
+                avg_fit_time = np.average(avg_fit_times, weights=avg_weights)
+                critical_target = math.floor(
+                    sub_est_tqdm.total - target_tasks - (2 / avg_fit_time)
+                )
+                # Reset the task count event to signal the updated target.
+                critical_task_count.clear()
+                if critical_target <= sub_est_tqdm.n:
+                    # If enough tasks have already finished, schedule more.
+                    critical_task_count.set()
+
+            # Wait for the desired number of tasks to finish.
+            critical_task_count.wait()
+
+    score_complete.wait()
+
+    for progress_tqdm in (submit_tqdm, score_tqdm, sub_est_tqdm):
+        progress_tqdm.close()
+
+    # Cancel futures.
+    if all_futures:
+        client.cancel(all_futures, force=True)
+
+    return scores
