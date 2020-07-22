@@ -9,7 +9,7 @@ from collections import defaultdict, deque
 from concurrent.futures import CancelledError
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
-from itertools import combinations, product
+from itertools import product
 from numbers import Number
 from operator import itemgetter
 from pathlib import Path
@@ -1503,7 +1503,7 @@ def dask_fit_combinations(
     X_test,
     y_test,
     client,
-    choose,
+    feature_combinations,
     local_n_jobs=None,
     verbose=False,
     cache_dir=None,
@@ -1519,7 +1519,7 @@ def dask_fit_combinations(
         test_y (pandas Series or array-like): Test target data.
         client (`dask.distributed.Client`): Dask Client used to submit tasks to the
             scheduler.
-        choose (int): Number of features to choose at a time.
+        feature_combinations (iterable of list of str): Feature combinations to fit.
         local_n_jobs (int): Since scoring has a 'sharedmem' requirement (ie. threading
             backend), parallelisation can be achieved locally using the threading
             backend with `local_n_jobs` threads.
@@ -1531,26 +1531,30 @@ def dask_fit_combinations(
         mse: Mean squared error of the training set predictions.
 
     """
-    cache_file = (
-        Path(cache_dir)
-        / "combinations"
-        / type(estimator).__name__
-        / str(choose)
-        / "scores.pkl"
-    )
-    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    feature_combinations = list(feature_combinations)
+
+    if cache_dir is not None:
+        cache_file = (
+            Path(cache_dir)
+            / "combinations"
+            / type(estimator).__name__
+            / str(len(feature_combinations[0]))
+            / "scores.pkl"
+        )
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        cache_file = None
 
     def read_scores():
-        if not cache_file.is_file():
+        if cache_dir is None or not cache_file.is_file():
             return defaultdict(dict)
         with open(cache_file, "rb") as f:
             return pickle.load(f)
 
     def write_scores(scores):
-        with open(cache_file, "wb") as f:
-            pickle.dump(scores, f, -1)
-
-    feature_combinations = list(combinations(sorted(X_train.columns), choose))
+        if cache_dir is not None:
+            with open(cache_file, "wb") as f:
+                pickle.dump(scores, f, -1)
 
     scores = read_scores()
     if len(scores) == len(feature_combinations):
