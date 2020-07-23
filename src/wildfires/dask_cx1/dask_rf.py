@@ -18,6 +18,7 @@ from threading import Event, Lock, Thread, Timer
 from warnings import warn
 
 import numpy as np
+import pandas as pd
 from dask.distributed import as_completed
 from dask.utils import parse_timedelta
 from joblib import parallel_backend
@@ -1498,12 +1499,11 @@ def dask_fit_loco(
 
 def dask_fit_combinations(
     estimator,
-    X_train,
-    y_train,
-    X_test,
-    y_test,
+    X,
+    y,
     client,
     feature_combinations,
+    n_splits=5,
     local_n_jobs=None,
     verbose=False,
     cache_dir=None,
@@ -1513,13 +1513,12 @@ def dask_fit_combinations(
     Args:
         estimator (object implementing `dask_fit()` and `score()` methods): Estimator
             to be evaluated.
-        train_X (pandas DataFrame): Training data.
-        train_y (pandas Series or array-like): Training target data.
-        test_X (pandas DataFrame): Test data.
-        test_y (pandas Series or array-like): Test target data.
+        X (pandas DataFrame): Training data.
+        y (pandas Series or array-like): Training target data.
         client (`dask.distributed.Client`): Dask Client used to submit tasks to the
             scheduler.
         feature_combinations (iterable of list of str): Feature combinations to fit.
+        n_splits (int): Number of splits used for `KFold()`.
         local_n_jobs (int): Since scoring has a 'sharedmem' requirement (ie. threading
             backend), parallelisation can be achieved locally using the threading
             backend with `local_n_jobs` threads.
@@ -1531,14 +1530,14 @@ def dask_fit_combinations(
         mse: Mean squared error of the training set predictions.
 
     """
-    feature_combinations = list(feature_combinations)
+    feature_combinations = [tuple(sorted(comb)) for comb in feature_combinations]
 
     if cache_dir is not None:
         cache_file = (
             Path(cache_dir)
             / "combinations"
             / type(estimator).__name__
-            / str(len(feature_combinations[0]))
+            / str(n_splits)
             / "scores.pkl"
         )
         cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1547,20 +1546,35 @@ def dask_fit_combinations(
 
     def read_scores():
         if cache_dir is None or not cache_file.is_file():
-            return defaultdict(dict)
+            return {}
         with open(cache_file, "rb") as f:
             return pickle.load(f)
 
     def write_scores(scores):
         if cache_dir is not None:
             with open(cache_file, "wb") as f:
-                pickle.dump(scores, f, -1)
+                pickle.dump(dict(scores), f, -1)
 
-    scores = read_scores()
+    scores = defaultdict(lambda: defaultdict(dict))
+    scores.update(
+        {
+            comb: val
+            for comb, val in read_scores().items()
+            if comb in feature_combinations
+        }
+    )
     if len(scores) == len(feature_combinations):
         return scores
 
-    y_t_f = client.scatter(y_train, broadcast=True)
+    if isinstance(y, pd.core.series.Series):
+        y = y.to_numpy()
+
+    train_indices, test_indices = zip(*KFold(n_splits=n_splits).split(X))
+
+    y_train_arrs = [y[train_index] for train_index in train_indices]
+    y_train_fs = [client.scatter(y_train, broadcast=True) for y_train in y_train_arrs]
+
+    y_test_arrs = [y[test_index] for test_index in test_indices]
 
     score_complete = Event()
 
@@ -1598,13 +1612,14 @@ def dask_fit_combinations(
     )
     sub_est_lock = Lock()
 
-    def get_estimator_score_cb(estimator, combination):
+    def get_estimator_score_cb(estimator, combination, split_index):
         """Get a function that scores the given estimator.
 
         Args:
             estimator (object implementing a `score()` method): Estimator to be
                 evaluated.
             combination (tuple of str): Column names.
+            split_index (int): Index of the current split.
 
         Returns:
             callable: Callable with signature (future), where `future.result()`
@@ -1642,14 +1657,20 @@ def dask_fit_combinations(
                 )
                 stack.enter_context(parallel_backend("threading", n_jobs=local_n_jobs))
 
-                y_test_pred = estimator.predict(X_test[list(combination)].to_numpy())
-                scores[combination]["test_score"] = {
+                y_test = y_test_arrs[split_index]
+                y_test_pred = estimator.predict(
+                    X[list(combination)].to_numpy()[test_indices[split_index]]
+                )
+                scores[combination]["test_score"][split_index] = {
                     "r2": r2_score(y_test, y_test_pred),
                     "mse": mean_squared_error(y_test, y_test_pred),
                 }
 
-                y_train_pred = estimator.predict(X_train[list(combination)].to_numpy())
-                scores[combination]["train_score"] = {
+                y_train = y_train_arrs[split_index]
+                y_train_pred = estimator.predict(
+                    X[list(combination)].to_numpy()[train_indices[split_index]]
+                )
+                scores[combination]["train_score"][split_index] = {
                     "r2": r2_score(y_train, y_train_pred),
                     "mse": mean_squared_error(y_train, y_train_pred),
                 }
@@ -1687,6 +1708,12 @@ def dask_fit_combinations(
     # Collect futures to cancel them all later.
     all_futures = []
 
+    def combinations_split():
+        """Iterator over combinations and splits."""
+        for combination in feature_combinations:
+            for split_index in range(n_splits):
+                yield combination, split_index
+
     def submit_tasks():
         """Submit a set of sub-estimators.
 
@@ -1697,9 +1724,10 @@ def dask_fit_combinations(
             float: The time taken to submit the tasks.
 
         """
-        for combination in feature_combinations:
+        for combination, split_index in combinations_split():
+            # Test for already cached results.
             if all(
-                score_key in scores[combination]
+                split_index in scores[combination][score_key]
                 for score_key in ["test_score", "train_score"]
             ):
                 # If everything is already cached, signal that scoring is complete.
@@ -1713,11 +1741,13 @@ def dask_fit_combinations(
             comb_estimator = clone(estimator)
 
             # Scatter the data.
-            X_t = X_train[list(combination)].to_numpy()
+            X_t = X[list(combination)].to_numpy()[train_indices[split_index]]
             X_t_f = client.scatter(X_t)
 
             # Submit the fitting of the sub estimators.
-            sub_est_fs = comb_estimator.dask_fit(X_t, y_train, X_t_f, y_t_f, client)
+            sub_est_fs = comb_estimator.dask_fit(
+                X_t, y_train_arrs[split_index], X_t_f, y_train_fs[split_index], client
+            )
 
             if not sub_est_fs:
                 raise RuntimeError("No sub-estimators were scheduled to be trained.")
@@ -1744,7 +1774,7 @@ def dask_fit_combinations(
             estimator_future = client.submit(estimator_fit_done_callback, sub_est_fs)
             # Add the estimator scoring callback.
             estimator_future.add_done_callback(
-                get_estimator_score_cb(comb_estimator, combination)
+                get_estimator_score_cb(comb_estimator, combination, split_index)
             )
 
             all_futures.extend(sub_est_fs)
