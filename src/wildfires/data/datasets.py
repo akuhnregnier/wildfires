@@ -2367,7 +2367,7 @@ class Dataset(metaclass=RegisterDatasets):
         selecting the month February for both datasets.
 
         Args:
-            months (int or None): Number of months to shift the "time" coordinates by.
+            months (int): Number of months to shift the "time" coordinates by.
             deep (bool): If True, copy the underlying data when creating the new
                 dataset.
 
