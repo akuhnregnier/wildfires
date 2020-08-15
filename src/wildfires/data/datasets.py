@@ -17,6 +17,7 @@ TODO:
     caching behaviour! Make this intrinsic to __init__?
 
 """
+import concurrent.futures
 import glob
 import logging
 import operator
@@ -46,12 +47,14 @@ from iris.time import PartialDateTime
 from joblib import Memory, Parallel, delayed
 from numpy.testing import assert_allclose
 from pyhdf.SD import SD, SDC
+from scipy.optimize import minimize
 from tqdm import tqdm
 
 from era5analysis import MonthlyMeanMinMaxDTRWorker, retrieval_processing, retrieve
 
 from ..joblib.caching import CodeObj, wrap_decorator
 from ..joblib.iris_backend import register_backend
+from ..qstat import get_ncpus
 from ..utils import (
     box_mask,
     ensure_datetime,
@@ -1196,6 +1199,206 @@ def temporal_nn(
             verbose=s_verbose,
         )
         current += relativedelta(months=1)
+
+    return target.cubes
+
+
+def _persistent_gap_filling(cube, thres=0.5, verbose=False):
+    """Fill gaps >= (thres * 100)% of months with minimum value at that location.
+
+    This is done in-place.
+
+    """
+    if not cube.coords("month_number"):
+        iris.coord_categorisation.add_month_number(cube, "time")
+
+    combined_mask = np.all(cube.data.mask, axis=0)
+
+    nr_inval_cube = cube.copy(
+        data=np.ma.MaskedArray(
+            cube.data.mask, mask=match_shape(combined_mask, cube.shape)
+        )
+    )
+
+    min_cube = cube.collapsed("time", iris.analysis.MIN)
+
+    # Month numbers in [1, 12].
+    month_numbers = cube.coord("month_number").points
+
+    for month_number in tqdm(range(1, 13), desc="Months", disable=not verbose):
+        extracted = iris.Constraint(month_number=month_number).extract(nr_inval_cube)
+        missing_frac = np.sum(extracted.data, axis=0) / extracted.shape[0]
+        persistent = ((missing_frac + 1e-5) >= thres).data
+        persistent[combined_mask] = False
+
+        for month_index in np.where(month_numbers == month_number)[0]:
+            month_data = cube.data[month_index]
+
+            fill_mask = persistent & cube.data.mask[month_index]
+            month_data[fill_mask] = min_cube.data[fill_mask]
+
+            cube.data[month_index] = month_data
+
+    return cube
+
+
+def _harmonic_fit(t, params):
+    """Sine-based fitting including offset.
+
+    Args:
+        t (int): Time index.
+        params (array-like):
+            0th - offset
+            1th - gradient
+            (2j, 2j+1) entries - jth component amplitude and phase, j <= 1.
+
+    Returns:
+        float: Fitted function value at `t`.
+
+    """
+    t = np.asarray(t, dtype=np.float64)
+    output = np.zeros_like(t, dtype=np.float64)
+    output += params[0]
+    output += params[1] * t
+    for (j, (amplitude, phase)) in enumerate(zip(params[2::2], params[3::2])):
+        j += 1
+        output += amplitude * np.sin((2 * np.pi * j * t / 12) + phase)
+    return output
+
+
+def _min_fit(x, *args):
+    """Function to be minimised.
+
+    Args:
+        x (array-like): Fit parameters.
+        args: Month indices and corresponding data to fit to.
+
+    Returns:
+        float: MSE fit error.
+
+    """
+    ts = args[0]
+    fit_data = args[1]
+    return np.sum((fit_data - _harmonic_fit(ts, x)) ** 2.0)
+
+
+def _season_fill(fill_locs, data, k):
+    ts = np.arange(data.shape[0])
+
+    for xi, yi in zip(*np.where(fill_locs)):
+        sel = data[:, xi, yi]
+        # Execute minimisation.
+        res = minimize(_min_fit, np.zeros(2 * k + 2), (ts, sel))
+        # Replace masked elements with function fit values.
+        sel[sel.mask] = _harmonic_fit(ts, res.x)[sel.mask]
+
+    return data
+
+
+def _season_model_filling(cube, k=4, ncpus=1, verbose=False):
+    """Season-trend filling in-place."""
+    # Fill where there is some valid data, but not only valid data, since there would
+    # be nothing to fill in the latter case.
+    fill_locs = np.any(~cube.data.mask, axis=0) & (~np.all(~cube.data.mask, axis=0))
+
+    # Partition the rows of the array into chunks to be processed.
+    chunk_edges = np.unique(
+        np.append(np.arange(0, cube.shape[1], 2, dtype=np.int64), cube.shape[1])
+    )
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=ncpus) as executor:
+        fs = []
+        processed_slices = []
+        for chunk_s, chunk_e in zip(chunk_edges[:-1], chunk_edges[1:]):
+            chunk_slice = slice(chunk_s, chunk_e)
+            if not np.any(fill_locs[chunk_slice]):
+                # Skip those slices without anything to fill.
+                continue
+            processed_slices.append(chunk_slice)
+            fs.append(
+                executor.submit(
+                    _season_fill, fill_locs[chunk_slice], cube.data[:, chunk_slice], k
+                )
+            )
+
+        for f in tqdm(
+            concurrent.futures.as_completed(fs),
+            desc="Season model filling",
+            total=len(fs),
+            disable=not verbose,
+        ):
+            pass
+
+        for f, chunk_slice in zip(fs, processed_slices):
+            cube.data[:, chunk_slice] = f.result()
+
+    return cube
+
+
+@dataset_cache
+def persistent_season_trend_fill(
+    dataset, target_timespan=None, persistent_perc=50, k=4, verbose=False, ncpus=None,
+):
+    """Interpolation of missing data using minimum values and season-trend model.
+
+    First, persistent gaps are filled using the minimum value observed at that
+    location. This is followed by the fitting of a season-trend model to fill the
+    remaining missing values.
+
+    Args:
+        target_timespan (tuple of datetime or None): Start and end datetimes
+            between which to interpolate. If None, the current temporal range of
+            data will be used.
+        persistent_perc (int in [0, 100]): Percentage of data that needs to be
+            missing for a given month at a given location for the month to be
+            considered affected by a persistent gap.
+        k (int): Number of harmonic terms used in the season-trend model.
+        verbose (bool): If True, show progress bars.
+        ncpus (int or None): Number of processes to use for the season-trend model
+            fitting. If None, `wildfires.qstat.get_ncpus()` will be used.
+
+    Returns:
+        iris CubeList: CubeList containing the interpolated data for the time period
+            `target_timespan` in a single iris Cube.
+
+    Raises:
+        ValueError: If `dataset` does not contain exactly 1 cube.
+        ValueError: If `persistent_perc` is not an integer.
+        ValueError: If `k` is not an integer.
+
+    """
+    if len(dataset.cubes) != 1:
+        raise ValueError(f"Expected 1 cube, got {len(dataset.cubes)}.")
+
+    if not isinstance(persistent_perc, (int, np.integer)):
+        raise ValueError(
+            f"`persistent_perc` should be an integer. "
+            f"Got type '{type(persistent_perc)}'."
+        )
+
+    if not isinstance(k, (int, np.integer)):
+        raise ValueError(f"`k` should be an integer. Got type '{type(k)}'.")
+
+    if ncpus is None:
+        ncpus = get_ncpus()
+
+    # Set up data.
+    target = dataset.copy(deep=True)
+    if target_timespan is not None:
+        target.limit_months(*target_timespan)
+
+    if not target.cube.coords("month_number"):
+        iris.coord_categorisation.add_month_number(target.cube, "time")
+    target.homogenise_masks()
+
+    _season_model_filling(
+        _persistent_gap_filling(
+            target.cube, thres=persistent_perc / 100, verbose=verbose,
+        ),
+        k=k,
+        ncpus=ncpus,
+        verbose=verbose,
+    )
 
     return target.cubes
 
@@ -2475,12 +2678,15 @@ class Dataset(metaclass=RegisterDatasets):
             An instance of a subclass of `type(self)` containing the interpolated cubes.
 
         Raises:
-            ValueError: If `dataset` does not contain exactly 1 cube.
             ValueError: If `n_months` is not an integer.
             RuntimeError: If there was insufficient data to satisfy either the target or
                 the source time period.
 
         """
+
+        def cube_name_mod_func(s):
+            return s + f" {n_months}NN"
+
         orig_inst = self.copy_cubes_no_data()
         interp_cubes = iris.cube.CubeList()
         # Handle each cube different, since each cube may have unique time coordinates
@@ -2497,9 +2703,6 @@ class Dataset(metaclass=RegisterDatasets):
                 verbose=verbose,
             )[0]
 
-            def cube_name_mod_func(s):
-                return s + f" {n_months}NN"
-
             cube.long_name = cube_name_mod_func(cube.name())
             cube.standard_name = None
             cube.var_name = None
@@ -2513,7 +2716,83 @@ class Dataset(metaclass=RegisterDatasets):
             (type(self),),
             {
                 "__init__": lambda self: None,
-                "_pretty": self.pretty + f" {n_months}NN",
+                "_pretty": cube_name_mod_func(self.pretty),
+                "pretty_variable_names": dict(
+                    (cube_name_mod_func(raw), cube_name_mod_func(pretty))
+                    for raw, pretty in type(self).pretty_variable_names.items()
+                ),
+            },
+        )()
+        new_inst.cubes = interp_cubes
+
+        return new_inst
+
+    def get_persistent_season_trend_dataset(
+        self, target_timespan=None, persistent_perc=50, k=4, verbose=False, ncpus=None,
+    ):
+        """Interpolation of missing data using minimum values and season-trend model.
+
+        First, persistent gaps are filled using the minimum value observed at that
+        location. This is followed by the fitting of a season-trend model to fill the
+        remaining missing values.
+
+        Args:
+            target_timespan (tuple of datetime or None): Start and end datetimes
+                between which to interpolate. If None, the current temporal range of
+                data will be used.
+            persistent_perc (int in [0, 100]): Percentage of data that needs to be
+                missing for a given month at a given location for the month to be
+                considered affected by a persistent gap.
+            k (int): Number of harmonic terms used in the season-trend model.
+            verbose (bool): If True, show progress bars.
+            ncpus (int or None): Number of processes to use for the season-trend model
+                fitting. If None, `wildfires.qstat.get_ncpus()` will be used.
+
+        Returns:
+            An instance of a subclass of `type(self)` containing the interpolated cubes.
+
+        Raises:
+            ValueError: If `persistent_perc` is not an integer.
+            ValueError: If `k` is not an integer.
+
+        """
+
+        def cube_name_mod_func(s):
+            return s + f" {persistent_perc}P {k}k"
+
+        if ncpus is None:
+            ncpus = get_ncpus()
+
+        orig_inst = self.copy_cubes_no_data()
+        interp_cubes = iris.cube.CubeList()
+        # Handle each cube different, since each cube may have unique time coordinates
+        # (different bands for example).
+        for cube_slice in orig_inst.single_cube_slices():
+            if not orig_inst[cube_slice].cube.coords("time"):
+                continue
+            cube = persistent_season_trend_fill(
+                orig_inst[cube_slice],
+                target_timespan=target_timespan,
+                persistent_perc=persistent_perc,
+                k=k,
+                verbose=verbose,
+                ncpus=ncpus,
+            )[0]
+
+            cube.long_name = cube_name_mod_func(cube.name())
+            cube.standard_name = None
+            cube.var_name = None
+
+            interp_cubes.append(cube)
+
+        # Instantiate new dataset instance. This will lack any instantiation, which
+        # must be replicated by manually assigning to the cubes attribute below.
+        new_inst = type(
+            self.name + f"__{persistent_perc}P_{k}k",
+            (type(self),),
+            {
+                "__init__": lambda self: None,
+                "_pretty": cube_name_mod_func(self.pretty),
                 "pretty_variable_names": dict(
                     (cube_name_mod_func(raw), cube_name_mod_func(pretty))
                     for raw, pretty in type(self).pretty_variable_names.items()
