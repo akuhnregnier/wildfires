@@ -2,7 +2,12 @@
 import numpy as np
 
 from wildfires.data.datasets import dummy_lat_lon_cube
-from wildfires.utils import get_centres, select_valid_subset, translate_longitude_system
+from wildfires.utils import (
+    get_centres,
+    select_valid_subset,
+    shorten_features,
+    translate_longitude_system,
+)
 
 
 def test_subset():
@@ -120,3 +125,18 @@ def test_data_translation_subset():
     # Compare data mask.
     assert not comp_data.mask
     assert not np.any(sub_data.mask)
+
+
+def test_shorten_features():
+    assert shorten_features("Diurnal Temp Range") == "DTR"
+    assert shorten_features(["Diurnal Temp Range"]) == ["DTR"]
+    assert shorten_features(["Diurnal Temp Range", "Dry Day Period"]) == [
+        "DTR",
+        "Dry Days",
+    ]
+
+    assert shorten_features("VOD Ku-band") == "VOD"
+    assert shorten_features("SWI(1)") == "SWI"
+
+    assert shorten_features("SWI(1) -1 Month") == "SWI 1 M"
+    assert shorten_features("SWI(1) -18 - -6 Month") == "SWI Δ18 M"

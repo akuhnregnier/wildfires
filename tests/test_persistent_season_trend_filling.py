@@ -12,7 +12,9 @@ class DummyDataset(MonthlyDataset):
 
 
 def ma_comp(a, b):
-    if np.all(a.data == b.data) and np.all(a.mask == b.mask):
+    if np.all(a.mask) and np.all(b.mask):
+        return True
+    if np.all(a == b):
         return True
     return False
 

@@ -1097,10 +1097,8 @@ def shorten_features(features):
         list of str: Otherwise, a list of abbreviated strings is returned.
 
     """
-    return_single = False
     if isinstance(features, str):
-        return_single = True
-        features = (features,)
+        return shorten_features((features,))[0]
 
     def month_repl(match_obj):
         return f"{match_obj.group(1)} M"
@@ -1122,8 +1120,6 @@ def shorten_features(features):
             feature = re.sub(pattern, repl, feature)
         formatted.append(feature)
 
-    if return_single:
-        return formatted[0]
     return formatted
 
 
