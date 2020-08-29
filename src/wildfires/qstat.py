@@ -2,12 +2,11 @@
 """Collection of qstat related code used throughout the project.
 
 """
-import json
 import logging
 import os
 import platform
 import socket
-from subprocess import DEVNULL, CalledProcessError, check_output
+from subprocess import CalledProcessError
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +18,13 @@ def get_qstat_json():
         FileNotFoundError: If the command is not run on the hpc.
 
     """
-    raw_output = check_output(("qstat", "-f", "-F", "json"), stderr=DEVNULL).decode()
-    # Filter out invalid json (unescaped double quotes).
-    filtered_lines = [line for line in raw_output.split("\n") if '"""' not in line]
-    filtered_output = "\n".join(filtered_lines)
-    return json.loads(filtered_output)
+    raise FileNotFoundError("Do not use qstat to prevent overloading pbs.")
+
+    # raw_output = check_output(("qstat", "-f", "-F", "json"), stderr=DEVNULL).decode()
+    # # Filter out invalid json (unescaped double quotes).
+    # filtered_lines = [line for line in raw_output.split("\n") if '"""' not in line]
+    # filtered_output = "\n".join(filtered_lines)
+    # return json.loads(filtered_output)
 
 
 def get_qstat_ncpus():
