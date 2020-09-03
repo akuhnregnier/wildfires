@@ -81,7 +81,7 @@ class SimpleCache:
             try:
                 with open(self.pickle_path, "rb") as f:
                     return self.pickler.load(f)
-            except UnpicklingError:
+            except (UnpicklingError, EOFError):
                 logger.warning(f"Data at '{self.pickle_path}' could not be loaded.")
                 raise NoCachedDataError(f"{self.pickle_path} contained corrupted data.")
         raise NoCachedDataError(f"{self.pickle_path} does not exist.")
