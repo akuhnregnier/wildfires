@@ -244,7 +244,7 @@ def setup_remote_jupyter_lab(
 
 def start_general_lab(
     jupyter_exc="/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/jupyter",
-    notebook_dir="~/Documents/PhD/wildfire-analysis/analyses/",
+    notebook_dir="~/Documents/PhD/",
     valid_ports_exec=(
         "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/valid-ports"
     ),
@@ -291,7 +291,7 @@ def start_general_lab(
 #!/usr/bin/env bash
 
 #PBS -N {job_name}
-#PBS -l select=1:ncpus=32:mem=60GB
+#PBS -l select=1:ncpus=32:mem=60GB:ompthreads=32
 #PBS -l walltime={walltime}
 export DASK_TEMPORARY_DIRECTORY=$TMPDIR
 #
