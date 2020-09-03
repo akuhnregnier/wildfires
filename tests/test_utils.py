@@ -4,8 +4,11 @@ import numpy as np
 from wildfires.data.datasets import dummy_lat_lon_cube
 from wildfires.utils import (
     get_centres,
+    get_local_maxima,
+    get_local_minima,
     select_valid_subset,
     shorten_features,
+    significant_peak,
     translate_longitude_system,
 )
 
@@ -140,3 +143,28 @@ def test_shorten_features():
 
     assert shorten_features("SWI(1) -1 Month") == "SWI 1 M"
     assert shorten_features("SWI(1) -18 - -6 Month") == "SWI Δ18 M"
+
+
+def test_local_maxima():
+    assert np.all(
+        np.equal(
+            get_local_maxima([0, 1, 2, 1, 3]), np.array([0, 0, 1, 0, 1], dtype=bool)
+        )
+    )
+
+
+def test_local_minima():
+    assert np.all(
+        np.equal(
+            get_local_minima([0, 1, 2, 1, 3]), np.array([1, 0, 0, 1, 0], dtype=bool)
+        )
+    )
+
+
+def test_significant_peak():
+    assert not significant_peak([0, 1], ptp_threshold=10)
+    assert significant_peak([0, 1], ptp_threshold=0.1)
+    assert not significant_peak(
+        [0, 1, 0, 0.5, 0.3], diff_threshold=0.4, ptp_threshold=0.5
+    )
+    assert significant_peak([0, 1, 0, 0.5, 0.3], diff_threshold=0.6, ptp_threshold=0.5)

@@ -1178,3 +1178,122 @@ def replace_cube_coord(cube, new_coord, coord_name=None):
         factory.update(old_coord, new_coord)
 
     return cube
+
+
+def get_local_extrema(data, extrema_type="max"):
+    """Determine the location of local extrema.
+
+    Args:
+        data (array-like): Data for which to find local extrema.
+        extrema_type ({'max', 'min'}): If 'max', find local maxima. If 'min', find
+            local minima.
+
+    Returns:
+        array-like: Boolean array that is True where a local minimum or maximum is
+        located.
+
+    Raises:
+        ValueError: If `extrema_type` is not in {'max', 'min'}
+
+    """
+    if extrema_type == "max":
+        # Find local maxima.
+        op = np.less
+    elif extrema_type == "min":
+        op = np.greater
+    else:
+        raise ValueError(f"Unexpected value for extrema_type: {extrema_type}.")
+
+    return op(np.diff(np.sign(np.diff(np.hstack((data[0], data, data[-1]))))), 0)
+
+
+def get_local_maxima(data):
+    """Return a boolean mask denoting the location of local maxima."""
+    return get_local_extrema(data, "max")
+
+
+def get_local_minima(data):
+    """Return a boolean mask denoting the location of local minima."""
+    return get_local_extrema(data, "min")
+
+
+def significant_peak(x, diff_threshold=0.4, ptp_threshold=1):
+    """Determine the existence of a 'significant' peak.
+
+    This is determined using both the range of the given data and the characteristics
+    of its local maxima.
+
+    Args:
+        x (array-like): Data to test.
+        diff_threshold (float): Only applies if there are at least 2 local maxima. The
+            heights of local maxima are calculated as the difference between the local
+            maximum values and the lowest values of their surrounding minima. These
+            heights are then divided by the height of the global maximum. If any other
+            local maxima heights exceed `diff_threshold`, the global maximum is deemed
+            not significant.
+        ptp_threshold (float): If the range of `x` is lower than `ptp_threshold`, no
+            peaks will be deemed significant.
+
+    Returns:
+        bool: True if there is a significant peak, False otherwise.
+
+    """
+    max_sample = np.max(x)
+    min_sample = np.min(x)
+    ptp = max_sample - min_sample
+
+    if ptp < ptp_threshold:
+        # If there is not enough variation, there is no significant peak.
+        return False
+
+    max_mask = get_local_maxima(x)
+
+    if np.sum(max_mask) == 1:
+        # If there is only one peak, there is nothing left to do.
+        return True
+
+    # If there are multiple peaks, we have to decide if these local maxima
+    # are significant. If they are, there is no clearly defined
+    # maximum for this sample.
+
+    # Define significance of the minor peaks as the ratio between the
+    # difference (peak value - local minima) and (peak value - local minima)
+    # for the global maximum.
+
+    min_indices = np.where(get_local_minima(x))[0]
+
+    global_max_index = np.where(x == max_sample)[0][0]
+
+    max_diffs = {}
+
+    for max_index in np.where(max_mask)[0]:
+        # Sample value at the local maximum.
+        max_value = x[max_index]
+
+        # Find the surrounding local minima.
+        local_minima = []
+
+        # Find preceding local minima, if any.
+        if max_index > 0:
+            local_minima.append(x[min_indices[min_indices < max_index][-1]])
+
+        # Find following local minima, if any.
+        if max_index < (len(x) - 1):
+            local_minima.append(x[min_indices[min_indices > max_index][0]])
+
+        max_diffs[max_index] = np.max(max_value - np.array(local_minima))
+
+    global_max_diff = max_diffs[global_max_index]
+
+    # Rescale using the maximum diff.
+    for index, diff in max_diffs.items():
+        max_diffs[index] = diff / global_max_diff
+
+    if all(
+        diff < diff_threshold
+        for index, diff in max_diffs.items()
+        if index != global_max_index
+    ):
+        return True
+    else:
+        return False
