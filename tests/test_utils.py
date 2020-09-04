@@ -3,6 +3,7 @@ import numpy as np
 
 from wildfires.data.datasets import dummy_lat_lon_cube
 from wildfires.utils import (
+    get_batches,
     get_centres,
     get_local_maxima,
     get_local_minima,
@@ -168,3 +169,10 @@ def test_significant_peak():
         [0, 1, 0, 0.5, 0.3], diff_threshold=0.4, ptp_threshold=0.5
     )
     assert significant_peak([0, 1, 0, 0.5, 0.3], diff_threshold=0.6, ptp_threshold=0.5)
+
+
+def test_get_batches():
+    batches = list(get_batches(list(range(10)), 3))
+    assert batches[0] == [0, 1, 2]
+    assert batches[1] == [3, 4, 5]
+    assert batches[2] == [6, 7, 8, 9]

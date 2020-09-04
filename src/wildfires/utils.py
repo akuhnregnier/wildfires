@@ -1297,3 +1297,19 @@ def significant_peak(x, diff_threshold=0.4, ptp_threshold=1):
         return True
     else:
         return False
+
+
+def get_batches(seq, n=1):
+    """Decompose a sequence into `n` batches.
+
+    Args:
+        seq (iterable): Sequence to batch.
+        n (int): Number of batches.
+
+    Returns:
+        iterator: Length-`n` iterator containing the batches.
+
+    """
+    bounds = np.unique(np.linspace(0, len(seq), n + 1, dtype=np.int64))
+    for start, stop in zip(bounds[:-1], bounds[1:]):
+        yield seq[start:stop]
