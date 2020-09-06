@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
+import numpy as np
 import pytest
 from psutil import virtual_memory
 
 from wildfires.data.datasets import data_is_available
+
+
+def allequal(x, y):
+    return np.all(x == y)
 
 
 def available_memory_gb():

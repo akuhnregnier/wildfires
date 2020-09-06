@@ -1180,7 +1180,7 @@ def replace_cube_coord(cube, new_coord, coord_name=None):
     return cube
 
 
-def get_local_extrema(data, extrema_type="max"):
+def get_local_extrema(data, extrema_type="both"):
     """Determine the location of local extrema.
 
     Args:
@@ -1201,6 +1201,8 @@ def get_local_extrema(data, extrema_type="max"):
         op = np.less
     elif extrema_type == "min":
         op = np.greater
+    elif extrema_type == "both":
+        op = np.not_equal
     else:
         raise ValueError(f"Unexpected value for extrema_type: {extrema_type}.")
 
@@ -1217,7 +1219,7 @@ def get_local_minima(data):
     return get_local_extrema(data, "min")
 
 
-def significant_peak(x, diff_threshold=0.4, ptp_threshold=1):
+def significant_peak(x, diff_threshold=0.4, ptp_threshold=1, strict=True):
     """Determine the existence of a 'significant' peak.
 
     This is determined using both the range of the given data and the characteristics
@@ -1233,70 +1235,111 @@ def significant_peak(x, diff_threshold=0.4, ptp_threshold=1):
             not significant.
         ptp_threshold (float): If the range of `x` is lower than `ptp_threshold`, no
             peaks will be deemed significant.
+        strict (bool): If True, the returned tuple will only contain one index if this
+            is the index of a significant peak (as defined above). If multiple peaks
+            are significant, and empty tiple is returned.
 
     Returns:
-        bool: True if there is a significant peak, False otherwise.
+        tuple of int: The indices of significant peaks. See `strict`.
 
     """
+    x = np.asarray(x, dtype=np.float64)
     max_sample = np.max(x)
     min_sample = np.min(x)
     ptp = max_sample - min_sample
 
     if ptp < ptp_threshold:
         # If there is not enough variation, there is no significant peak.
-        return False
+        return ()
 
-    max_mask = get_local_maxima(x)
+    peak_mask = (get_local_maxima(x) & (x > 0)) | (get_local_minima(x) & (x < 0))
+    peak_indices = np.where(peak_mask)[0]
 
-    if np.sum(max_mask) == 1:
+    if strict and np.sum(peak_mask) == 1:
         # If there is only one peak, there is nothing left to do.
-        return True
+        return (np.where(peak_mask)[0][0],)
 
-    # If there are multiple peaks, we have to decide if these local maxima
-    # are significant. If they are, there is no clearly defined
+    # If there are multiple peaks, we have to decide if these local maxima are
+    # significant. If they are, and `strict` is True, there is no clearly defined
     # maximum for this sample.
 
-    # Define significance of the minor peaks as the ratio between the
-    # difference (peak value - local minima) and (peak value - local minima)
-    # for the global maximum.
+    # Define significance of the minor peaks as the ratio between the difference (peak
+    # value - local minima) and (peak value - local minima) for the global maximum.
 
-    min_indices = np.where(get_local_minima(x))[0]
+    trough_indices = np.where(get_local_extrema(x, "both") & (~peak_mask))[0]
 
-    global_max_index = np.where(x == max_sample)[0][0]
+    peak_heights = {}
 
-    max_diffs = {}
+    for peak_index in np.where(peak_mask)[0]:
+        peak_value = x[peak_index]
 
-    for max_index in np.where(max_mask)[0]:
-        # Sample value at the local maximum.
-        max_value = x[max_index]
+        # Find the surrounding troughs.
 
-        # Find the surrounding local minima.
-        local_minima = []
+        local_heights = []
 
-        # Find preceding local minima, if any.
-        if max_index > 0:
-            local_minima.append(x[min_indices[min_indices < max_index][-1]])
+        # Look in both forwards and backwards to find comparison points.
+        for criterion, comp, index in (
+            (peak_index > 0, np.less, -1),
+            (peak_index < (len(x) - 1), np.greater, 0),
+        ):
+            # Find adjacent local trough, if any.
+            if criterion:
+                adj_trough = np.any(comp(trough_indices, peak_index))
+                if adj_trough:
+                    adj_trough_index = trough_indices[comp(trough_indices, peak_index)][
+                        -1
+                    ]
+                    adj_peak = np.any(comp(peak_indices, peak_index))
+                    if adj_peak:
+                        # Check for consecutive peaks (e.g. one +ve, one -ve).
+                        adj_peak_index = peak_indices[comp(peak_indices, peak_index)][
+                            -1
+                        ]
+                        if comp(adj_trough_index, adj_peak_index):
+                            # There is no trough between the current peak and the
+                            # adjacent peak that can be used.
+                            local_heights.append(np.abs(peak_value))
+                        else:
+                            local_heights.append(
+                                min(
+                                    np.abs(peak_value),
+                                    np.abs(peak_value - x[adj_trough_index]),
+                                )
+                            )
+                    else:
+                        # There is no adjacent peak.
+                        local_heights.append(
+                            min(
+                                np.abs(peak_value),
+                                np.abs(peak_value - x[adj_trough_index]),
+                            )
+                        )
 
-        # Find following local minima, if any.
-        if max_index < (len(x) - 1):
-            local_minima.append(x[min_indices[min_indices > max_index][0]])
+                else:
+                    # There is no adjacent trough. Simply use 0 as the reference.
+                    local_heights.append(np.abs(peak_value))
 
-        max_diffs[max_index] = np.max(max_value - np.array(local_minima))
+        peak_heights[peak_index] = max(local_heights)
 
-    global_max_diff = max_diffs[global_max_index]
+    global_max_diff = max(peak_heights.values())
 
     # Rescale using the maximum diff.
-    for index, diff in max_diffs.items():
-        max_diffs[index] = diff / global_max_diff
+    for index, diff in peak_heights.items():
+        peak_heights[index] = diff / global_max_diff
 
-    if all(
-        diff < diff_threshold
-        for index, diff in max_diffs.items()
-        if index != global_max_index
-    ):
-        return True
-    else:
-        return False
+    sig_peak_indices = [
+        index for index, diff in peak_heights.items() if diff >= diff_threshold
+    ]
+
+    if len(sig_peak_indices) == 1:
+        # Only one significant peak.
+        return (sig_peak_indices[0],)
+    if strict:
+        # Multiple significant peaks, but `strict` is True.
+        return ()
+    # Return the indices of all significant peaks, ordered by the magnitude of the
+    # peaks.
+    return tuple(sorted(sig_peak_indices, key=lambda i: np.abs(x)[i], reverse=True))
 
 
 def get_batches(seq, n=1):
