@@ -1356,3 +1356,13 @@ def get_batches(seq, n=1):
     bounds = np.unique(np.linspace(0, len(seq), n + 1, dtype=np.int64))
     for start, stop in zip(bounds[:-1], bounds[1:]):
         yield seq[start:stop]
+
+
+def simple_sci_format(x, precision=0, exp_digits=1):
+    """Scientific formatting."""
+    t = np.format_float_scientific(
+        x, precision=precision, unique=False, exp_digits=exp_digits
+    )
+    if precision == 0:
+        t = t.replace(".", "")
+    return t if t != "0e+0" else "0"
