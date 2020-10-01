@@ -1237,7 +1237,7 @@ def significant_peak(x, diff_threshold=0.4, ptp_threshold=1, strict=True):
             peaks will be deemed significant.
         strict (bool): If True, the returned tuple will only contain one index if this
             is the index of a significant peak (as defined above). If multiple peaks
-            are significant, and empty tiple is returned.
+            are significant, an empty tuple is returned.
 
     Returns:
         tuple of int: The indices of significant peaks. See `strict`.
