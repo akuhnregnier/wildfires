@@ -128,3 +128,5 @@ _version.py
 
 # Dask worker files.
 dask-worker-space
+
+plots/
