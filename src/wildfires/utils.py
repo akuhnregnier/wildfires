@@ -1355,6 +1355,8 @@ def significant_peak(
         return (sig_peak_indices[0],)
     if strict:
         # Multiple significant peaks, but `strict` is True.
+        if return_peak_heights:
+            return ((), {})
         return ()
     # Return the indices of all significant peaks, ordered by the magnitude of the
     # peaks.
