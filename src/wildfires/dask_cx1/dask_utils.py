@@ -14,6 +14,9 @@ from dask.distributed import get_worker
 from ..ports import get_ports
 from .dask_cx1 import get_client, strip_multiline
 
+JUPYTER_EXC = "/rds/general/user/ahk114/home/.pyenv/versions/miniconda3-latest/envs/wildfires/bin/jupyter"
+VALID_PORTS_EXC = "/rds/general/user/ahk114/home/.pyenv/versions/miniconda3-latest/envs/wildfires/bin/valid-ports"
+
 
 class NoNotebookError(RuntimeError):
     """Raised when a matching notebook could not be found within the timeout."""
@@ -81,7 +84,7 @@ def get_running_procs(client=None, user="ahk114", workers=None):
 def start_jupyter_lab(
     client=None,
     workers=None,
-    jupyter_exc="/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/jupyter",
+    jupyter_exc=JUPYTER_EXC,
     notebook_dir="~/Documents/PhD/wildfire-analysis/analyses/",
     target_user="alexander",
     target_host="maritimus.webredirect.org",
@@ -135,7 +138,7 @@ def start_jupyter_lab(
 
 def list_notebooks(
     client=None,
-    jupyter_exc="/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/jupyter",
+    jupyter_exc=JUPYTER_EXC,
     filter_port=None,
     workers=None,
     timeout=60,
@@ -202,7 +205,7 @@ def list_notebooks(
 def setup_remote_jupyter_lab(
     client=None,
     workers=None,
-    jupyter_exc="/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/jupyter",
+    jupyter_exc=JUPYTER_EXC,
     notebook_dir="~/Documents/PhD/wildfire-analysis/analyses/",
     target_user="alexander",
     target_host="maritimus.webredirect.org",
@@ -243,11 +246,9 @@ def setup_remote_jupyter_lab(
 
 
 def start_general_lab(
-    jupyter_exc="/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/jupyter",
+    jupyter_exc=JUPYTER_EXC,
     notebook_dir="~/Documents/PhD/",
-    valid_ports_exec=(
-        "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/valid-ports"
-    ),
+    valid_ports_exec=VALID_PORTS_EXC,
     target_user="alexander",
     target_host="maritimus.webredirect.org",
     ssh_target_user="",
@@ -359,16 +360,14 @@ def main():
     )
     parser.add_argument(
         "--jupyter-exc",
-        default="/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/jupyter",
+        default=JUPYTER_EXC,
     )
     parser.add_argument(
         "--notebook-dir", default="~/Documents/PhD/wildfire-analysis/analyses/"
     )
     parser.add_argument(
         "--valid-ports-exec",
-        default=(
-            "/rds/general/user/ahk114/home/.pyenv/versions/wildfires/bin/valid-ports"
-        ),
+        default=(VALID_PORTS_EXC),
     )
     parser.add_argument("--target-user", default="alexander")
     parser.add_argument("--target-host", default="maritimus.webredirect.org")
