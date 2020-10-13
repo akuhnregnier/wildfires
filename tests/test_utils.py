@@ -135,14 +135,14 @@ def test_shorten_features():
     assert shorten_features(["Diurnal Temp Range"]) == ["DTR"]
     assert shorten_features(["Diurnal Temp Range", "Dry Day Period"]) == [
         "DTR",
-        "Dry Days",
+        "DD",
     ]
 
     assert shorten_features("VOD Ku-band") == "VOD"
     assert shorten_features("SWI(1)") == "SWI"
 
-    assert shorten_features("SWI(1) -1 Month") == "SWI 1 M"
-    assert shorten_features("SWI(1) -18 - -6 Month") == "SWI Δ18 M"
+    assert shorten_features("SWI(1) -1 Month") == "SWI 1M"
+    assert shorten_features("SWI(1) -18 - -6 Month") == "SWI Δ18M"
 
 
 def test_local_maxima():

@@ -1101,18 +1101,27 @@ def shorten_features(features):
         return shorten_features((features,))[0]
 
     def month_repl(match_obj):
-        return f"{match_obj.group(1)} M"
+        return f"{match_obj.group(1)}M"
 
     def delta_repl(match_obj):
-        return f"Δ{match_obj.group(1)} M"
+        return f"Δ{match_obj.group(1)}M"
 
     replacements = {
         "-(\d+) - .*Month$": delta_repl,
         "-(\d+) Month$": month_repl,
+        "(\d+) M$": month_repl,
         "VOD Ku-band": "VOD",
         "Diurnal Temp Range": "DTR",
-        "Dry Day Period": "Dry Days",
+        "Dry Day Period": "DD",
         re.escape("SWI(1)"): "SWI",
+        "lightning": "Lightning",
+        "Max Temp": "MaxT",
+        "AGB Tree": "AGB",
+        "ShrubAll": "SHRUB",
+        "TreeAll": "TREE",
+        "pftCrop": "CROP",
+        "pftHerb": "HERB",
+        "popd": "POPD",
     }
     formatted = []
     for feature in features:
