@@ -42,6 +42,7 @@ import pandas as pd
 import rasterio
 import scipy.ndimage
 from dateutil.relativedelta import relativedelta
+from era5analysis import MonthlyMeanMinMaxDTRWorker, retrieval_processing, retrieve
 from git import Repo
 from iris.time import PartialDateTime
 from joblib import Memory, Parallel, delayed
@@ -50,15 +51,12 @@ from pyhdf.SD import SD, SDC
 from scipy.optimize import minimize
 from tqdm import tqdm
 
-from era5analysis import MonthlyMeanMinMaxDTRWorker, retrieval_processing, retrieve
-
 from ..joblib.caching import CodeObj, wrap_decorator
 from ..joblib.iris_backend import register_backend
 from ..qstat import get_ncpus
 from ..utils import (
     box_mask,
     ensure_datetime,
-    get_bounds_from_centres,
     get_centres,
     get_land_mask,
     in_360_longitude_system,
@@ -668,9 +666,7 @@ def dummy_lat_lon_cube(
 def data_map_plot(
     data, lat_lims=(-90, 90), lon_lims=(-180, 180), filename=None, log=False, **kwargs
 ):
-    """Used to plot data or an iris.cube.Cube on a map with coastlines.
-
-    """
+    """Used to plot data or an iris.cube.Cube on a map with coastlines."""
     if isinstance(data, iris.cube.Cube):
         cube = data
     else:
@@ -856,15 +852,18 @@ def regrid(
         # initial coordinates to ensure proper indexing below. Note that additional
         # coordinates may exist which are not reflected in the data's shape - thus
         # the use of `len(cube.shape) - 1` as opposed to simply `-1`.
-        assert set(
-            (
-                coord.name()
-                for coord in (
-                    cube.coords()[len(cube.shape) - 2],
-                    cube.coords()[len(cube.shape) - 1],
+        assert (
+            set(
+                (
+                    coord.name()
+                    for coord in (
+                        cube.coords()[len(cube.shape) - 2],
+                        cube.coords()[len(cube.shape) - 1],
+                    )
                 )
             )
-        ) == set(("latitude", "longitude"))
+            == set(("latitude", "longitude"))
+        )
 
         # Ensure the initial coordinates reflect the data.
         assert all(
@@ -1337,7 +1336,7 @@ def _season_model_filling(cube, k=4, ncpus=1, verbose=False):
 
 @dataset_cache
 def persistent_season_trend_fill(
-    dataset, target_timespan=None, persistent_perc=50, k=4, verbose=False, ncpus=None,
+    dataset, target_timespan=None, persistent_perc=50, k=4, verbose=False, ncpus=None
 ):
     """Interpolation of missing data using minimum values and season-trend model.
 
@@ -1393,7 +1392,7 @@ def persistent_season_trend_fill(
 
     _season_model_filling(
         _persistent_gap_filling(
-            target.cube, thres=persistent_perc / 100, verbose=verbose,
+            target.cube, thres=persistent_perc / 100, verbose=verbose
         ),
         k=k,
         ncpus=ncpus,
@@ -1979,9 +1978,10 @@ class Dataset(metaclass=RegisterDatasets):
         assert (
             target_filename[-3:] == ".nc"
         ), "Data must be saved as a NetCDF file, got:'{:}'".format(target_filename)
-        assert isinstance(cache_data, (iris.cube.Cube, iris.cube.CubeList)), (
-            "Data to be saved must either be a Cube or a CubeList. "
-            "Got:{:}".format(cache_data)
+        assert isinstance(
+            cache_data, (iris.cube.Cube, iris.cube.CubeList)
+        ), "Data to be saved must either be a Cube or a CubeList. " "Got:{:}".format(
+            cache_data
         )
 
         if isinstance(cache_data, iris.cube.Cube):
@@ -2105,9 +2105,7 @@ class Dataset(metaclass=RegisterDatasets):
         new_longitudes=get_centres(np.linspace(-180, 180, 1441)),
         **kwargs,
     ):
-        """Replace stored cubes with regridded versions in-place.
-
-        """
+        """Replace stored cubes with regridded versions in-place."""
         # The time needed for this check is only on the order of ms.
         if all(lat_lon_match(cube, new_latitudes, new_longitudes) for cube in self):
             logger.info("No regridding needed for '{}'.".format(self.name))
@@ -2728,7 +2726,7 @@ class Dataset(metaclass=RegisterDatasets):
         return new_inst
 
     def get_persistent_season_trend_dataset(
-        self, target_timespan=None, persistent_perc=50, k=4, verbose=False, ncpus=None,
+        self, target_timespan=None, persistent_perc=50, k=4, verbose=False, ncpus=None
     ):
         """Interpolation of missing data using minimum values and season-trend model.
 
@@ -3507,7 +3505,7 @@ class Copernicus_SWI(MonthlyDataset):
 
             while raw_cubes:
                 logger.debug("Regridding:{:}".format(repr(raw_cubes[0])))
-                regridded_cube = regrid(raw_cubes.pop(0))
+                regridded_cube = regrid(raw_cubes.pop(0), scheme=iris.analysis.Linear())
                 iris.coord_categorisation.add_month_number(regridded_cube, "time")
                 iris.coord_categorisation.add_year(regridded_cube, "time")
                 logger.debug("Averaging:{:}".format(repr(regridded_cube)))
@@ -4039,9 +4037,7 @@ class ESA_CCI_Soilmoisture_Daily(Dataset):
 
 
 class GFEDv4(MonthlyDataset):
-    """Without small fires.
-
-    """
+    """Without small fires."""
 
     _pretty = "GFED4"
     pretty_variable_names = {"monthly burned area": "GFED4 BA"}
@@ -4129,9 +4125,7 @@ class GFEDv4(MonthlyDataset):
 
 
 class GFEDv4s(MonthlyDataset):
-    """Includes small fires.
-
-    """
+    """Includes small fires."""
 
     _pretty = "GFED4s"
     pretty_variable_names = {"Burnt_Area": "GFED4s BA"}
@@ -4300,9 +4294,7 @@ class GPW_v4_pop_dens(Dataset):
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
     ):
-        """Linear interpolation onto the target months.
-
-        """
+        """Linear interpolation onto the target months."""
         final_cubelist = self.interpolate_yearly_data(start, end)
         assert len(final_cubelist) == 1
         return final_cubelist
@@ -4639,9 +4631,7 @@ class HYDE(Dataset):
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
     ):
-        """Linear interpolation onto the target months.
-
-        """
+        """Linear interpolation onto the target months."""
         return self.interpolate_yearly_data(start, end)
 
 

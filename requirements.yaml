@@ -1,10 +1,11 @@
+name: wildfires
 channels:
   - conda-forge
   - defaults
 dependencies:
   - affine>=2.3.0
   - black>=19.10b0
-  - cartopy>=0.17.0
+  - cartopy>=0.18.0
   - cdsapi>=0.2.7
   - cf_units>=2.0.1
   - cloudpickle>=1.3.0
