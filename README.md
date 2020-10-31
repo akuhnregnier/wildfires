@@ -2,6 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blueviolet)](https://github.com/akuhnregnier/wildfires/blob/master/LICENSE)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/ambv/black)
+[![Build Status](https://travis-ci.com/akuhnregnier/wildfires.svg?branch=master)](https://travis-ci.com/akuhnregnier/wildfires)
+[![codecov](https://codecov.io/gh/akuhnregnier/wildfires/branch/master/graph/badge.svg)](https://codecov.io/gh/akuhnregnier/wildfires)
 
 ## Install
 
