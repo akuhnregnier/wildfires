@@ -85,7 +85,7 @@ def start_jupyter_lab(
     client=None,
     workers=None,
     jupyter_exc=JUPYTER_EXC,
-    notebook_dir="~/Documents/PhD/wildfire-analysis/analyses/",
+    notebook_dir="~/Documents/",
     target_user="alexander",
     target_host="maritimus.webredirect.org",
 ):
@@ -206,7 +206,7 @@ def setup_remote_jupyter_lab(
     client=None,
     workers=None,
     jupyter_exc=JUPYTER_EXC,
-    notebook_dir="~/Documents/PhD/wildfire-analysis/analyses/",
+    notebook_dir="~/Documents/",
     target_user="alexander",
     target_host="maritimus.webredirect.org",
 ):
@@ -247,7 +247,7 @@ def setup_remote_jupyter_lab(
 
 def start_general_lab(
     jupyter_exc=JUPYTER_EXC,
-    notebook_dir="~/Documents/PhD/",
+    notebook_dir="~/Documents/",
     valid_ports_exec=VALID_PORTS_EXC,
     target_user="alexander",
     target_host="maritimus.webredirect.org",
@@ -362,9 +362,7 @@ def main():
         "--jupyter-exc",
         default=JUPYTER_EXC,
     )
-    parser.add_argument(
-        "--notebook-dir", default="~/Documents/PhD/wildfire-analysis/analyses/"
-    )
+    parser.add_argument("--notebook-dir", default="~/Documents/")
     parser.add_argument(
         "--valid-ports-exec",
         default=(VALID_PORTS_EXC),
