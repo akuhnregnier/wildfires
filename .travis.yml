@@ -1,0 +1,28 @@
+language: python
+dist: focal
+sudo: required
+python:
+    # Organize the tests by Python version, which will be used to set the Miniconda
+    # Python version (as the Travis Python version will not be used).
+    - "3.7"
+install:
+    # Install conda.
+    - wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
+    - bash miniconda.sh -b -p $HOME/miniconda
+    - source "$HOME/miniconda/etc/profile.d/conda.sh"
+    - hash -r
+    - conda config --set always_yes yes --set changeps1 no
+    - conda update -q conda
+    # Useful for debugging any issues with conda
+    - conda info -a
+    # Create the new environment.
+    # Modify the Python version in the requirements.yaml file.
+    - cat requirements.yaml
+    - sed -i "s/-\spython=.*/- python=$TRAVIS_PYTHON_VERSION/g" requirements.yaml
+    - cat requirements.yaml
+    - conda env create --file "requirements.yaml" -n wildfires
+    - conda activate wildfires
+    # Finally install our package to test.
+    - pip install -e .
+script: pytest --cov-report=xml
+after_success: bash <(curl -s https://codecov.io/bash)
