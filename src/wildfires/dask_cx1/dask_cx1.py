@@ -324,6 +324,10 @@ def get_scheduler_file(match="above", **specs):
     else:
         raise ValueError(f"Invalid argument for 'match' given: {repr(match)}.")
 
+    if not os.path.isdir(SCHEDULER_DIR):
+        logger.info("Scheduler directory not found.")
+        return
+
     specs["cores"] = specs.get("cores", DEFAULTS["cores"])
     specs["memory"] = pbs_format_bytes_ceil(
         parse_bytes(specs.get("memory", DEFAULTS["memory"]))
