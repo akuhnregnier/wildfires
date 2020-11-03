@@ -43,7 +43,7 @@ import rasterio
 import scipy.ndimage
 from dateutil.relativedelta import relativedelta
 from era5analysis import MonthlyMeanMinMaxDTRWorker, retrieval_processing, retrieve
-from git import Repo
+from git import InvalidGitRepositoryError, Repo
 from iris.time import PartialDateTime
 from joblib import Memory, Parallel, delayed
 from numpy.testing import assert_allclose
@@ -51,6 +51,7 @@ from pyhdf.SD import SD, SDC
 from scipy.optimize import minimize
 from tqdm import tqdm
 
+from .. import __version__
 from ..joblib.caching import CodeObj, wrap_decorator
 from ..joblib.iris_backend import register_backend
 from ..qstat import get_ncpus
@@ -130,7 +131,10 @@ DATA_DIR = os.path.join(os.path.expanduser("~"), "FIREDATA")
 
 
 repo_dir = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir)
-repo = Repo(repo_dir)
+try:
+    repo = Repo(repo_dir)
+except InvalidGitRepositoryError:
+    repo = None
 
 # Above this mm/h threshold, a day is a 'wet day'.
 # 0.1 mm per day, from Harris et al. 2014, as used in Forkel et al. 2018.
@@ -1970,9 +1974,9 @@ class Dataset(metaclass=RegisterDatasets):
                 as a NetCDF file.
 
         Returns:
-            str or None: The current hex commit sha hash of the repo if a
-            new file was created. Otherwise, if the file was already there
-            and not overwritten, None is returned.
+            str or None: The current hex commit sha hash of the repo if a new file was
+            created (or the current package version). Otherwise, if the file was
+            already there and not overwritten, None is returned.
 
         """
         assert (
@@ -1992,14 +1996,19 @@ class Dataset(metaclass=RegisterDatasets):
             # Maybe add a flag to do this.
             logger.info("File exists, not overwriting:'{:}'".format(target_filename))
         else:
-            assert (not repo.untracked_files) and (
-                not repo.is_dirty()
-            ), "All changes must be committed and all files must be tracked."
+            if repo is not None:
+                assert (not repo.untracked_files) and (
+                    not repo.is_dirty()
+                ), "All changes must be committed and all files must be tracked."
+                repo_commit = repo.head.ref.commit.hexsha
+            else:
+                # Simply use the package version otherwise.
+                repo_commit = __version__
 
             # Note down the commit sha hash so that the code used to
             # generate the cached data can be retrieved easily later on.
             for cube in cache_data:
-                cube.attributes["commit"] = repo.head.ref.commit.hexsha
+                cube.attributes["commit"] = repo_commit
 
             if not os.path.isdir(os.path.dirname(target_filename)):
                 os.makedirs(os.path.dirname(target_filename))
