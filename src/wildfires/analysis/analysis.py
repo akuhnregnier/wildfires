@@ -315,9 +315,9 @@ def plot_histograms(datasets):
 
 def TripleFigureSaver(model_name, *args, **kwargs):
     """Plotting of burned area data & predictions:
-        - ba_predicted: predicted burned area
-        - ba_data: observed
-        - model_name: Name for titles AND filenames
+    - ba_predicted: predicted burned area
+    - ba_data: observed
+    - model_name: Name for titles AND filenames
 
     """
     return FigureSaver(
@@ -501,14 +501,19 @@ def data_processing(
     )
 
 
-def corr_plot(exog_data, fig_kwargs=None):
+def corr_plot(exog_data, fig_kwargs=None, colorbar_kwargs=None, rotation=45):
     """Correlation plot between variables (columns).
 
     Args:
         exog_data (DataFrame): Each column corresponds to one variable.
         fig_kwargs (dict): Keyword argument given to `plt.figure()`.
+        colorbar_kwargs (dict or None): Additional colorbar keyword arguments.
+        rotation (int): Top y-axis label rotation.
 
     """
+    if colorbar_kwargs is None:
+        colorbar_kwargs = {}
+
     columns = list(map(map_name, exog_data.columns))
 
     def trim(string, n=10, cont_str="..."):
@@ -535,7 +540,13 @@ def corr_plot(exog_data, fig_kwargs=None):
         norm=MidpointNormalize(midpoint=0.0),
     )
 
-    fig.colorbar(im, pad=0.02, shrink=0.8, aspect=40, label="Pearson Correlation")
+    fig.colorbar(
+        im,
+        **{
+            **dict(pad=0.02, shrink=0.8, aspect=40, label="Pearson Correlation"),
+            **colorbar_kwargs,
+        },
+    )
 
     ax.set_xticks(np.arange(n))
     ax.set_xticklabels(map(partial(trim, n=15), columns))
@@ -548,7 +559,7 @@ def corr_plot(exog_data, fig_kwargs=None):
     # Rotate and align top ticklabels
     plt.setp(
         [tick.label2 for tick in ax.xaxis.get_major_ticks()],
-        rotation=45,
+        rotation=rotation,
         ha="left",
         va="center",
         rotation_mode="anchor",
