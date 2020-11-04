@@ -3,6 +3,7 @@
 
 """
 import logging
+from copy import copy
 import math
 import os
 import pickle
@@ -1333,8 +1334,7 @@ def significant_peak(
                     # There is no adjacent peak.
                     local_heights.append(
                         min(
-                            np.abs(peak_value),
-                            np.abs(peak_value - x[adj_trough_index]),
+                            np.abs(peak_value), np.abs(peak_value - x[adj_trough_index])
                         )
                     )
 
@@ -1399,3 +1399,98 @@ def simple_sci_format(x, precision=0, exp_digits=1):
     if precision == 0:
         t = t.replace(".", "")
     return t if t != "0e+0" else "0"
+
+
+def shallow_dict_copy(d):
+    """Copy a dictionary and singly-nested dictionaries.
+
+    Args:
+        d (dict): Dictionary to copy.
+
+    Returns:
+        dict: Copied dictionary.
+
+    Examples:
+        >>> d = {'a': 1, 'b': {'n': 1}}
+        >>> dc = shallow_dict_copy(d)
+        >>> dc
+        {'a': 1, 'b': {'n': 1}}
+        >>> dc['a'] = 10
+        >>> dc['b']['n'] = 11
+        >>> d['a']
+        1
+        >>> d['b']['n']
+        1
+
+    """
+    new = dict()
+    for key, val in d.items():
+        if isinstance(val, dict):
+            new[key] = copy(val)
+        else:
+            new[key] = val
+    return new
+
+
+def update_nested_dict(old, new, copy_mode="shallow"):
+    """Update a nested dictionary using another (nested) dictionary.
+
+    Note that both `old` and `new` may be changed during this operation. If this is of
+    no concern, use `deepcopy=False` (see below).
+
+    For nested dictionary update operations to work, both `old` and `new` need to
+    contain dictionaries for the same keys.
+
+    Args:
+        old (dict): Dict to update.
+        new (dict): Dict containing the source values for the update.
+        copy_mode ({'shallow', 'deep', 'none'}): If 'shallow', perform a shallow copy
+            of both `old` and `new` prior to performing update operations. This
+            includes singly-nested dictionaries. If 'deep', perform deepcopies. If
+            'none', do not copy.
+
+    Returns:
+        dict: Updated version of `old`.
+
+    Raises:
+        ValueError: If `copy_mode` is not in {'shallow', 'deep', 'none'}.
+
+    Examples:
+        >>> old = {'a': 1}
+        >>> new = {'a': 2}
+        >>> update_nested_dict(old, new)
+        {'a': 2}
+        >>> old = {'a': 1, 'b': {'n': 10}}
+        >>> new = {'a': 2, 'b': {'n': 20, 'o': 30}}
+        >>> update_nested_dict(old, new)
+        {'a': 2, 'b': {'n': 20, 'o': 30}}
+        >>> old = {'a': 1, 'b': {'n': 10}}
+        >>> new = {'a': 2, 'b': {'o': 30}}
+        >>> update_nested_dict(old, new)
+        {'a': 2, 'b': {'n': 10, 'o': 30}}
+
+    """
+    if copy_mode not in ("shallow", "deep", "none"):
+        raise ValueError(f"Unexpected 'copy_mode' value {repr(copy_mode)}.")
+
+    if copy_mode == "shallow":
+        old = shallow_dict_copy(old)
+        new = shallow_dict_copy(new)
+    elif copy_mode == "deep":
+        old = deepcopy(old)
+        new = deepcopy(new)
+
+    # Keep track of which nested dictionaries have already been handled. These entries
+    # would otherwise be overwritten in the final update instead of being merged.
+    sub_dict_keys = []
+
+    for key, vals in new.items():
+        if isinstance(vals, dict) and key in old:
+            old[key].update(vals)
+            sub_dict_keys.append(key)
+
+    for key in sub_dict_keys:
+        del new[key]
+
+    old.update(new)
+    return old
