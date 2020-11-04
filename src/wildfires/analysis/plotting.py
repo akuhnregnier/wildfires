@@ -740,6 +740,7 @@ def cube_plotting(
     return_cbar=False,
     colorbar_kwargs=None,
     coastline_kwargs=None,
+    gridline_kwargs=None,
     **kwargs,
 ):
     """Plotting of cubes.
@@ -826,6 +827,9 @@ def cube_plotting(
         coastline_kwargs (dict, bool, or None): If `None`, draw coastlines using
             internal defaults. If False, do not draw coastlines. Otherwise override
             defaults for coastline plotting using `ax.coastlines()`.
+        gridline_kwargs (dict, bool, or None): If `None`, draw gridlines using
+            internal defaults. If False, do not draw gridlines. Otherwise override
+            defaults for gridline plotting using `ax.gridlines()`.
         **kwargs: Additional keyword arguments are given to `pcolormesh()`.
 
     Returns:
@@ -867,6 +871,9 @@ def cube_plotting(
         coastline_kwargs = {}
     elif coastline_kwargs is False:
         coastline_kwargs = {"_disabled": True}
+
+    if gridline_kwargs is None:
+        gridline_kwargs = dict(zorder=0, alpha=0.4, linestyle="--", linewidth=0.3)
 
     if select_valid and not np.all(~cube.data.mask):
         cube, tr_longitudes = select_valid_subset(
@@ -1138,6 +1145,9 @@ def cube_plotting(
             )
     else:
         cbar = None
+
+    if gridline_kwargs is not False:
+        ax.gridlines(**gridline_kwargs)
 
     if title:
         if isinstance(title_text, mpl.text.Text):
