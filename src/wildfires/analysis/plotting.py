@@ -73,7 +73,6 @@ class FigureSaver:
     options = {
         "bbox_inches": "tight",
         "transparent": True,
-        "rasterised": True,
         "filetype": "pdf",
         "dpi": 600,
     }
@@ -81,7 +80,6 @@ class FigureSaver:
     debug_options = {
         "bbox_inches": "tight",
         "transparent": False,
-        "rasterised": True,
         "filetype": "png",
         "dpi": 350,
     }
