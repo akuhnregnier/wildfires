@@ -4,7 +4,8 @@
 import logging
 import logging.config
 import math
-from functools import partial, reduce
+from functools import reduce
+from warnings import warn
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -501,7 +502,16 @@ def data_processing(
     )
 
 
-def corr_plot(exog_data, fig_kwargs=None, colorbar_kwargs=None, rotation=45):
+def corr_plot(
+    exog_data,
+    fig_kwargs=None,
+    colorbar_kwargs=None,
+    rotation=45,
+    fig=None,
+    ax=None,
+    trim_n=15,
+    tight_layout=True,
+):
     """Correlation plot between variables (columns).
 
     Args:
@@ -509,14 +519,34 @@ def corr_plot(exog_data, fig_kwargs=None, colorbar_kwargs=None, rotation=45):
         fig_kwargs (dict): Keyword argument given to `plt.figure()`.
         colorbar_kwargs (dict or None): Additional colorbar keyword arguments.
         rotation (int): Top y-axis label rotation.
+        fig (matplotlib Figure): Figure to plot onto. If `None`, a new Figure will be
+            created (see `fig_kwargs`). If `fig` is `None` but `ax` is not None, the
+            Figure `ax` belongs to will be used.
+        ax (matplotlib Axes): Axis to plot onto. If None, a new axis with `projection`
+            will be created using the current Figure (see `fig`).
+        trim_n (int): Maximum number of characters to use for the upper labels.
+        tight_layout (bool): If True, call `fig.tight_layout()`.
+
+    Returns:
+        matplotlib Figure, matplotlib Axes: Figure and Axes used for plotting.
 
     """
+    if fig_kwargs is None:
+        fig_kwargs = {}
+
     if colorbar_kwargs is None:
         colorbar_kwargs = {}
 
+    if fig is None and ax is None:
+        fig = plt.figure(**fig_kwargs)
+    elif fig is None:
+        fig = ax.get_figure()
+    if ax is None:
+        ax = plt.axes()
+
     columns = list(map(map_name, exog_data.columns))
 
-    def trim(string, n=10, cont_str="..."):
+    def trim(string, n=trim_n, cont_str="..."):
         if len(string) > n:
             string = string[: n - len(cont_str)]
             string += cont_str
@@ -525,14 +555,14 @@ def corr_plot(exog_data, fig_kwargs=None, colorbar_kwargs=None, rotation=45):
     n = len(columns)
 
     corr_arr = np.ma.MaskedArray(exog_data.corr().values)
+
+    if corr_arr.shape[0] != n:
+        warn("Non-numeric columns have been dropped.")
+
     corr_arr.mask = np.zeros_like(corr_arr)
     # Ignore diagnals, since they will all be 1 anyway!
     np.fill_diagonal(corr_arr.mask, True)
 
-    if fig_kwargs is None:
-        fig_kwargs = {}
-
-    fig, ax = plt.subplots(**fig_kwargs)
     im = ax.matshow(
         corr_arr,
         interpolation="none",
@@ -549,7 +579,7 @@ def corr_plot(exog_data, fig_kwargs=None, colorbar_kwargs=None, rotation=45):
     )
 
     ax.set_xticks(np.arange(n))
-    ax.set_xticklabels(map(partial(trim, n=15), columns))
+    ax.set_xticklabels(map(trim, columns))
     ax.set_yticks(np.arange(n))
     ax.set_yticklabels(columns)
 
@@ -564,7 +594,8 @@ def corr_plot(exog_data, fig_kwargs=None, colorbar_kwargs=None, rotation=45):
         va="center",
         rotation_mode="anchor",
     )
-    fig.tight_layout()
+    if tight_layout:
+        fig.tight_layout()
 
 
 def GLM(
