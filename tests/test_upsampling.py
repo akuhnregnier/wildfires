@@ -3,6 +3,7 @@
 import iris
 import numpy as np
 import pytest
+from numpy.testing import assert_allclose
 
 from wildfires.data.datasets import MonthlyDataset, dummy_lat_lon_cube, regrid
 from wildfires.utils import get_centres
@@ -48,7 +49,7 @@ def test_upsampling(scheme):
     )
 
     reg = regrid(ncube, new_latitudes=olats, new_longitudes=olons, scheme=scheme)
-    assert np.allclose(data, reg.data)
+    assert_allclose(data, reg.data)
 
 
 @pytest.mark.parametrize(

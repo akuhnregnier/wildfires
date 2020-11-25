@@ -11,6 +11,7 @@ masked, while this depends on a threshold for area weighted regridding.
 import iris
 import numpy as np
 import pytest
+from numpy.testing import assert_allclose
 
 from wildfires.data.datasets import dummy_lat_lon_cube, homogenise_cube_mask, regrid
 from wildfires.utils import get_centres
@@ -39,11 +40,12 @@ def test_linear_masked_regrid():
         new_longitudes=get_centres(source_cube.coord("longitude").points),
     )
 
-    assert np.allclose(interp_cube.data, target_data)
+    assert_allclose(interp_cube.data, target_data)
 
 
 @pytest.mark.parametrize("mdtol", (0, 1))
-def test_linear_masked_regrid(mdtol):
+def test_area_weighted_masked_regrid(mdtol):
+    """Area weighted regridding from (5, 3) to (4, 2)."""
     source_data = np.ma.MaskedArray(
         [[1, 1, 1], [1, 1, 1], [2, 2, 100], [1, 1, 1], [1, 1, 1]],
         mask=np.array([[0, 0, 0], [0, 0, 0], [0, 0, 1], [0, 0, 0], [0, 0, 0]]),
@@ -51,22 +53,24 @@ def test_linear_masked_regrid(mdtol):
     )
     source_cube = dummy_lat_lon_cube(source_data)
 
-    lat_bounds = source_cube.coord("latitude").bounds
-    row_weights = np.array(
-        [
-            np.sin(np.deg2rad(lats_u)) - np.sin(np.deg2rad(lats_l))
-            for lats_l, lats_u in lat_bounds
-        ]
+    def get_lat_weights(lats):
+        weights = np.abs(np.diff(np.sin(np.deg2rad(lats))))
+        return weights / np.sum(weights)
+
+    masked_corner_weights = get_lat_weights([0, 18, 45]).reshape(2, 1)
+    masked_corner_weights = np.hstack(
+        (masked_corner_weights, masked_corner_weights * 2)
     )
+    masked_corner_weights[0, 1] = 0
+    masked_corner_weights /= np.sum(masked_corner_weights)
 
     # This is what we expect the output to be like.
     target_data = np.ma.MaskedArray(
         [
             [1, 1],
             [
-                (2 * row_weights[2] + row_weights[1]) / np.sum(row_weights[1:3]),
-                (2 * row_weights[2] + 2 * row_weights[1])
-                / (row_weights[2] + 2 * row_weights[1]),
+                np.sum(np.array([2, 1]) * get_lat_weights([0, 18, 45])),
+                np.sum(masked_corner_weights * source_data[2:4, 1:]),
             ],
         ],
         mask=np.array([[0, 0], [0, 1 if mdtol < 1 else 0]]),
@@ -76,12 +80,12 @@ def test_linear_masked_regrid(mdtol):
     # Carry out the area weighted interpolation.
     interp_cube = regrid(
         source_cube,
-        new_latitudes=get_centres(source_cube.coord("latitude").points),
-        new_longitudes=get_centres(source_cube.coord("longitude").points),
+        new_latitudes=get_centres(np.linspace(-90, 90, 5)),
+        new_longitudes=get_centres(np.linspace(-180, 180, 3)),
         scheme=iris.analysis.AreaWeighted(mdtol=mdtol),
     )
 
-    assert np.allclose(interp_cube.data, target_data, atol=1e-1)
+    assert_allclose(interp_cube.data, target_data, atol=1e-1)
 
 
 def test_nearest_neighbour_regrid():
@@ -97,9 +101,9 @@ def test_nearest_neighbour_regrid():
         new_latitudes=source_cube.coord("latitude").points,
         new_longitudes=source_cube.coord("longitude").points,
     )
-    assert np.allclose(source_cube.data, inv_nn_cube.data, atol=1e-1)
+    assert_allclose(source_cube.data, inv_nn_cube.data, atol=1e-1)
     for agg in (iris.analysis.MIN, iris.analysis.MAX):
-        assert np.allclose(
+        assert_allclose(
             source_cube.collapsed(("latitude", "longitude"), agg).data,
             nn_cube.collapsed(("latitude", "longitude"), agg).data,
         )

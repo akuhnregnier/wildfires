@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
-
 import iris
 import numpy as np
 import pytest
 from dateutil.relativedelta import relativedelta
 from iris.time import PartialDateTime
 
-from wildfires.data.datasets import Dataset, ERA5_DryDayPeriod, dummy_lat_lon_cube
+from wildfires.data.datasets import (
+    ERA5_DryDayPeriod,
+    MonthlyDataset,
+    dummy_lat_lon_cube,
+)
 
 from .utils import data_availability
 
@@ -47,15 +50,12 @@ def test_era_temporal_shifting():
         assert cube.attributes == shifted_cube.attributes
 
 
-class DummyDataset(Dataset):
+class DummyDataset(MonthlyDataset):
     def __init__(self):
         np.random.seed(1)
         self.cubes = iris.cube.CubeList(
             [dummy_lat_lon_cube(np.random.random((10, 10, 10)), monthly=True)]
         )
-
-    def get_monthly_data(self, start, end):
-        return self.select_monthly_from_monthly(start, end)
 
 
 @pytest.mark.parametrize("deep", (False, True))

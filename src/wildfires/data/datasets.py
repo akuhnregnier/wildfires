@@ -107,7 +107,6 @@ __all__ = (
     "regions_GFED",
     "regrid",
     "regrid_dataset",
-    "translate_longitudes",
 )
 
 
@@ -537,12 +536,21 @@ def get_dataset_climatology_cubes(dataset, start, end):
             climatology_cubes.append(
                 cube.aggregated_by("month_number", iris.analysis.MEAN)
             )
-    for cube in climatology_cubes:
+    for i in range(len(climatology_cubes)):
         # This function has the wanted side-effect of realising the data.
         # Without this, calculations of things like the total temporal mean are
         # delayed until the cube is needed, which we do not want here as we are
         # caching the results.
-        homogenise_cube_mask(cube)
+        homogenise_cube_mask(climatology_cubes[i])
+
+        # Reorder cubes to let month numbers increase monotonically, and subsequently
+        # promote the month numbers coordinate to a climatological DimCoord.
+        sort_indices = np.argsort(climatology_cubes[i].coord("month_number").points)
+        climatology_cubes[i] = reorder_cube_coord(
+            climatology_cubes[i], sort_indices, name="month_number"
+        )
+        # Promote the month_number coordinate to being the leading DimCoord.
+        iris.util.promote_aux_coord_to_dim_coord(climatology_cubes[i], "month_number")
 
     # This return value will be cached by writing it to disk as NetCDF files.
     return climatology_cubes
@@ -716,18 +724,6 @@ def load_cubes(files, n=None):
     return cube_list
 
 
-def translate_longitudes(lons, sort=True):
-    """Go from [-180, 180] to [0, 360] domain."""
-    transformed = lons % 360
-    if sort:
-        assert len(np.unique(np.round(np.diff(transformed), 10))) < 3, (
-            "Expecting at most 2 unique differences, one for the regular interval, "
-            "another for the jump at 0° in case of the [-180, 180] domain."
-        )
-        transformed = np.sort(transformed)
-    return transformed
-
-
 def lat_lon_dimcoords(latitudes, longitudes):
     """Make sure latitudes and longitudes are iris DimCoords."""
     if not isinstance(latitudes, iris.coords.DimCoord):
@@ -739,14 +735,7 @@ def lat_lon_dimcoords(latitudes, longitudes):
             longitudes, standard_name="longitude", units="degrees", var_name="longitude"
         )
     assert_allclose(longitudes.units.modulus, 360)
-    # NOTE: Execute this step since saving & reloading the cubes containing certain
-    # longitudes appears to add the `circular=True` attribute. So to make caching
-    # consistent without having to reload data on the first iteration, add this
-    # attribute now.
-    longitudes.circular = iris.util._is_circular(
-        translate_longitudes(longitudes.points), 360
-    )
-    logger.debug(f"Longitudes are circular: {longitudes.circular}")
+    longitudes.circular = True
     return latitudes, longitudes
 
 
@@ -1733,11 +1722,9 @@ class Dataset(metaclass=RegisterDatasets):
                             new_cubes[i].coord("longitude").points, return_indices=True
                         )
                         new_cubes[i] = reorder_cube_coord(
-                            new_cubes[i],
-                            tr_indices,
-                            tr_longitudes,
-                            len(new_cubes[i].shape) - 1,
+                            new_cubes[i], tr_indices, tr_longitudes, name="longitude"
                         )
+                    new_cubes[i].coord("longitude").circular = True
 
                 # Ensure longitudes and latitudes are properly ordered.
                 for coord in ("latitude", "longitude"):
@@ -2585,13 +2572,30 @@ class Dataset(metaclass=RegisterDatasets):
             An instance of a subclass of `type(self)` containing the shifted cubes.
 
         Raises:
-            ValueError: If `months` is not an integer.
+            TypeError: If `months` is not an integer.
+            ValueError: If any cube has multiple temporal coordinates.
+            ValueError: If any cube has a temporal coordinate that isn't placed along
+                the first axis.
 
         """
         if not isinstance(months, (int, np.integer)):
-            raise ValueError(
+            raise TypeError(
                 f"`months` should be an integer. Got type '{type(months)}'."
             )
+
+        # Check temporal coordinates.
+        for cube in self:
+            # Cubes without a time coordinate are simply skipped.
+            if not cube.coords("time"):
+                continue
+            # Ensure the time coordinate is first.
+            if cube.coord_dims(cube.coord("time"))[0] != 0:
+                raise ValueError(
+                    "Temporal coordinate should correspond to the first axis."
+                )
+            if len(cube.coords(dimensions=0)) > 1:
+                raise ValueError("There should only be a single temporal coordinate.")
+
         if deep:
             # Copy everything.
             orig_inst = self.copy(deep=True)

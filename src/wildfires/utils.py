@@ -3,7 +3,6 @@
 
 """
 import logging
-from copy import copy
 import math
 import os
 import pickle
@@ -11,7 +10,7 @@ import re
 import shlex
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections import Counter
-from copy import deepcopy
+from copy import copy, deepcopy
 from functools import partial, wraps
 from pathlib import Path
 from pickle import UnpicklingError
@@ -637,6 +636,18 @@ def in_360_longitude_system(longitudes, tol=1e-4):
     return False
 
 
+def translate_longitudes(lons, sort=True):
+    """Go from [-180, 180] to [0, 360] domain."""
+    transformed = lons % 360
+    if sort:
+        assert len(np.unique(np.round(np.diff(transformed), 10))) < 3, (
+            "Expecting at most 2 unique differences, one for the regular interval, "
+            "another for the jump at 0° in case of the [-180, 180] domain."
+        )
+        transformed = np.sort(transformed)
+    return transformed
+
+
 def translate_longitude_system(longitudes, return_indices=False):
     """Translate the longitudes from one system to another.
 
@@ -677,63 +688,80 @@ def translate_longitude_system(longitudes, return_indices=False):
         return new_longitudes[indices]
 
 
-def reorder_cube_coord(cube, indices, new_coord_points, axis):
+def reorder_cube_coord(
+    cube, indices, new_coord_points=None, *, promote=True, **coord_kwargs
+):
     """Use indices and the corresponding axis to reorder a cube's data along that axis.
 
     Args:
         cube (iris.cube.Cube): Cube to be modified.
         indices (1-D iterable): Indices used to select new ordering of values along
-            the chosen axis.
-        new_coord_points (1-D iterable): New coordinates along `axis`. The length of
+            the chosen coordinate.
+        new_coord_points (1-D iterable): If not None, these points will be assigned to
+            the coordinate matching `coord_kwargs` after the reordering. The length of
             this iterable needs to match the number of indices
-            (`len(new_coord_points) == len(indices)`).
-        axis (int): Axis along which to reorder the cube.
+            (`len(new_coord_points) == len(indices)`). If None, the existing points
+            will be reordered using `indices`.
+        promote (bool): If True, promote the reordered coordinate to a DimCoord after
+            the reordering, if needed. Usually used in combination with
+            `new_coord_points`.
+        **coord_kwargs: Keyword arguments needed to specify the coordinate to reorder.
+            See `iris.cube.Cube.coords` for a description of possible arguments. Note
+            that 'name' will be translated to 'name_or_coord' if 'coord' is not
+            present, and similarly 'coord' will be translated to 'name_or_coord' if
+            'name' is not present.
 
     Returns:
         iris.cube.Cube: Reordered cube.
+
+    Raises:
+        ValueError: If `coord_kwargs` is empty.
 
     Examples:
         >>> from wildfires.data.datasets import dummy_lat_lon_cube
         >>> import numpy as np
         >>> data = np.arange(4).reshape(2, 2)
         >>> a = dummy_lat_lon_cube(data)
-        >>> old_lon_points = a.coord("longitude").points
         >>> indices = [1, 0]
-        >>> tr_longitudes = old_lon_points[indices]
-        >>> b = reorder_cube_coord(a, indices, tr_longitudes, 1)
+        >>> b = reorder_cube_coord(a, indices, name="longitude")
         >>> np.all(np.isclose(b.data, data[:, ::-1]))
         True
         >>> id(a) != id(b)
         True
-        >>> b2 = reorder_cube_coord(a, indices, tr_longitudes, -1)
-        >>> np.all(np.isclose(b2.data, data[:, ::-1]))
-        True
-        >>> new_lon = [90, -90]
-        >>> np.all(np.isclose(b.coord("longitude").points, new_lon))
+        >>> np.all(np.isclose(b.coord("longitude").points, [90, -90]))
         True
 
     """
-    indices = np.asarray(indices)
-    tr_new_data = np.take(cube.data, indices, axis=axis)
+    if not coord_kwargs:
+        raise ValueError("Not keywords to select a coordinate were found.")
 
-    # Cut down to the required size, then substitute the reordered data.
-    slices = [slice(None)] * len(cube.shape)
-    slices[axis] = slice(indices.size)
-    # XXX: Can we not modify the cube in-place?
-    new_cube = deepcopy(cube)[tuple(slices)]
-    new_cube.data = tr_new_data
+    if "name" in coord_kwargs and "coord" not in coord_kwargs:
+        coord_kwargs["name_or_coord"] = coord_kwargs.pop("name")
+    elif "coord" in coord_kwargs and "name" not in coord_kwargs:
+        coord_kwargs["name_or_coord"] = coord_kwargs.pop("coord")
 
-    coord_names = [coord.name() for coord in cube.coords()]
-    assert len(coord_names) == len(
-        cube.shape
-    ), "Each dimension should be associated with a coordinate."
-    coord_name = coord_names[axis]
-    new_lon = new_cube.coord(coord_name)
-    new_lon.points = new_coord_points
-    new_lon.bounds = None
+    # Determine the dimension that corresponds to the requested coordinate.
+    axis = cube.coord_dims(cube.coord(**coord_kwargs))[0]
 
-    if cube.coord(coord_name).has_bounds():
-        new_lon.guess_bounds()
+    selection = [slice(None)] * cube.ndim
+    selection[axis] = np.asarray(indices)
+    selection = tuple(selection)
+
+    new_cube = cube[selection]
+    # Get the requested coordinate from the new cube.
+    new_coord = new_cube.coord(**coord_kwargs)
+    if new_coord_points is not None:
+        new_coord.points = new_coord_points
+        # TODO: Use given (transformed) bounds instead of guessing them here.
+        had_bounds = new_coord.has_bounds()
+        new_coord.bounds = None
+        if had_bounds:
+            new_coord.guess_bounds()
+
+    if promote:
+        # Promote the coordinate back to being a DimCoord if needed.
+        iris.util.promote_aux_coord_to_dim_coord(new_cube, new_coord)
+
     return new_cube
 
 
@@ -789,7 +817,7 @@ def select_valid_subset(data, axis=None, longitudes=None):
     elif not isinstance(axis, tuple):
         raise ValueError(f"Invalid axis ('{axis}') type '{type(axis)}'.")
 
-    slices = [slice(None)] * len(data.shape)
+    slices = [slice(None)] * data.ndim
     lon_ax = all_axes[-1]
 
     # Determine if longitude translation is possible and requested.
@@ -842,7 +870,7 @@ def select_valid_subset(data, axis=None, longitudes=None):
     elements, n_elements = label(compressed)
 
     lon_slice = slice(None)
-    lon_slices = [slice(None)] * len(data.shape)
+    lon_slices = [slice(None)] * data.ndim
     if n_elements:
         # Find the largest contiguous invalid block.
         invalid_counts = Counter(elements[elements != 0])
@@ -909,14 +937,13 @@ def select_valid_subset(data, axis=None, longitudes=None):
 
     # Translate the data and longitudes using the indices.
     if isinstance(data, iris.cube.Cube):
-        # The `take` operation is not compatible with iris Cubes.
-        new_data = reorder_cube_coord(
-            data, tr_indices, new_coord_points=tr_longitudes, axis=lon_ax
+        data = reorder_cube_coord(
+            data, tr_indices, new_coord_points=tr_longitudes, dimensions=lon_ax
         )
-    else:
-        new_data = np.take(data, tr_indices, axis=lon_ax)
 
-    return new_data, tr_longitudes
+    else:
+        data = np.take(data, tr_indices, axis=lon_ax)
+    return data, tr_longitudes
 
 
 def get_centres(data):

@@ -2,6 +2,7 @@
 import iris
 import numpy as np
 import pytest
+from numpy.testing import assert_allclose
 
 from wildfires.data.datasets import dummy_lat_lon_cube, regrid
 from wildfires.utils import get_centres
@@ -53,7 +54,7 @@ def test_2D_regrid(cubes_2D):
         new_longitudes=target_cube.coord("longitude"),
     )
 
-    assert np.allclose(regridded.data, target_cube.data)
+    assert_allclose(regridded.data, target_cube.data)
 
 
 def test_return_identical_cube(cubes_2D):
@@ -81,7 +82,7 @@ def test_3D_regrid(cubes_3D):
         new_latitudes=time_target_cube.coord("latitude"),
         new_longitudes=time_target_cube.coord("longitude"),
     )
-    assert np.allclose(time_regridded.data, time_target_cube.data)
+    assert_allclose(time_regridded.data, time_target_cube.data)
 
 
 def test_lon():
@@ -104,4 +105,4 @@ def test_lon():
         new_latitudes=get_centres(np.linspace(-90, 90, target_interp.shape[0] + 1)),
         new_longitudes=get_centres(np.linspace(-180, 180, target_interp.shape[1] + 1)),
     )
-    assert np.allclose(target_interp, regrid_cube.data)
+    assert_allclose(target_interp, regrid_cube.data)

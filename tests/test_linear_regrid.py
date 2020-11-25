@@ -3,6 +3,7 @@ import math
 
 import numpy as np
 import pytest
+from numpy.testing import assert_allclose
 
 from wildfires.data.datasets import dummy_lat_lon_cube, regrid
 from wildfires.utils import get_centres
@@ -60,7 +61,7 @@ def test_linear_downsampling(nlats, factor):
             np.linspace(-180, 180, (source_data.shape[1] // factor) + 1)
         ),
     )
-    assert np.allclose(simple_interp, regrid_cube.data)
+    assert_allclose(simple_interp, regrid_cube.data)
 
 
 def test_non_central():
@@ -91,4 +92,4 @@ def test_non_central():
         new_latitudes=get_centres(np.linspace(-90, 90, target_interp.shape[0] + 1)),
         new_longitudes=target_longitudes,
     )
-    assert np.allclose(target_interp, regrid_cube.data)
+    assert_allclose(target_interp, regrid_cube.data)

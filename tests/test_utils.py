@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import numpy as np
+from numpy.testing import assert_allclose
 
 from wildfires.data.datasets import dummy_lat_lon_cube
 from wildfires.utils import (
@@ -25,10 +26,10 @@ def test_subset():
     data.mask[:, :20] = True
     data.mask[:, -10:] = True
 
-    assert np.allclose(select_valid_subset(data), data[40:, 20:90])
-    assert np.allclose(select_valid_subset(data, axis=0), data[40:])
-    assert np.allclose(select_valid_subset(data, axis=1), data[:, 20:90])
-    assert np.allclose(select_valid_subset(data, axis=(0, 1)), data[40:, 20:90])
+    assert_allclose(select_valid_subset(data), data[40:, 20:90])
+    assert_allclose(select_valid_subset(data, axis=0), data[40:])
+    assert_allclose(select_valid_subset(data, axis=1), data[:, 20:90])
+    assert_allclose(select_valid_subset(data, axis=(0, 1)), data[40:, 20:90])
 
 
 def test_longitude_system():
@@ -39,8 +40,8 @@ def test_longitude_system():
         longitudes, return_indices=True
     )
     new_data = data[indices]
-    assert np.allclose(new_longitudes, [0, 90, 170, 180, 270])
-    assert np.allclose(new_data, [3, 4, 5, 1, 2])
+    assert_allclose(new_longitudes, [0, 90, 170, 180, 270])
+    assert_allclose(new_data, [3, 4, 5, 1, 2])
 
     # 0, 360 case
     data = np.array([3, 4, 5, 1, 2])
@@ -49,8 +50,8 @@ def test_longitude_system():
         longitudes, return_indices=True
     )
     new_data = data[indices]
-    assert np.allclose(new_longitudes, [-180, -90, 0, 90, 170])
-    assert np.allclose(new_data, [1, 2, 3, 4, 5])
+    assert_allclose(new_longitudes, [-180, -90, 0, 90, 170])
+    assert_allclose(new_data, [1, 2, 3, 4, 5])
 
 
 def test_cube_translation_subset():
@@ -70,28 +71,28 @@ def test_cube_translation_subset():
     comp_data = np.ma.concatenate((data[:, 2:, 6:], data[:, 2:, :3]), axis=-1)
 
     # Compare data.
-    assert np.allclose(comp_data, sub_cube.data)
+    assert_allclose(comp_data, sub_cube.data)
     # Compare data mask.
     assert not comp_data.mask
     assert not np.any(sub_cube.data.mask)
 
     # Compare ordering of latitudes.
-    assert np.allclose(
+    assert_allclose(
         cube.coord("latitude")[2:].points, sub_cube.coord("latitude").points
     )
-    assert np.allclose(
+    assert_allclose(
         cube.coord("latitude")[2:].bounds, sub_cube.coord("latitude").bounds
     )
 
     # Compare ordering of longitudes. This requires manual translation.
     old_lons = cube.coord("longitude").points
-    assert np.allclose(
+    assert_allclose(
         list(old_lons[6:]) + list(old_lons[:3] + 360),
         sub_cube.coord("longitude").points,
     )
 
     # Check longitude bounds.
-    assert np.allclose(
+    assert_allclose(
         sub_cube.coord("longitude").bounds,
         np.array(
             [
@@ -124,7 +125,7 @@ def test_data_translation_subset():
     comp_data = np.ma.concatenate((comp_data[..., 6:], comp_data[..., :3]), axis=-1)
 
     # Compare data.
-    assert np.allclose(comp_data, sub_data.data)
+    assert_allclose(comp_data, sub_data.data)
     # Compare data mask.
     assert not comp_data.mask
     assert not np.any(sub_data.mask)
