@@ -543,13 +543,16 @@ def get_dataset_climatology_cubes(dataset, start, end):
         # caching the results.
         homogenise_cube_mask(climatology_cubes[i])
 
-        # Reorder cubes to let month numbers increase monotonically, and subsequently
-        # promote the month numbers coordinate to a climatological DimCoord.
         sort_indices = np.argsort(climatology_cubes[i].coord("month_number").points)
-        climatology_cubes[i] = reorder_cube_coord(
-            climatology_cubes[i], sort_indices, name="month_number"
-        )
-        # Promote the month_number coordinate to being the leading DimCoord.
+        if not np.all(sort_indices == np.arange(len(sort_indices))):
+            # Reorder cubes to let month numbers increase monotonically if needed.
+            climatology_cubes[i] = reorder_cube_coord(
+                climatology_cubes[i],
+                sort_indices,
+                name="month_number",
+                promote=False,
+            )
+        # Promote the month_number coordinate to being the leading coordinate.
         iris.util.promote_aux_coord_to_dim_coord(climatology_cubes[i], "month_number")
 
     # This return value will be cached by writing it to disk as NetCDF files.
