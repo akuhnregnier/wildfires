@@ -2615,6 +2615,9 @@ class Dataset(metaclass=RegisterDatasets):
 
         shift_dir = "plus" if months > 0 else "minus"
 
+        def cube_name_mod_func(s):
+            return s + f" {months} Month"
+
         # Handle each cube different, since each cube may have unique time coordinates
         # (different bands for example).
         for cube in orig_inst:
@@ -2636,9 +2639,6 @@ class Dataset(metaclass=RegisterDatasets):
             ]
 
             time_coord.points = num_shifted_dates
-
-            def cube_name_mod_func(s):
-                return s + f" {months} Month"
 
             cube.long_name = cube_name_mod_func(cube.name())
             cube.standard_name = None
