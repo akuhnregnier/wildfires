@@ -1974,9 +1974,7 @@ class Dataset(metaclass=RegisterDatasets):
         ), "Data must be saved as a NetCDF file, got:'{:}'".format(target_filename)
         assert isinstance(
             cache_data, (iris.cube.Cube, iris.cube.CubeList)
-        ), "Data to be saved must either be a Cube or a CubeList. " "Got:{:}".format(
-            cache_data
-        )
+        ), f"Data to be saved must either be a Cube or a CubeList. Got: {cache_data}."
 
         if isinstance(cache_data, iris.cube.Cube):
             cache_data = iris.cube.CubeList([cache_data])
