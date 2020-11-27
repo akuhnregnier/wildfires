@@ -8,6 +8,7 @@ from iris.time import PartialDateTime
 from wildfires.data.datasets import (
     ERA5_DryDayPeriod,
     MonthlyDataset,
+    UnexpectedCoordinateError,
     dummy_lat_lon_cube,
 )
 
@@ -98,3 +99,18 @@ def test_temporal_shifting(deep):
             assert np.all(cube.data.mask == shifted_cube.data.mask)
 
         assert cube.attributes == shifted_cube.attributes
+
+
+def test_other_temporal_coords():
+    """No other temporal coordinates should be permitted prior to shifting.
+
+    The shifting operation may or may not affect these auxiliary coordinates, and
+    predicting how they may be affected is outside the scope of this function.
+
+    """
+    # Add a month_number coordinate to verify that an Exception should be raised.
+    dataset = DummyDataset()
+    iris.coord_categorisation.add_month_number(dataset.cube, "time")
+    with pytest.raises(UnexpectedCoordinateError):
+        # Attempt to get shifted dataset.
+        dataset.get_temporally_shifted_dataset(months=-1)

@@ -199,6 +199,10 @@ class DatasetNotFoundError(ValueError, Error):
     """Raised when a requested dataset could not be found."""
 
 
+class UnexpectedCoordinateError(ValueError, Error):
+    """Raised when an unexpected coordinate is encountered."""
+
+
 def fill_cube(cube, mask):
     """Process cube in-place by filling gaps using NN interpolation and also filtering.
 
@@ -547,10 +551,7 @@ def get_dataset_climatology_cubes(dataset, start, end):
         if not np.all(sort_indices == np.arange(len(sort_indices))):
             # Reorder cubes to let month numbers increase monotonically if needed.
             climatology_cubes[i] = reorder_cube_coord(
-                climatology_cubes[i],
-                sort_indices,
-                name="month_number",
-                promote=False,
+                climatology_cubes[i], sort_indices, name="month_number", promote=False
             )
         # Promote the month_number coordinate to being the leading coordinate.
         iris.util.promote_aux_coord_to_dim_coord(climatology_cubes[i], "month_number")
@@ -2574,9 +2575,9 @@ class Dataset(metaclass=RegisterDatasets):
 
         Raises:
             TypeError: If `months` is not an integer.
-            ValueError: If any cube has multiple temporal coordinates.
-            ValueError: If any cube has a temporal coordinate that isn't placed along
-                the first axis.
+            UnexpectedCoordinateError: If any cube has multiple temporal coordinates.
+            UnexpectedCoordinateError: If any cube has a temporal coordinate that
+                isn't placed along the first axis.
 
         """
         if not isinstance(months, (int, np.integer)):
@@ -2591,11 +2592,13 @@ class Dataset(metaclass=RegisterDatasets):
                 continue
             # Ensure the time coordinate is first.
             if cube.coord_dims(cube.coord("time"))[0] != 0:
-                raise ValueError(
+                raise UnexpectedCoordinateError(
                     "Temporal coordinate should correspond to the first axis."
                 )
             if len(cube.coords(dimensions=0)) > 1:
-                raise ValueError("There should only be a single temporal coordinate.")
+                raise UnexpectedCoordinateError(
+                    "There should only be a single temporal coordinate."
+                )
 
         if deep:
             # Copy everything.
