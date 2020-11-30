@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from copy import deepcopy
+from datetime import datetime
 
 import cf_units
 import iris
@@ -8,8 +9,7 @@ import pytest
 from iris.time import PartialDateTime
 
 import wildfires.data.datasets as wildfire_datasets
-from wildfires.data.cube_aggregation import Datasets
-from wildfires.data.datasets import dummy_lat_lon_cube
+from wildfires.data import Datasets, dummy_lat_lon_cube, homogenise_cube_attributes
 
 from .utils import data_availability
 
@@ -131,3 +131,36 @@ def test_duplication():
     # This error is only raised when the `cubes` property is accessed.
     with pytest.raises(AssertionError, match="All variable names should be unique."):
         DummyDataset().cubes
+
+
+def test_time_unit_conversion():
+    """Test time unit conversion prior to Cube concatenation."""
+    cubes = iris.cube.CubeList()
+    for unit_str, offset in [
+        ("hours since 2000-01-01", 0),
+        ("hours since 2001-01-01", 12),
+    ]:
+        units = cf_units.Unit(unit_str)
+        cubes.append(
+            iris.cube.Cube(
+                np.arange(12),
+                dim_coords_and_dims=[
+                    (
+                        iris.coords.DimCoord(
+                            units.date2num(
+                                [
+                                    datetime(2000 + offset // 12, m, 1)
+                                    for m in range(1, 13)
+                                ]
+                            ),
+                            standard_name="time",
+                            units=units,
+                        ),
+                        0,
+                    )
+                ],
+            )
+        )
+
+    cubes = homogenise_cube_attributes(cubes, adjust_time=True)
+    assert cubes.concatenate_cube()

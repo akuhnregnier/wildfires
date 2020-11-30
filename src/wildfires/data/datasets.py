@@ -287,8 +287,23 @@ def cube_contains_coords(cube, *coords):
     return True
 
 
-def homogenise_cube_attributes(cubes):
-    """Ensure all given cubes have compatible attributes in-place."""
+def homogenise_cube_attributes(cubes, adjust_time=False):
+    """Ensure all given cubes have compatible attributes in-place.
+
+    Args:
+        cubes (iris.cube.CubeList): List of cubes to process.
+        adjust_time (bool): If True, modify the temporal coordinates (with name
+            "time") to have the same units.
+
+    Returns:
+        iris.cube.CubeList: List of processed cubes.
+
+    Raises:
+        ValueError: If `adjust_time` is True and any cube does not have a "time"
+            coordinate.
+        ValueError: If `adjust_time` is True and `cubes` have differing calendars.
+
+    """
     attribute_list = [cube.attributes for cube in cubes]
     common_values = attribute_list[0].copy()
 
@@ -302,6 +317,27 @@ def homogenise_cube_attributes(cubes):
 
     for cube in cubes:
         cube.attributes = common_values
+
+    if adjust_time:
+        # Check that all cubes have a "time" coordinate.
+        for cube in cubes:
+            if not cube.coords("time"):
+                raise ValueError(f"Cube '{cube}' did not have a 'time' coordinate.")
+
+        # Check that all cubes have the same calendar.
+        calendars = {cube.coord("time").units.calendar for cube in cubes}
+        if len(calendars) > 1:
+            raise ValueError(f"Cubes had differing calendars: '{calendars}'.")
+
+        # Define the common calendar to use.
+        calendar = list(calendars)[0]
+        ref_time = datetime(1970, 1, 1)
+        ref_unit = cf_units.Unit(
+            f"days since {ref_time.strftime('%Y-%m-%d %H:%M:%S')}", calendar=calendar
+        )
+        # Convert all times (and bounds).
+        for cube in cubes:
+            cube.coord("time").convert_units(ref_unit)
 
     return cubes
 
