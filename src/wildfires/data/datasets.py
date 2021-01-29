@@ -1031,9 +1031,8 @@ def regrid(
         # Fix the extreme values that can occur with the
         # `iris.analysis.Linear()` regridding scheme.
 
-        # Regridding realises the data anyway, so we can use `cube.data` here.
-        omax = np.max(cube.data)
-        omin = np.min(cube.data)
+        omax = float(cube.collapsed(cube.dim_coords, iris.analysis.MAX).data)
+        omin = float(cube.collapsed(cube.dim_coords, iris.analysis.MIN).data)
 
         extr_mask = (interpolated_cube.data > omax) | (interpolated_cube.data < omin)
         if np.any(extr_mask):
@@ -2337,7 +2336,7 @@ class Dataset(metaclass=RegisterDatasets):
         # Ignore extrema resulting from the interpolation (e.g. Iris linear
         # interpolation suffers from this problem sometimes).
         for cube in final_cubelist:
-            original_data = self.cubes.extract_strict(
+            original_data = self.cubes.extract_cube(
                 iris.Constraint(name=cube.name())
             ).data
             omin, omax = np.min(original_data), np.max(original_data)
@@ -4717,7 +4716,7 @@ class LIS_OTD_lightning_climatology(Dataset):
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "LIS_OTD_lightning_climatology")
 
-        loaded_cube = iris.load(os.path.join(self.dir, "*.nc")).extract_strict(
+        loaded_cube = iris.load(os.path.join(self.dir, "*.nc")).extract_cube(
             iris.Constraint(name="Combined Flash Rate Monthly Climatology")
         )
 

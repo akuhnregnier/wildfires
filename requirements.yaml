@@ -12,7 +12,7 @@ dependencies:
   - dask-jobqueue>=0.7.1
   - dask-ml>=1.2
   - dask-xgboost>=0.1.10
-  - dask>=2.14.0
+  - dask>=2.30.0
   - dill>=0.3.1.1
   - eli5>=0.10
   - fiona>=1.8.13
@@ -24,7 +24,7 @@ dependencies:
   - ipdb>=0.12.3
   - ipykernel>=5.2.1
   - ipython>=7.13.0
-  - iris>=2.4.0
+  - iris>=3.0.1
   - isort>=4.3.21
   - joblib>=0.14.1
   - jupyter_client>=6.1.3

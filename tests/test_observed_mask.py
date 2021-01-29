@@ -65,7 +65,9 @@ def test_MERIS_observed_area_mask():
     assert from_partial.metadata == reference.metadata
 
     # Check that coordinates match.
-    coord_comparison = iris.analysis.coord_comparison(from_partial, reference)
+    coord_comparison = iris.analysis._dimensional_metadata_comparison(
+        from_partial, reference
+    )
     assert not (
         coord_comparison["not_equal"] or coord_comparison["non_equal_data_dimension"]
     )
