@@ -698,7 +698,10 @@ def dummy_lat_lon_cube(
         new_latitudes, standard_name="latitude", units="degrees"
     )
     new_lon_coord = iris.coords.DimCoord(
-        new_longitudes, standard_name="longitude", units="degrees"
+        new_longitudes,
+        standard_name="longitude",
+        units="degrees",
+        circular=True,
     )
 
     if n_dims == 2:
@@ -1033,12 +1036,16 @@ def regrid(
 
         omax = float(cube.collapsed(cube.dim_coords, iris.analysis.MAX).data)
         omin = float(cube.collapsed(cube.dim_coords, iris.analysis.MIN).data)
+        range_thres = omax - omin
 
-        extr_mask = (interpolated_cube.data > omax) | (interpolated_cube.data < omin)
+        # Heuristic approach to filtering extreme values.
+        extr_mask = (interpolated_cube.data > (omax + range_thres)) | (
+            interpolated_cube.data < (omin - range_thres)
+        )
         if np.any(extr_mask):
             logger.warning(
-                f"Masking {np.sum(extr_mask)} regridded values that exceeded the input "
-                f"range for cube {cube.name()}."
+                f"Masking {np.sum(extr_mask)} regridded values that exceeded the "
+                f"threshold range for cube {cube.name()}."
             )
             interpolated_cube.data.mask |= extr_mask
 

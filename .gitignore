@@ -130,3 +130,5 @@ _version.py
 dask-worker-space
 
 plots/
+
+.benchmarks

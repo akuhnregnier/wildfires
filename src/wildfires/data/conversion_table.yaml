@@ -1,0 +1,242 @@
+# PFT conversion table as in Forkel et al. (2017).
+0:
+  name: No data
+  pfts:
+    NoLand: 100
+10:
+  name: Cropland, rainfed
+  pfts:
+    Crop: 100
+11:
+  name: Cropland, rainfed, Herbaceous cover
+  pfts:
+    Crop: 100
+12:
+  name: Cropland, rainfed, Tree or shrub cover
+  pfts:
+    Crop: 50
+    Shrub.BD: 50
+20:
+  name: Cropland, irrigated or post-flooding
+  pfts:
+    Crop: 100
+30:
+  name: Mosaic cropland (> 50 %)/natural vegetation (tree, shrub, herbaceous cover)
+    (< 50 %)
+  pfts:
+    Crop: 60
+    Herb: 15
+    Shrub.BD: 5
+    Shrub.BE: 5
+    Shrub.NE: 5
+    Tree.BD: 5
+    Tree.BE: 5
+40:
+  name: Mosaic natural vegetation (tree, shrub, herbaceous cover) (> 50 %)/cropland
+    (< 50 %)
+  pfts:
+    Crop: 40
+    Herb: 30
+    Shrub.BD: 10
+    Shrub.BE: 5
+    Shrub.NE: 5
+    Tree.BD: 5
+    Tree.BE: 5
+50:
+  name: Tree cover, broadleaved, evergreen, closed to open (> 15 %)
+  pfts:
+    Shrub.BD: 5
+    Shrub.BE: 5
+    Tree.BE: 90
+60:
+  name: Tree cover, broadleaved, deciduous, closed to open (> 15 %)
+  pfts:
+    Herb: 20
+    Shrub.BD: 10
+    Tree.BD: 70
+61:
+  name: Tree cover, broadleaved, deciduous, closed (> 40 %)
+  pfts:
+    Herb: 10
+    Shrub.BD: 10
+    Tree.BD: 80
+62:
+  name: "Tree cover, broadleaved, deciduous, open (15\u201340 %)"
+  pfts:
+    Bare: 10
+    Herb: 40
+    Shrub.BD: 20
+    Tree.BD: 30
+70:
+  name: Tree cover, needle-leaved, evergreen, closed to open (> 15 %)
+  pfts:
+    Herb: 20
+    Shrub.BD: 5
+    Shrub.NE: 5
+    Tree.NE: 70
+71:
+  name: Tree cover, needle-leaved, evergreen, closed (> 40 %)
+  pfts:
+    Herb: 15
+    Shrub.BD: 5
+    Shrub.NE: 5
+    Tree.NE: 75
+72:
+  name: "Tree cover, needle-leaved, evergreen, open (15\u201340 %)"
+  pfts:
+    Bare: 30
+    Herb: 30
+    Shrub.BD: 5
+    Shrub.NE: 5
+    Tree.NE: 30
+80:
+  name: Tree cover, needle-leaved, deciduous, closed to open (> 15 %)
+  pfts:
+    Bare: 5
+    Herb: 25
+    Shrub.BD: 15
+    Shrub.NE: 5
+    Tree.ND: 50
+81:
+  name: Tree cover, needle-leaved, deciduous, closed (> 40 %)
+  pfts:
+    Herb: 15
+    Shrub.BD: 10
+    Shrub.NE: 5
+    Tree.ND: 70
+82:
+  name: "Tree cover, needle-leaved, deciduous, open (15\u201340 %)"
+  pfts:
+    Bare: 20
+    Herb: 35
+    Shrub.BD: 10
+    Shrub.NE: 5
+    Tree.ND: 30
+90:
+  name: Tree cover, mixed leaf type (broad-leaved and needle-leaved)
+  pfts:
+    Bare: 5
+    Herb: 15
+    Shrub.BD: 10
+    Shrub.NE: 10
+    Tree.BD: 35
+    Tree.NE: 25
+100:
+  name: Mosaic tree and shrub (> 50 %)/herbaceous cover (< 50 %)
+  pfts:
+    Herb: 40
+    Shrub.BD: 15
+    Shrub.NE: 15
+    Tree.BD: 15
+    Tree.NE: 15
+110:
+  name: Mosaic herbaceous cover (> 50 %)/tree and shrub (< 50 %)
+  pfts:
+    Bare: 5
+    Herb: 60
+    Shrub.BD: 10
+    Shrub.NE: 10
+    Tree.BD: 7.5
+    Tree.NE: 7.5
+120:
+  name: Shrubland
+  pfts:
+    Bare: 20
+    Herb: 20
+    Shrub.BD: 30
+    Shrub.BE: 20
+    Shrub.NE: 10
+121:
+  name: Shrubland, evergreen
+  pfts:
+    Bare: 20
+    Herb: 20
+    Shrub.BE: 30
+    Shrub.NE: 30
+122:
+  name: Shrubland, deciduous
+  pfts:
+    Bare: 20
+    Herb: 20
+    Shrub.BD: 60
+130:
+  name: Grassland
+  pfts:
+    Bare: 30
+    Herb: 70
+140:
+  name: Lichens and mosses
+  pfts:
+    Bare: 40
+    Herb: 60
+150:
+  name: Sparse vegetation (tree, shrub, herbaceous cover) (< 15 %)
+  pfts:
+    Bare: 85
+    Herb: 5
+    Shrub.BD: 4
+    Shrub.NE: 2
+    Tree.BD: 2
+    Tree.NE: 2
+152:
+  name: Sparse shrub (< 15 %)
+  pfts:
+    Bare: 85
+    Herb: 5
+    Shrub.BD: 6
+    Shrub.NE: 4
+153:
+  name: Sparse herbaceous cover (< 15 %)
+  pfts:
+    Bare: 85
+    Herb: 15
+160:
+  name: Tree cover, flooded, fresh or brackish water
+  pfts:
+    Herb: 20
+    NoLand: 20
+    Tree.BD: 30
+    Tree.BE: 30
+170:
+  name: Tree cover, flooded, saline water
+  pfts:
+    NoLand: 20
+    Shrub.BE: 20
+    Tree.BE: 60
+180:
+  name: Shrub or herbaceous cover, flooded, fresh/saline/brackish water
+  pfts:
+    Herb: 40
+    NoLand: 30
+    Shrub.BD: 10
+    Shrub.NE: 10
+    Tree.BD: 5
+    Tree.NE: 5
+190:
+  name: Urban areas
+  pfts:
+    Bare: 75
+    Herb: 15
+    NoLand: 5
+    Tree.BD: 2.5
+    Tree.NE: 2.5
+200:
+  name: Bare areas
+  pfts:
+    Bare: 100
+201:
+  name: Bare areas, consolidated
+  pfts:
+    Bare: 100
+202:
+  name: Bare areas, unconsolidated
+  pfts:
+    Bare: 100
+210:
+  name: Water bodies
+  pfts:
+    NoLand: 100
+220:
+  name: Permanent snow and ice
+  pfts:
+    NoLand: 100
