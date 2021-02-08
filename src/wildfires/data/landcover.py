@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from copy import deepcopy
 from pathlib import Path
 
 import dask.array as da
@@ -21,7 +22,7 @@ def get_mapping_pfts(mapping):
 
 def get_mapping_arrays(pft_names, mapping):
     """Convert all PFT fractions into arrays in the given order."""
-    converted = mapping.copy()
+    converted = deepcopy(mapping)
     for value in converted.values():
         value["pfts"] = np.array(
             [value["pfts"].get(pft_name, 0) for pft_name in pft_names],
@@ -81,7 +82,7 @@ def convert_to_pfts(category_cube, pft_names, conversion):
     for i, pft_name in enumerate(pft_names):
         pft_cube = category_cube.copy(data=pft_data[..., i])
         pft_cube.var_name = None
-        pft_cube.short_name = None
+        pft_cube.standard_name = None
         pft_cube.long_name = pft_name
         pft_cube.units = "1"
         cubes.append(pft_cube)
