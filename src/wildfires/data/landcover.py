@@ -69,7 +69,7 @@ def convert_to_pfts(category_cube, conversion, min_category, max_category):
         else:
             structured_mapping[landcover_index] = np.zeros(n_pfts, dtype=np.uint8)
 
-    @njit
+    @njit(parallel=True, nogil=True)
     def _execute_mapping(category, structured_mapping, n_pfts):
         """Carry out conversion to PFT fractions."""
         pfts = np.zeros((*category.shape, *(n_pfts,)))
