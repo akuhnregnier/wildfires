@@ -366,6 +366,18 @@ def get_scheduler_file(match="above", **specs):
     logger.info(f"Could not find a Dask scheduler ({match}) for specs {specs}.")
 
 
+class GeneralPBSJob(PBSJob):
+    """PBSJob child that allows the manual specification of worker threads."""
+
+    def __init__(self, *args, **kwargs):
+        self.override_threads = kwargs.pop("override_threads")
+        super().__init__(*args, **kwargs)
+
+    @property
+    def worker_process_threads(self):
+        return int(self.override_threads)
+
+
 class CX1PBSJob(PBSJob):
     """Job that runs on CX1, assuming no direct inter-job communication is possible."""
 
@@ -739,7 +751,7 @@ class CX1GeneralCluster(PBSCluster):
             max(60, min(600, round(0.1 * walltime_seconds(mod_kwargs["walltime"])))),
         )
 
-        threads = mod_kwargs.get(
+        threads = mod_kwargs.pop(
             "threads_per_worker",
             math.floor(mod_kwargs["cores"] / mod_kwargs["processes"]),
         )
@@ -748,10 +760,13 @@ class CX1GeneralCluster(PBSCluster):
                 f"'Threads' was below 1 ({threads}, from "
                 f"{mod_kwargs['cores'], mod_kwargs['processes']})"
             )
+        # This is used by the GeneralPBSJob class to set the number of threads
+        # explicitly.
+        mod_kwargs["override_threads"] = threads
         logger.debug(f"{threads} thread(s) per worker.")
 
         mod_kwargs.update(
-            job_cls=PBSJob,
+            job_cls=GeneralPBSJob,
             extra=list(mod_kwargs.get("extra", []))
             + "--no-dashboard".split()
             + f"--resources threads={threads}".split()
