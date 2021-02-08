@@ -318,6 +318,7 @@ dependencies:
   - sqlite=3.34.0=h74cdb3f_0
   - statsmodels=0.12.1=py37h902c9e0_2
   - tabulate=0.8.7=pyh9f0ad1d_0
+  - tbb=2020.2=h4bd325d_3
   - tblib=1.6.0=py_0
   - terminado=0.9.2=py37h89c1867_0
   - testpath=0.4.4=py_0
