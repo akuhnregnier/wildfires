@@ -667,6 +667,11 @@ def spatial_chunked_regrid(
         .reshape(-1, 1)
     )
 
+    chunks_spec = [None] * 2
+    chunks_spec[x_dim] = tgt_x_coord.shape[0]
+    chunks_spec[y_dim] = tuple(slice_len(s) for s in tgt_y_slices)
+    chunks_spec = tuple(chunks_spec)
+
     output = da.map_overlap(
         regrid_chunk,
         block_src_data,
@@ -693,11 +698,10 @@ def spatial_chunked_regrid(
         },
         boundary="none",
         trim=False,
-        meta=np.array([]),
+        dtype=np.float64,
+        chunks=chunks_spec,
+        meta=np.array([], dtype=np.float64),
     )
-    # NOTE: Is this always required or can it be substituted by a call to
-    # '.compute()' in some cases?
-    output.compute_chunk_sizes()
     if not isinstance(output._meta, np.ma.MaskedArray):
         # XXX: Ideally this should not be needed, but the mask appears to vanish in
         # some cases.
