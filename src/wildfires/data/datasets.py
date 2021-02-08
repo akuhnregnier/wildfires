@@ -23,6 +23,8 @@ import logging
 import operator
 import os
 import re
+import shutil
+import tempfile
 import warnings
 from abc import ABCMeta, abstractmethod
 from collections import OrderedDict
@@ -31,6 +33,7 @@ from datetime import datetime, timedelta
 from functools import reduce, wraps
 
 import cf_units
+import dask.array as da
 import h5py
 import iris
 import iris.coord_categorisation
@@ -52,6 +55,7 @@ from scipy.optimize import minimize
 from tqdm import tqdm
 
 from .. import __version__
+from ..chunked_regrid import spatial_chunked_regrid
 from ..joblib.caching import CodeObj, wrap_decorator
 from ..joblib.iris_backend import register_backend
 from ..qstat import get_ncpus
@@ -66,6 +70,8 @@ from ..utils import (
     strip_multiline,
     translate_longitude_system,
 )
+from .landcover import conversion as lc_to_pft_map
+from .landcover import convert_to_pfts
 
 __all__ = (
     "CommitMatchError",
@@ -2063,6 +2069,8 @@ class Dataset(metaclass=RegisterDatasets):
 
             if not os.path.isdir(os.path.dirname(target_filename)):
                 os.makedirs(os.path.dirname(target_filename))
+            logger.info("Realising data.")
+            cache_data.realise_data()
             logger.info("Saving cubes to:'{:}'".format(target_filename))
             iris.save(cache_data, target_filename, zlib=False)
             return cube.attributes["commit"]
@@ -4003,6 +4011,195 @@ class ESA_CCI_Landcover(Dataset):
         for cube_list in cube_lists:
             self.cubes.append(cube_list.concatenate_cube())
 
+        self.write_cache()
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        return self.interpolate_yearly_data(start, end)
+
+
+class Ext_ESA_CCI_Landcover_PFT(Dataset):
+    """Extended ESA CCI Landcover dataset."""
+
+    _pretty = "Ext ESA Landcover"
+
+    def __init__(self, start_year=1992, end_year=2020, max_workers=2):
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
+        import cdsapi
+
+        client = cdsapi.Client(quiet=True, progress=False, delete=False)
+
+        def non_delete_retrieve_extract(year, *request):
+            """Retrieve and extract a request without overwriting."""
+            if os.path.exists(request[2]):
+                logger.warning(
+                    f"Target file '{request[2]}' already exists. Not downloading."
+                )
+            else:
+                logger.info(f"Downloading to target file '{request[2]}'.")
+                client.retrieve(*request)
+
+            extract_dir = os.path.join(download_dir, f"extracted_{year}")
+
+            if os.path.isdir(extract_dir):
+                logger.warning(
+                    f"Extract directory '{extract_dir}' already exists. "
+                    "Not extracting."
+                )
+            else:
+                logger.info(f"Extracting to directory '{extract_dir}'. ")
+                # Unpack the downloaded archive.
+                shutil.unpack_archive(
+                    request[2],
+                    extract_dir=extract_dir,
+                )
+
+        # Download data for processing.
+        download_dir = os.path.join(tempfile.gettempdir(), self.name)
+        if not os.path.isdir(download_dir):
+            os.mkdir(download_dir)
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        future_to_dest = {
+            executor.submit(
+                non_delete_retrieve_extract,
+                year,
+                "satellite-land-cover",
+                {
+                    "variable": "all",
+                    "format": "tgz",
+                    "version": [
+                        "v2.0.7cds",
+                        "v2.1.1",
+                    ],
+                    "year": [
+                        f"{year}",
+                    ],
+                },
+                os.path.join(download_dir, f"download_{year}.tar.gz"),
+            ): (year, os.path.join(download_dir, f"extracted_{year}"))
+            for year in range(start_year, end_year)
+        }
+
+        regridded_pft_cubes = iris.cube.CubeList()
+
+        for future in tqdm(
+            concurrent.futures.as_completed(future_to_dest),
+            desc="Processing ESA CCI Landcover",
+            total=len(future_to_dest),
+        ):
+            future.result()  # Ensure any raised Exceptions are raised again here.
+            year, extract_dir = future_to_dest[future]
+            # Cache the results of processing.
+            processed_file = os.path.join(extract_dir, "processed.nc")
+            if os.path.isfile(processed_file):
+                logger.info(f"Loaded processed PFTs from '{processed_file}'.")
+                regridded_pft_cubes.extend(iris.load(processed_file))
+                # Do not carry out the normal processing below, as this is contained
+                # in the loaded file.
+                continue
+
+            # Process the resulting file by converting the landcover categories to
+            # PFTs, followed by regridding.
+            logger.info(f"Loading landcover for year {year}.")
+            category_cube = iris.load_cube(
+                os.path.join(extract_dir, "*.nc"),
+                constraint=iris.Constraint("land_cover_lccs"),
+            )
+            assert category_cube.shape[0] == 1, "There should only be one time."
+
+            logger.info(f"Converting landcover to PFTs for year {year}.")
+
+            # 18 MB for 2 GB worker memory.
+            category_cube = category_cube[0]
+            category_cube = category_cube.copy(
+                data=category_cube.core_data().rechunk(("10MiB", -1))
+            )
+
+            print("core data:")
+            print(category_cube.core_data())
+
+            pft_cubes = convert_to_pfts(category_cube, lc_to_pft_map, 0, 220)
+
+            year_regridded_pft_cubes = iris.cube.CubeList()
+
+            logger.info(f"Regridding PFTs for year {year}.")
+            # 110 MB for 15 GB worker memory (1 thread per worker).
+            regrid_max_chunk_size = "110MB"
+            for pft_cube in tqdm(pft_cubes, desc=f"Regridding ({year})"):
+                tgt_cube = dummy_lat_lon_cube(da.zeros((720, 1440)))
+                tgt_cube.metadata = pft_cube.metadata
+                tgt_cube.add_aux_coord(pft_cube.coord("time"))
+
+                year_regridded_pft_cubes.append(
+                    spatial_chunked_regrid(
+                        pft_cube,
+                        tgt_cube,
+                        iris.analysis.AreaWeighted(),
+                        max_src_chunk_size=regrid_max_chunk_size,
+                        max_tgt_chunk_size=regrid_max_chunk_size,
+                    )
+                )
+            # Cache the data.
+            logger.info("Realising processed PFTs data.")
+            year_regridded_pft_cubes.realise_data()
+            iris.save(year_regridded_pft_cubes, processed_file, zlib=False)
+            logger.info(f"Cached processed PFTs in '{processed_file}'.")
+
+            # Record the processed cubes.
+            regridded_pft_cubes.extend(year_regridded_pft_cubes)
+
+        executor.shutdown()
+
+        # Process attributes that will differ from year to years to allow merging of
+        # the cubes (id, tracking_id, creation_date, time_coverage_start,
+        # time_coverage_end).
+        merged_pft_cubes = iris.cube.CubeList()
+        for pft_name in all_pfts:
+            cubes = regridded_pft_cubes.extract(iris.Constraint(pft_name))
+            assert len(cubes) == len(
+                future_to_dest
+            ), "There should be as many cubes as there are downloaded years."
+            cube_ids = [cube.attributes["id"] for cube in cubes]
+            cube_tracking_ids = [cube.attributes["tracking_id"] for cube in cubes]
+            cube_creation_dates = [cube.attributes["creation_date"] for cube in cubes]
+            cube_time_coverages = [
+                "-".join(
+                    (
+                        cube.attributes["time_coverage_start"],
+                        cube.attributes["time_coverage_end"],
+                    )
+                )
+                for cube in cubes
+            ]
+            # Remove the original attributes.
+            for attribute in (
+                "id",
+                "tracking_id",
+                "creation_date",
+                "time_coverage_start",
+                "time_coverage_end",
+            ):
+                for cube in cubes:
+                    del cube.attributes[attribute]
+            # Replace the original attributes with aggregated versions.
+            for cube in cubes:
+                cube.attributes["ids"] = tuple(cube_ids)
+                cube.attributes["tracking_ids"] = tuple(cube_tracking_ids)
+                cube.attributes["creation_dates"] = tuple(cube_creation_dates)
+                cube.attributes["time_coverages"] = tuple(cube_time_coverages)
+
+            merged_pft_cubes.append(cubes.merge_cube())
+
+        self.cubes = merged_pft_cubes
+        assert len(self.cubes) == len(
+            all_pfts
+        ), "There should be as many cubes as PFTs."
         self.write_cache()
 
     def get_monthly_data(
