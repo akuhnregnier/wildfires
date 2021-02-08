@@ -54,20 +54,20 @@ def fixture_mapping():
     return ("a", "b", "c"), {
         0: {
             "pfts": {
-                "a": 0.5,
-                "b": 0.5,
+                "a": 50,
+                "b": 50,
             },
         },
         1: {
             "pfts": {
-                "a": 0.2,
-                "b": 0.5,
-                "c": 0.3,
+                "a": 20,
+                "b": 50,
+                "c": 30,
             },
         },
         3: {
             "pfts": {
-                "c": 1.0,
+                "c": 100,
             },
         },
     }
@@ -82,9 +82,11 @@ def test_get_mapping_arrays(fixture_mapping):
     assert all(
         isinstance(values["pfts"], np.ndarray) for values in conv_mapping.values()
     )
-    assert_array_equal(conv_mapping[0]["pfts"], [0.5, 0.5, 0])
-    assert_array_equal(conv_mapping[1]["pfts"], [0.2, 0.5, 0.3])
-    assert_array_equal(conv_mapping[3]["pfts"], [0.0, 0.0, 1.0])
+    assert_array_equal(conv_mapping[0]["pfts"], [50, 50, 0])
+    assert_array_equal(conv_mapping[1]["pfts"], [20, 50, 30])
+    assert_array_equal(conv_mapping[3]["pfts"], [0, 0, 100])
+    for index in (0, 1, 3):
+        assert conv_mapping[index]["pfts"].dtype == np.uint8
 
 
 @pytest.mark.parametrize("chunks", ("auto", -1, 2))
@@ -92,14 +94,18 @@ def test_conversion(fixture_mapping, chunks):
     cats = iris.cube.Cube(
         da.from_array(
             np.array(
-                [[[1, 0, 0], [0, 0, 2], [3, 2, 2], [0, 3, 1], [3, 3, 0], [0, 1, 1]]]
+                [[[1, 0, 0], [0, 0, 2], [3, 2, 2], [0, 3, 1], [3, 3, 0], [0, 1, 1]]],
+                dtype=np.uint8,
             ),
             chunks=chunks,
         )
     )
-    pfts = convert_to_pfts(
-        cats, fixture_mapping[0], get_mapping_arrays(*fixture_mapping)
-    )
+    pfts = convert_to_pfts(cats, fixture_mapping[1], 0, 3)
+
+    # NOTE: This check done on the non-lazy '.data' attribute fails, as Iris seems to
+    # implicitly convert everything to np.float64.
+    for i in range(3):
+        assert pfts[i].core_data().dtype == np.uint8
 
     # PFT: a.
     assert_array_equal(
@@ -107,12 +113,12 @@ def test_conversion(fixture_mapping, chunks):
         np.array(
             [
                 [
-                    [0.2, 0.5, 0.5],
-                    [0.5, 0.5, 0.0],
-                    [0.0, 0.0, 0.0],
-                    [0.5, 0.0, 0.2],
-                    [0.0, 0.0, 0.5],
-                    [0.5, 0.2, 0.2],
+                    [20, 50, 50],
+                    [50, 50, 0],
+                    [0, 0, 0],
+                    [50, 0, 20],
+                    [0, 0, 50],
+                    [50, 20, 20],
                 ]
             ]
         ),
@@ -123,12 +129,12 @@ def test_conversion(fixture_mapping, chunks):
         np.array(
             [
                 [
-                    [0.5, 0.5, 0.5],
-                    [0.5, 0.5, 0.0],
-                    [0.0, 0.0, 0.0],
-                    [0.5, 0.0, 0.5],
-                    [0.0, 0.0, 0.5],
-                    [0.5, 0.5, 0.5],
+                    [50, 50, 50],
+                    [50, 50, 0],
+                    [0, 0, 0],
+                    [50, 0, 50],
+                    [0, 0, 50],
+                    [50, 50, 50],
                 ]
             ]
         ),
@@ -139,12 +145,12 @@ def test_conversion(fixture_mapping, chunks):
         np.array(
             [
                 [
-                    [0.3, 0.0, 0.0],
-                    [0.0, 0.0, 0.0],
-                    [1.0, 0.0, 0.0],
-                    [0.0, 1.0, 0.3],
-                    [1.0, 1.0, 0.0],
-                    [0.0, 0.3, 0.3],
+                    [30, 0, 0],
+                    [0, 0, 0],
+                    [100, 0, 0],
+                    [0, 100, 30],
+                    [100, 100, 0],
+                    [0, 30, 30],
                 ]
             ]
         ),
