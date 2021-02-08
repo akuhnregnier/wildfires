@@ -361,11 +361,15 @@ def calculate_blocks(
     tgt_chunks = list(tgt_chunks)
     tgt_slices = list(tgt_slices)
 
-    orig_chunk_err = "Original {:} chunks cannot exceed the limit."
+    orig_chunk_err = "Original {:} chunks cannot exceed the limit (max: {:} > {:})."
     if any(src_chunk > max_src_chunk_size for src_chunk in src_chunks):
-        raise ValueError(orig_chunk_err.format("source"))
+        raise ValueError(
+            orig_chunk_err.format("source", max(src_chunks), max_src_chunk_size)
+        )
     if any(tgt_chunk > max_tgt_chunk_size for tgt_chunk in tgt_chunks):
-        raise ValueError(orig_chunk_err.format("target"))
+        raise ValueError(
+            orig_chunk_err.format("target", max(tgt_chunks), max_tgt_chunk_size)
+        )
 
     if len(src_chunks) == 1:
         # Nothing to join.
@@ -470,12 +474,16 @@ def spatial_chunked_regrid(
         ValueError: If the source or target cube do not define x and y coordinates.
         ValueError: If source and target cubes do not define their x and y coordinates
             along the same dimensions.
+        ValueError: If any of the x, y coordinates are not monotonic.
+        ValueError: If the given maximum chunk sizes are smaller than required for the
+            regridding of a single data chunk.
 
     """
     if not src_cube.has_lazy_data():
         raise TypeError("Source cube needs to have lazy data.")
     if src_cube.core_data().ndim != 2:
         raise ValueError("Source cube data needs to be 2D.")
+
     coord_err = "{name} cube needs to define x and y coordinates."
     try:
         src_x_coord, src_y_coord = get_xy_dim_coords(src_cube)
@@ -489,11 +497,65 @@ def spatial_chunked_regrid(
     y_dim = src_y_dim = src_cube.coord_dims(src_y_coord)[0]
     x_dim = src_x_dim = src_cube.coord_dims(src_x_coord)[0]
 
-    tgt_y_dim = src_cube.coord_dims(tgt_y_coord)[0]
-    tgt_x_dim = src_cube.coord_dims(tgt_x_coord)[0]
+    tgt_y_dim = tgt_cube.coord_dims(tgt_y_coord)[0]
+    tgt_x_dim = tgt_cube.coord_dims(tgt_x_coord)[0]
 
     if (src_y_dim, src_x_dim) != (tgt_y_dim, tgt_x_dim):
         raise ValueError("Coordinates are not aligned.")
+
+    monotonic_err_msg = "{:}-coordinate needs to be monotonic."
+
+    src_x_coord_monotonic, src_x_coord_direction = iris.util.monotonic(
+        src_x_coord.points, return_direction=True
+    )
+    if not src_x_coord_monotonic:
+        raise ValueError(monotonic_err_msg.format("Source x"))
+    if src_x_coord_direction < 0:
+        # Coordinate is monotonically decreasing, so we need to invert it.
+        flip_slice = [slice(None)] * src_cube.ndim
+        flip_slice[src_x_dim] = slice(None, None, -1)
+        src_cube = src_cube[tuple(flip_slice)]
+        src_x_coord, src_y_coord = get_xy_dim_coords(src_cube)
+        src_x_coord.bounds = src_x_coord.bounds[:, ::-1]
+
+    src_y_coord_monotonic, src_y_coord_direction = iris.util.monotonic(
+        src_y_coord.points, return_direction=True
+    )
+    if not src_y_coord_monotonic:
+        raise ValueError(monotonic_err_msg.format("Source y"))
+    if src_y_coord_direction < 0:
+        # Coordinate is monotonically decreasing, so we need to invert it.
+        flip_slice = [slice(None)] * src_cube.ndim
+        flip_slice[src_y_dim] = slice(None, None, -1)
+        src_cube = src_cube[tuple(flip_slice)]
+        src_x_coord, src_y_coord = get_xy_dim_coords(src_cube)
+        src_y_coord.bounds = src_y_coord.bounds[:, ::-1]
+
+    tgt_x_coord_monotonic, tgt_x_coord_direction = iris.util.monotonic(
+        tgt_x_coord.points, return_direction=True
+    )
+    if not tgt_x_coord_monotonic:
+        raise ValueError(monotonic_err_msg.format("Target x"))
+    if tgt_x_coord_direction < 0:
+        # Coordinate is monotonically decreasing, so we need to invert it.
+        flip_slice = [slice(None)] * tgt_cube.ndim
+        flip_slice[tgt_x_dim] = slice(None, None, -1)
+        tgt_cube = tgt_cube[tuple(flip_slice)]
+        tgt_x_coord, tgt_y_coord = get_xy_dim_coords(tgt_cube)
+        tgt_x_coord.bounds = tgt_x_coord.bounds[:, ::-1]
+
+    tgt_y_coord_monotonic, tgt_y_coord_direction = iris.util.monotonic(
+        tgt_y_coord.points, return_direction=True
+    )
+    if not tgt_y_coord_monotonic:
+        raise ValueError(monotonic_err_msg.format("Target y"))
+    if tgt_y_coord_direction < 0:
+        # Coordinate is monotonically decreasing, so we need to invert it.
+        flip_slice = [slice(None)] * tgt_cube.ndim
+        flip_slice[tgt_y_dim] = slice(None, None, -1)
+        tgt_cube = tgt_cube[tuple(flip_slice)]
+        tgt_x_coord, tgt_y_coord = get_xy_dim_coords(tgt_cube)
+        tgt_y_coord.bounds = tgt_y_coord.bounds[:, ::-1]
 
     max_src_chunk_size = convert_chunk_size(
         max_src_chunk_size,
@@ -553,7 +615,6 @@ def spatial_chunked_regrid(
 
     for tgt_cells, src_cells in cell_mapping.items():
         tgt_y_slices.append(slice(tgt_cells[0], tgt_cells[-1] + 1))
-
         src_y_chunks.append(len(src_cells))
         tgt_y_chunks.append(len(tgt_cells))
 
