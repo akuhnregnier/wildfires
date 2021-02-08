@@ -694,9 +694,10 @@ class CX1GeneralCluster(PBSCluster):
         bound_args = signature(super().__init__).bind_partial(*args, **kwargs)
         bound_args.apply_defaults()
         mod_kwargs = bound_args.arguments
+
         # Use kwargs as well (otherwise the whole kwargs dictionary would be used
         # as another 'kwargs' keyword argument instead of the arguments therein).
-        mod_kwargs.update(mod_kwargs.pop("kwargs"))
+        mod_kwargs.update(mod_kwargs.pop("job_kwargs"))
 
         # Set default parameters.
         if mod_kwargs.get("cores") is not None and mod_kwargs.get("cores") != 32:
@@ -738,7 +739,16 @@ class CX1GeneralCluster(PBSCluster):
             max(60, min(600, round(0.1 * walltime_seconds(mod_kwargs["walltime"])))),
         )
 
-        threads = math.floor(mod_kwargs["cores"] / mod_kwargs["processes"])
+        threads = mod_kwargs.get(
+            "threads_per_worker",
+            math.floor(mod_kwargs["cores"] / mod_kwargs["processes"]),
+        )
+        if threads < 1:
+            raise ValueError(
+                f"'Threads' was below 1 ({threads}, from "
+                f"{mod_kwargs['cores'], mod_kwargs['processes']})"
+            )
+        logger.debug(f"{threads} thread(s) per worker.")
 
         mod_kwargs.update(
             job_cls=PBSJob,
