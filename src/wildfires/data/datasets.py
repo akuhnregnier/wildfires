@@ -4024,7 +4024,16 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
 
     _pretty = "Ext ESA Landcover"
 
-    def __init__(self, start_year=1992, end_year=2020, max_workers=2):
+    def __init__(self, start_year=1992, end_year=2020, max_workers=2, write_cache=True):
+        """Load the dataset with downloading and processing carried out as needed.
+
+        Args:
+            start_year (int): Start year (inclusive).
+            end_year (int): End year (exclusive).
+            max_workers (int): Maximum number of concurrent file downloads.
+            write_cache (bool): Whether to write processed data to the cache or not.
+
+        """
         self.cubes = self.read_cache()
         # If a CubeList has been loaded successfully, exit __init__
         if self.cubes:
@@ -4265,7 +4274,8 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
         merged_pft_cubes.extend([hrb_crop, tree_all, shrub_all, broadleaf, needleleaf])
 
         self.cubes = merged_pft_cubes
-        self.write_cache()
+        if write_cache:
+            self.write_cache()
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
