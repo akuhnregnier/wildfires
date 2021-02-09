@@ -9,6 +9,7 @@ dependencies:
   - affine=2.3.0=py_0
   - antlr-python-runtime=4.7.2=py37hc8dfbb8_1002
   - anyio=2.0.2=py37h89c1867_4
+  - apipkg=1.5=py_0
   - appdirs=1.4.4=pyh9f0ad1d_0
   - argon2-cffi=20.1.0=py37h5e8e339_2
   - astroid=2.4.2=py37hc8dfbb8_1
@@ -69,6 +70,7 @@ dependencies:
   - editdistance=0.5.3=py37hcd2ae1e_3
   - eli5=0.11.0=pyhd8ed1ab_0
   - entrypoints=0.3=pyhd8ed1ab_1003
+  - execnet=1.8.0=pyh44b312d_0
   - expat=2.2.10=h9c3ff4c_0
   - filelock=3.0.12=pyh9f0ad1d_0
   - fiona=1.8.18=py37h527b4ca_0
@@ -282,6 +284,8 @@ dependencies:
   - pytest=6.2.2=py37h89c1867_0
   - pytest-benchmark=3.2.3=pyh9f0ad1d_0
   - pytest-cov=2.11.1=pyh44b312d_0
+  - pytest-forked=1.2.0=pyh9f0ad1d_0
+  - pytest-xdist=2.2.0=pyhd8ed1ab_0
   - python=3.7.9=hffdb5ce_0_cpython
   - python-dateutil=2.8.1=py_0
   - python-graphviz=0.16=pyhd3deb0d_1

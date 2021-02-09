@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+from operator import attrgetter
+
 import pytest
 
 from wildfires.data.datasets import (
@@ -40,7 +42,9 @@ def dataset_test_func(dataset):
 
 
 @data_availability
-@pytest.mark.parametrize("dataset", Dataset.datasets - slow_datasets)
+@pytest.mark.parametrize(
+    "dataset", sorted(Dataset.datasets - slow_datasets, key=attrgetter("__name__"))
+)
 def test_dataset_fast(dataset):
     dataset_test_func(dataset)
 
