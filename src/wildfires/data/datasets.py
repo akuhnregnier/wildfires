@@ -4134,9 +4134,6 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
                 data=category_cube.core_data().rechunk(("10MiB", -1))
             )
 
-            print("core data:")
-            print(category_cube.core_data())
-
             pft_cubes = convert_to_pfts(category_cube, lc_to_pft_map, 0, 220)
 
             year_regridded_pft_cubes = iris.cube.CubeList()
