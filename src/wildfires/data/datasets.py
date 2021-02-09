@@ -4069,7 +4069,9 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
                 )
 
         # Download data for processing.
-        download_dir = os.path.join(tempfile.gettempdir(), self.name)
+        download_dir = os.path.join(
+            os.environ.get("EPHEMERAL", tempfile.gettempdir()), self.name
+        )
         if not os.path.isdir(download_dir):
             os.mkdir(download_dir)
 
