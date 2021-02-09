@@ -71,7 +71,7 @@ from ..utils import (
     translate_longitude_system,
 )
 from .landcover import conversion as lc_to_pft_map
-from .landcover import convert_to_pfts
+from .landcover import convert_to_pfts, get_mapping_pfts
 
 __all__ = (
     "CommitMatchError",
@@ -4086,6 +4086,8 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
             for year in range(start_year, end_year)
         }
 
+        all_pfts = get_mapping_pfts(lc_to_pft_map)
+
         regridded_pft_cubes = iris.cube.CubeList()
 
         for future in tqdm(
@@ -4194,12 +4196,75 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
                 cube.attributes["creation_dates"] = tuple(cube_creation_dates)
                 cube.attributes["time_coverages"] = tuple(cube_time_coverages)
 
-            merged_pft_cubes.append(cubes.merge_cube())
+            # Ensure the correct units are set.
+            cube.units = cf_units.Unit("1")
 
-        self.cubes = merged_pft_cubes
-        assert len(self.cubes) == len(
+            # Merge and divide by 100 so that the result is in the range [0, 1].
+            merged_pft_cubes.append(cubes.merge_cube() / 100.0)
+
+        assert len(merged_pft_cubes) == len(
             all_pfts
         ), "There should be as many cubes as PFTs."
+
+        # Rename variables to match the previous ESA CCI PFT dataset.
+        for cube in merged_pft_cubes:
+            cube.long_name = "pft" + cube.long_name.replace(".", "")
+
+        # Aggregate PFTs following Forkel et al. 2017.
+
+        # Natural and managed grass & croplands.
+        hrb_crop = reduce(
+            operator.add,
+            (
+                merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
+                for pft_name in ("Herb", "Crop")
+            ),
+        )
+        hrb_crop.long_name = "HrbCrp"
+
+        # All Tree PFTs
+        tree_all = reduce(
+            operator.add,
+            (
+                merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
+                for pft_name in ("Tree.BE", "Tree.BD", "Tree.NE", "Tree.ND")
+            ),
+        )
+        tree_all.long_name = "TreeAll"
+
+        # All Shrub PFTs
+        shrub_all = reduce(
+            operator.add,
+            (
+                merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
+                for pft_name in ("Shrub.BE", "Shrub.BD", "Shrub.NE")
+            ),
+        )
+        shrub_all.long_name = "ShrubAll"
+
+        # All Broadleaf PFTs
+        broadleaf = reduce(
+            operator.add,
+            (
+                merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
+                for pft_name in ("Tree.BE", "Tree.BD", "Shrub.BE", "Shrub.BD")
+            ),
+        )
+        broadleaf.long_name = "Broadleaf"
+
+        # All Needleleaf PFTs
+        needleleaf = reduce(
+            operator.add,
+            (
+                merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
+                for pft_name in ("Tree.NE", "Tree.ND", "Shrub.NE")
+            ),
+        )
+        needleleaf.long_name = "Needleleaf"
+
+        merged_pft_cubes.extend([hrb_crop, tree_all, shrub_all, broadleaf, needleleaf])
+
+        self.cubes = merged_pft_cubes
         self.write_cache()
 
     def get_monthly_data(
