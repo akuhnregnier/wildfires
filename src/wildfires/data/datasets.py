@@ -4225,7 +4225,7 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
             operator.add,
             (
                 merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
-                for pft_name in ("Herb", "Crop")
+                for pft_name in ("pftHerb", "pftCrop")
             ),
         )
         hrb_crop.long_name = "HrbCrp"
@@ -4235,7 +4235,7 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
             operator.add,
             (
                 merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
-                for pft_name in ("Tree.BE", "Tree.BD", "Tree.NE", "Tree.ND")
+                for pft_name in ("pftTreeBE", "pftTreeBD", "pftTreeNE", "pftTreeND")
             ),
         )
         tree_all.long_name = "TreeAll"
@@ -4245,7 +4245,7 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
             operator.add,
             (
                 merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
-                for pft_name in ("Shrub.BE", "Shrub.BD", "Shrub.NE")
+                for pft_name in ("pftShrubBE", "pftShrubBD", "pftShrubNE")
             ),
         )
         shrub_all.long_name = "ShrubAll"
@@ -4255,7 +4255,7 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
             operator.add,
             (
                 merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
-                for pft_name in ("Tree.BE", "Tree.BD", "Shrub.BE", "Shrub.BD")
+                for pft_name in ("pftTreeBE", "pftTreeBD", "pftShrubBE", "pftShrubBD")
             ),
         )
         broadleaf.long_name = "Broadleaf"
@@ -4265,7 +4265,7 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
             operator.add,
             (
                 merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
-                for pft_name in ("Tree.NE", "Tree.ND", "Shrub.NE")
+                for pft_name in ("pftTreeNE", "pftTreeND", "pftShrubNE")
             ),
         )
         needleleaf.long_name = "Needleleaf"
