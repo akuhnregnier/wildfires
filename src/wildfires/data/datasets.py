@@ -20,6 +20,7 @@ TODO:
 import concurrent.futures
 import glob
 import logging
+import multiprocessing
 import operator
 import os
 import re
@@ -62,6 +63,7 @@ from ..qstat import get_ncpus
 from ..utils import (
     box_mask,
     ensure_datetime,
+    get_batches,
     get_centres,
     get_land_mask,
     in_360_longitude_system,
@@ -5025,35 +5027,75 @@ class Ext_HYDE(Dataset):
         # baseline??
         files = glob.glob(os.path.join(self.dir, "*.asc"), recursive=True)
 
+        result_queue = multiprocessing.Queue()
+
+        procs = []
+        for chunked_files in get_batches(files, n=get_ncpus()):
+            procs.append(
+                multiprocessing.Process(
+                    target=self.process_files,
+                    args=(
+                        chunked_files,
+                        self.time_unit_str,
+                        self.calendar,
+                        self.time_unit,
+                        result_queue,
+                    ),
+                )
+            )
+            procs[-1].start()
+
         cube_list = iris.cube.CubeList()
+
+        prog = tqdm(desc="Processing files", total=len(files))
+        while len(cube_list) < len(files):
+            cube_list.append(result_queue.get())
+            prog.update()
+        prog.close()
+
+        for proc in procs:
+            # Wait for workers to finish.
+            proc.join()
+
+        self.cubes = cube_list.merge()
+        self.write_cache()
+
+    @staticmethod
+    def process_files(files, time_unit_str, calendar, time_unit, result_queue):
         mapping = {
-            "uopp": {},
-            "urbc": {},
-            "tot_rice": {},
-            "tot_rainfed": {},
-            "tot_irri": {},
-            "rurc": {},
-            "rf_rice": {},
-            "rf_norice": {},
-            "rangeland": {},
-            "popd": {},
-            "popc": {},
-            "pasture": {},
-            "ir_rice": {},
-            "ir_norice": {},
-            "grazing": {},
-            "cropland": {},
-            "conv_rangeland": {},
+            variable: {}
+            for variable in [
+                "conv_rangeland",
+                "cropland",
+                "grazing",
+                "ir_norice",
+                "ir_rice",
+                "pasture",
+                "popc",
+                "popd",
+                "rangeland",
+                "rf_norice",
+                "rf_rice",
+                "rurc",
+                "shifting",
+                "tot_irri",
+                "tot_rainfed",
+                "tot_rice",
+                "uopp",
+                "urbc",
+            ]
         }
+
         pattern = re.compile(r"(.*)(\d{4})AD")
 
-        for f in tqdm(files):
+        regridder = None
+
+        for f in files:
             groups = pattern.search(os.path.split(f)[1]).groups()
             variable_key = groups[0].strip("_")
             year = int(groups[1])
             data = np.loadtxt(f, skiprows=6, ndmin=2)
             assert data.shape == (2160, 4320)
-            data = data.reshape(2160, 4320)
             data = np.ma.MaskedArray(data, mask=np.isclose(data, -9999))
 
             new_latitudes = get_centres(np.linspace(90, -90, data.shape[0] + 1))
@@ -5068,11 +5110,9 @@ class Ext_HYDE(Dataset):
             grid_coords = [(new_lat_coord, 0), (new_lon_coord, 1)]
 
             time_coord = iris.coords.DimCoord(
-                cf_units.date2num(
-                    datetime(year, 1, 1), self.time_unit_str, self.calendar
-                ),
+                cf_units.date2num(datetime(year, 1, 1), time_unit_str, calendar),
                 standard_name="time",
-                units=self.time_unit,
+                units=time_unit,
             )
 
             cube = iris.cube.Cube(
@@ -5083,11 +5123,10 @@ class Ext_HYDE(Dataset):
                 long_name=mapping[variable_key].get("long_name"),
                 aux_coords_and_dims=[(time_coord, None)],
             )
-            regrid_cube = regrid(cube)
-            cube_list.append(regrid_cube)
-
-        self.cubes = cube_list.merge()
-        self.write_cache()
+            regrid_cube, regridder = regrid(
+                cube, area_weighted=True, regridder=regridder, return_regridder=True
+            )
+            result_queue.put(regrid_cube)
 
     def get_monthly_data(
         self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
