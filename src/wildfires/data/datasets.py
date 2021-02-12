@@ -5023,7 +5023,7 @@ class Ext_HYDE(Dataset):
 
         # TODO: Consider upper and lower estimates as well, not just
         # baseline??
-        files = glob.glob(os.path.join(self.dir, "baseline", "*.asc"), recursive=True)
+        files = glob.glob(os.path.join(self.dir, "*.asc"), recursive=True)
 
         cube_list = iris.cube.CubeList()
         mapping = {
