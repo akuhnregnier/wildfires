@@ -5009,7 +5009,7 @@ class HYDE(Dataset):
 
 
 class Ext_HYDE(Dataset):
-    _pretty = "HYDE"
+    _pretty = "Ext HYDE"
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "HYDE_Ext")
