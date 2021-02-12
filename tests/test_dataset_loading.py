@@ -51,6 +51,6 @@ def test_dataset_fast(dataset):
 
 @pytest.mark.slow
 @data_availability
-@pytest.mark.parametrize("dataset", slow_datasets)
+@pytest.mark.parametrize("dataset", sorted(slow_datasets, key=attrgetter("__name__")))
 def test_dataset_slow(dataset):
     dataset_test_func(dataset)
