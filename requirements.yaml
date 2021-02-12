@@ -107,6 +107,7 @@ dependencies:
   - hdf4=4.2.13=h10796ff_1004
   - hdf5=1.10.6=nompi_h6a2412b_1114
   - heapdict=1.0.1=py_0
+  - hsluv=5.0.0=pyh9f0ad1d_0
   - icu=68.1=h58526e2_0
   - identify=1.5.13=pyh44b312d_0
   - idna=2.10=pyh9f0ad1d_0
