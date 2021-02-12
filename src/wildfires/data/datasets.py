@@ -4175,10 +4175,31 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
             assert len(cubes) == len(
                 future_to_dest
             ), "There should be as many cubes as there are downloaded years."
-            cube_ids = [cube.attributes["id"] for cube in cubes]
-            cube_tracking_ids = [cube.attributes["tracking_id"] for cube in cubes]
-            cube_creation_dates = [cube.attributes["creation_date"] for cube in cubes]
-            cube_time_coverages = [
+
+            join_attributes = (
+                "id",
+                "tracking_id",
+                "creation_date",
+                "contact",
+                "geospatial_lon_max",
+                "geospatial_lon_min",
+                "history",
+                "license",
+                "naming_authority",
+                "product_version",
+                "project",
+                "references",
+                "source",
+                "title",
+                "type",
+            )
+            joined_values = {}
+            for join_attribute in join_attributes:
+                joined_values[join_attribute] = tuple(
+                    sorted(set(cube.attributes[join_attribute] for cube in cubes))
+                )
+
+            cube_time_coverages = tuple(
                 "-".join(
                     (
                         cube.attributes["time_coverage_start"],
@@ -4186,29 +4207,29 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
                     )
                 )
                 for cube in cubes
-            ]
+            )
             # Remove the original attributes.
-            for attribute in (
-                "id",
-                "tracking_id",
-                "creation_date",
+            for attribute in list(join_attributes) + [
                 "time_coverage_start",
                 "time_coverage_end",
-            ):
+            ]:
                 for cube in cubes:
                     del cube.attributes[attribute]
             # Replace the original attributes with aggregated versions.
             for cube in cubes:
-                cube.attributes["ids"] = tuple(cube_ids)
-                cube.attributes["tracking_ids"] = tuple(cube_tracking_ids)
-                cube.attributes["creation_dates"] = tuple(cube_creation_dates)
-                cube.attributes["time_coverages"] = tuple(cube_time_coverages)
+                for join_attribute, joined in joined_values.items():
+                    cube.attributes[join_attribute] = joined
+                cube.attributes["time_coverages"] = cube_time_coverages
 
-            # Ensure the correct units are set.
-            cube.units = cf_units.Unit("1")
+                # Ensure the correct units are set.
+                cube.units = cf_units.Unit("1")
 
             # Merge and divide by 100 so that the result is in the range [0, 1].
-            merged_pft_cubes.append(cubes.merge_cube() / 100.0)
+            merged_cube = cubes.merge_cube()
+            rescaled_cube = merged_cube / 100.0
+            # Avoid losing properties like 'long_name' due to the division.
+            rescaled_cube.metadata = merged_cube.metadata
+            merged_pft_cubes.append(rescaled_cube)
 
         assert len(merged_pft_cubes) == len(
             all_pfts
@@ -4900,6 +4921,96 @@ class HYDE(Dataset):
 
     def __init__(self):
         self.dir = os.path.join(DATA_DIR, "HYDE")
+
+        self.time_unit_str = "hours since 1970-01-01 00:00:00"
+        self.calendar = "gregorian"
+        self.time_unit = cf_units.Unit(self.time_unit_str, calendar=self.calendar)
+
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
+        # TODO: Consider upper and lower estimates as well, not just
+        # baseline??
+        files = glob.glob(os.path.join(self.dir, "baseline", "*.asc"), recursive=True)
+
+        cube_list = iris.cube.CubeList()
+        mapping = {
+            "uopp": {},
+            "urbc": {},
+            "tot_rice": {},
+            "tot_rainfed": {},
+            "tot_irri": {},
+            "rurc": {},
+            "rf_rice": {},
+            "rf_norice": {},
+            "rangeland": {},
+            "popd": {},
+            "popc": {},
+            "pasture": {},
+            "ir_rice": {},
+            "ir_norice": {},
+            "grazing": {},
+            "cropland": {},
+            "conv_rangeland": {},
+        }
+        pattern = re.compile(r"(.*)(\d{4})AD")
+
+        for f in tqdm(files):
+            groups = pattern.search(os.path.split(f)[1]).groups()
+            variable_key = groups[0].strip("_")
+            year = int(groups[1])
+            data = np.loadtxt(f, skiprows=6, ndmin=2)
+            assert data.shape == (2160, 4320)
+            data = data.reshape(2160, 4320)
+            data = np.ma.MaskedArray(data, mask=np.isclose(data, -9999))
+
+            new_latitudes = get_centres(np.linspace(90, -90, data.shape[0] + 1))
+            new_longitudes = get_centres(np.linspace(-180, 180, data.shape[1] + 1))
+            new_lat_coord = iris.coords.DimCoord(
+                new_latitudes, standard_name="latitude", units="degrees"
+            )
+            new_lon_coord = iris.coords.DimCoord(
+                new_longitudes, standard_name="longitude", units="degrees"
+            )
+
+            grid_coords = [(new_lat_coord, 0), (new_lon_coord, 1)]
+
+            time_coord = iris.coords.DimCoord(
+                cf_units.date2num(
+                    datetime(year, 1, 1), self.time_unit_str, self.calendar
+                ),
+                standard_name="time",
+                units=self.time_unit,
+            )
+
+            cube = iris.cube.Cube(
+                data,
+                dim_coords_and_dims=grid_coords,
+                units=mapping[variable_key].get("unit"),
+                var_name=variable_key,
+                long_name=mapping[variable_key].get("long_name"),
+                aux_coords_and_dims=[(time_coord, None)],
+            )
+            regrid_cube = regrid(cube)
+            cube_list.append(regrid_cube)
+
+        self.cubes = cube_list.merge()
+        self.write_cache()
+
+    def get_monthly_data(
+        self, start=PartialDateTime(2000, 1), end=PartialDateTime(2000, 12)
+    ):
+        """Linear interpolation onto the target months."""
+        return self.interpolate_yearly_data(start, end)
+
+
+class Ext_HYDE(Dataset):
+    _pretty = "HYDE"
+
+    def __init__(self):
+        self.dir = os.path.join(DATA_DIR, "HYDE_Ext")
 
         self.time_unit_str = "hours since 1970-01-01 00:00:00"
         self.calendar = "gregorian"
