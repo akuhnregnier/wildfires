@@ -25,6 +25,7 @@ setuptools.setup(
         valid-ports=wildfires.ports:main
         sync-worker-ports=wildfires.dask_cx1.sync_worker_ports:main
         general-lab=wildfires.dask_cx1.dask_utils:main
+        mosaic-modis-tiles=wildfires.data.mosaic_modis_tiles:main
       """,
     python_requires=">=3.7",
     setup_requires=["setuptools-scm"],
