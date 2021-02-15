@@ -92,7 +92,17 @@ def delayed_read_band_data(fpar_dataset_name, qc_dataset_name):
     return fpar_data
 
 
-def mosaic_process_date(date, date_files, temporary_dir, output_dir, memory):
+def mosaic_process_date(
+    date,
+    date_files,
+    temporary_dir,
+    output_dir,
+    memory,
+    multi=False,
+    overwrite=False,
+    gdal_translate="gdal_translate",
+    gdalwarp="gdalwarp",
+):
     """Mosaic and regrid MODIS Fpar data from a given date.
 
     Args:
@@ -101,6 +111,10 @@ def mosaic_process_date(date, date_files, temporary_dir, output_dir, memory):
         temporary_dir (pathlib.Path): Directory for temporary files.
         output_dir (pathlib.Path): Directory for output files.
         memory (int): GDAL memory in MB. Capped at 9999 MB.
+        multi (bool): If True, add the '-multi' option to gdalwarp.
+        overwrite (bool): If True, overwrite existing files.
+        gdal_translate (str): gdal_translate command path.
+        gdalwarp (str): gdalwarp command path.
 
     Returns:
         None or pathlib.Path: None if no processing could be done, or the filename of
@@ -122,10 +136,7 @@ def mosaic_process_date(date, date_files, temporary_dir, output_dir, memory):
 
     mosaic_file = output_base.with_name(output_base.stem + "_mosaic.hdf5")
     mosaic_vrt_file = mosaic_file.with_suffix(".vrt")
-    regridded_file = (Path(temporary_dir) / (output_base.stem + "_regrid")).with_suffix(
-        ".nc"
-    )
-    processed_file = (Path(output_dir) / (output_base.stem + "_0d25")).with_suffix(
+    regridded_file = (Path(output_dir) / (output_base.stem + "_0d25")).with_suffix(
         ".nc"
     )
 
@@ -210,6 +221,10 @@ def mosaic_process_date(date, date_files, temporary_dir, output_dir, memory):
 
     data = da.block(data_blocks)[::-1]
 
+    if mosaic_file.is_file() and overwrite:
+        logger.info(f"'{mosaic_file}' exists. Deleting.")
+        mosaic_file.unlink()
+
     recalculate = False
     if not mosaic_file.is_file():
         recalculate = True
@@ -236,7 +251,7 @@ def mosaic_process_date(date, date_files, temporary_dir, output_dir, memory):
 
     cmd = " ".join(
         (
-            f"gdal_translate -of VRT -a_srs '{modis_proj}'",
+            f"{gdal_translate} -of VRT -a_srs '{modis_proj}'",
             " ".join(gcp_opts),
             f'HDF5:"{mosaic_file}"://fpar {mosaic_vrt_file}',
         )
@@ -247,7 +262,8 @@ def mosaic_process_date(date, date_files, temporary_dir, output_dir, memory):
     check_output(shlex.split(cmd))
 
     if regridded_file.is_file():
-        if recalculate:
+        if recalculate or overwrite:
+            logger.info(f"'{regridded_file}' exists. Deleting.")
             regridded_file.unlink()
         else:
             logger.warning(
@@ -258,10 +274,10 @@ def mosaic_process_date(date, date_files, temporary_dir, output_dir, memory):
 
     cmd = " ".join(
         (
-            f"gdalwarp -s_srs '{modis_proj}' -t_srs EPSG:4326 -ot Float32",
+            f"{gdalwarp} -s_srs '{modis_proj}' -t_srs EPSG:4326 -ot Float32",
             "-srcnodata 255 -dstnodata -1",
             "-r average",
-            "-multi",
+            *(("-multi",) if multi else ()),
             "-te -180 -90 180 90 -ts 1440 720",
             f"-wm {memory}",
             f"-of netCDF {mosaic_vrt_file} {regridded_file}",
@@ -349,6 +365,17 @@ def main():
         help="output directory",
         default=Path(os.environ["EPHEMERAL"]) / "MOD15A2Hv006_0d25",
     )
+    parser.add_argument(
+        "--multi", action="store_true", help="add '-multi' to gdalwarp command"
+    )
+    parser.add_argument(
+        "--overwrite", action="store_true", help="overwrite existing files"
+    )
+    parser.add_argument(
+        "--gdal_translate", help="gdal_translate command path", default="gdal_translate"
+    )
+    parser.add_argument("--gdalwarp", help="gdalwarp command path", default="gdalwarp")
+
     args = parser.parse_args()
 
     enable_logging(level="DEBUG")
@@ -360,5 +387,13 @@ def main():
 
     for date, date_files in tqdm(file_map.items(), desc="Processing MODIS fPAR"):
         mosaic_process_date(
-            date, date_files, args.temporary_dir, args.output_dir, args.memory
+            date,
+            date_files,
+            args.temporary_dir,
+            args.output_dir,
+            args.memory,
+            args.multi,
+            args.overwrite,
+            args.gdal_translate,
+            args.gdalwarp,
         )
