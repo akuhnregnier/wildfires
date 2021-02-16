@@ -4214,6 +4214,12 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
             for attribute in list(join_attributes) + [
                 "time_coverage_start",
                 "time_coverage_end",
+                # Removing flag-related attributes since this prevents round-trip
+                # consistency of the units '1' the will be assigned later. Otherwise
+                # these units would be reset upon saving/loading.
+                # See https://github.com/SciTools/iris/commit/d4f9a3a2c5b7125647a3fcb354a754d2a893d08e.
+                "flag_meanings",
+                "flag_values",
             ]:
                 for cube in cubes:
                     del cube.attributes[attribute]
