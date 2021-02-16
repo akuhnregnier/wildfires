@@ -4243,57 +4243,29 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
 
         # Aggregate PFTs following Forkel et al. 2017.
 
-        # Natural and managed grass & croplands.
-        hrb_crop = reduce(
-            operator.add,
-            (
-                merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
-                for pft_name in ("pftHerb", "pftCrop")
-            ),
-        )
-        hrb_crop.long_name = "HrbCrp"
-
-        # All Tree PFTs
-        tree_all = reduce(
-            operator.add,
-            (
-                merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
-                for pft_name in ("pftTreeBE", "pftTreeBD", "pftTreeNE", "pftTreeND")
-            ),
-        )
-        tree_all.long_name = "TreeAll"
-
-        # All Shrub PFTs
-        shrub_all = reduce(
-            operator.add,
-            (
-                merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
-                for pft_name in ("pftShrubBE", "pftShrubBD", "pftShrubNE")
-            ),
-        )
-        shrub_all.long_name = "ShrubAll"
-
-        # All Broadleaf PFTs
-        broadleaf = reduce(
-            operator.add,
-            (
-                merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
-                for pft_name in ("pftTreeBE", "pftTreeBD", "pftShrubBE", "pftShrubBD")
-            ),
-        )
-        broadleaf.long_name = "Broadleaf"
-
-        # All Needleleaf PFTs
-        needleleaf = reduce(
-            operator.add,
-            (
-                merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
-                for pft_name in ("pftTreeNE", "pftTreeND", "pftShrubNE")
-            ),
-        )
-        needleleaf.long_name = "Needleleaf"
-
-        merged_pft_cubes.extend([hrb_crop, tree_all, shrub_all, broadleaf, needleleaf])
+        pft_aggregations = {
+            # Natural and managed grass & croplands.
+            "HrbCrp": ("pftHerb", "pftCrop"),
+            # All Tree PFTs
+            "TreeAll": ("pftTreeBE", "pftTreeBD", "pftTreeNE", "pftTreeND"),
+            # All Shrub PFTs
+            "ShrubAll": ("pftShrubBE", "pftShrubBD", "pftShrubNE"),
+            # All Broadleaf PFTs
+            "Broadleaf": ("pftTreeBE", "pftTreeBD", "pftShrubBE", "pftShrubBD"),
+            # All Needleleaf PFTs
+            "Needleleaf": ("pftTreeNE", "pftTreeND", "pftShrubNE"),
+        }
+        for agg_name, pfts in pft_aggregations.items():
+            agg_cube = reduce(
+                operator.add,
+                (
+                    merged_pft_cubes.extract_cube(iris.Constraint(pft_name))
+                    for pft_name in pfts
+                ),
+            )
+            agg_cube.long_name = agg_name
+            agg_cube.units = cf_units.Unit("1")
+            merged_pft_cubes.append(agg_cube)
 
         self.cubes = merged_pft_cubes
         if write_cache:
