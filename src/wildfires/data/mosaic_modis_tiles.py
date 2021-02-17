@@ -33,6 +33,7 @@ from subprocess import check_output
 
 import dask
 import dask.array as da
+import iris
 import numpy as np
 import rasterio
 from pyproj import Transformer
@@ -136,9 +137,8 @@ def mosaic_process_date(
 
     mosaic_file = output_base.with_name(output_base.stem + "_mosaic.hdf5")
     mosaic_vrt_file = mosaic_file.with_suffix(".vrt")
-    regridded_file = (Path(output_dir) / (output_base.stem + "_0d25")).with_suffix(
-        ".nc"
-    )
+    regridded_file = output_base.with_name(output_base.stem + "_0d25_raw.nc")
+    output_file = Path(output_dir) / (output_base.stem + "_0d25.nc")
 
     # Used to convert the bounding coordinates to MODIS (m) coordinates.
     # NOTE: transformer.transform(lat, lon) -> (x, y)
@@ -261,6 +261,7 @@ def mosaic_process_date(
 
     check_output(shlex.split(cmd))
 
+    execute_gdalwarp = True
     if regridded_file.is_file():
         if recalculate or overwrite:
             logger.info(f"'{regridded_file}' exists. Deleting.")
@@ -270,25 +271,46 @@ def mosaic_process_date(
                 f"'{regridded_file}' exists and '{mosaic_file}' was not changed. "
                 "Not executing gdalwarp."
             )
-            return regridded_file
+            execute_gdalwarp = False
 
-    cmd = " ".join(
-        (
-            f"{gdalwarp} -s_srs '{modis_proj}' -t_srs EPSG:4326 -ot Float32",
-            "-srcnodata 255 -dstnodata -1",
-            "-r average",
-            *(("-multi",) if multi else ()),
-            "-te -180 -90 180 90 -ts 1440 720",
-            f"-wm {memory}",
-            f"-of netCDF {mosaic_vrt_file} {regridded_file}",
+    if execute_gdalwarp:
+        cmd = " ".join(
+            (
+                f"{gdalwarp} -s_srs '{modis_proj}' -t_srs EPSG:4326 -ot Float32",
+                "-srcnodata 255 -dstnodata -1",
+                "-r average",
+                *(("-multi",) if multi else ()),
+                "-te -180 -90 180 90 -ts 1440 720",
+                f"-wm {memory}",
+                f"-of netCDF {mosaic_vrt_file} {regridded_file}",
+            )
         )
-    )
+        logger.debug(f"{date} gdalwarp cmd: {cmd}")
+        check_output(shlex.split(cmd))
 
-    logger.debug(f"{date} gdalwarp cmd: {cmd}")
+    if output_file.is_file():
+        if execute_gdalwarp or overwite:
+            logger.info(f"'{output_file}' exists. Deleting.")
+            output_file.unlink()
+        else:
+            logger.warning(
+                f"'{output_file}' exists and '{regridded_file}' was not changed. "
+                "Not carrying out final processing."
+            )
+            return output_file
 
-    check_output(shlex.split(cmd))
+    # Read the regridded file, apply scaling factor, change metadata, and write to the
+    # output file.
+    cube = iris.load_cube(str(regridded_file))
+    cube *= 0.01
+    cube.var_name = None
+    cube.standard_name = None
+    cube.long_name = "Fraction of Absorbed Photosynthetically Active Radiation"
+    cube.units = "1"
+    iris.save(cube, output_file, zlib=False)
 
-    return regridded_file
+    logger.info(f"Finished writing to '{output_file}'.")
+    return output_file
 
 
 def get_file_dates(data_dir, start_date=None, end_date=None):

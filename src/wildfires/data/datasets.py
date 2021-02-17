@@ -5443,6 +5443,114 @@ class MOD15A2H_LAI_fPAR(MonthlyDataset):
         # of the month these other samples are)?
 
 
+class Ext_MOD15A2H_fPAR(MonthlyDataset):
+    _pretty = "Ext MOD15A2H"
+    pretty_variable_names = {
+        "Fraction of Absorbed Photosynthetically Active Radiation": "FAPAR",
+    }
+
+    def __init__(self):
+        self.cubes = self.read_cache()
+        # If a CubeList has been loaded successfully, exit __init__
+        if self.cubes:
+            return
+
+        # Location of temporary source files.
+        # See wildfires/data/mosaic_modis_tiles.py
+        raw_dir = os.path.join(os.environ["EPHEMERAL"], "MOD15A2Hv006_0d25")
+        files = glob.glob(os.path.join(raw_dir, "*.nc"))
+        files.sort()
+        raw_cubes = load_cubes(files)
+
+        raw_dates = []
+        centr_offset = timedelta(days=3, seconds=86399, microseconds=500000)
+        for f in files:
+            match = re.search("Fpar_500m_(\d{7})_0d25.nc", os.path.split(f)[-1]).group(
+                1
+            )
+            # The filenames contains the starting date of the 8 day interval - compute
+            # the midpoint here.
+            # TODO: Actually propagate and use the original information from the HDF
+            # files, e.g.
+            # RANGEBEGINNINGDATE=2014-10-08
+            # RANGEBEGINNINGTIME=00:00:00
+            # RANGEENDINGDATE=2014-10-15
+            # RANGEENDINGTIME=23:59:59
+            # Note that some end dates overlap the next start dates, e.g. at year
+            # ends.
+            raw_dates.append(
+                datetime(int(match[:4]), 1, 1)
+                + timedelta(days=(int(match[4:]) - 1))
+                + centr_offset
+            )
+
+        cube_time_coords = np.array(
+            [
+                iris.coords.DimCoord(
+                    self.time_unit.date2num(raw_date),
+                    standard_name="time",
+                    units=self.time_unit,
+                )
+                for raw_date in raw_dates
+            ]
+        )
+
+        for cube, time_coord in zip(raw_cubes, cube_time_coords):
+            del cube.attributes["history"]
+            cube.add_aux_coord(time_coord)
+
+        merged_cube = raw_cubes.merge_cube()
+
+        merged_time_coord = merged_cube.coord("time")
+        assert merged_cube.coord_dims(merged_time_coord) == (0,)
+
+        expected_missing = (datetime(2016, 2, 18),)
+        missing_indices = np.where(np.diff(merged_time_coord.points) > (8 + 1e-5))[0]
+        assert len(missing_indices) <= len(
+            expected_missing
+        ), "There should usually be at most 8 days between samples."
+        for missing_index in missing_indices:
+            # Convert the centred date from above back to the starting date before
+            # adding the expected 8-day period.
+            # TODO: This may need to be modified should any missing values appear
+            # across year boundaries.
+            missing_date = raw_dates[missing_index] - centr_offset + timedelta(days=8)
+            assert missing_date in expected_missing, (
+                f"Missing date '{missing_date}' was not expected: "
+                f"{expected_missing}"
+            )
+
+        # TODO: Since the day in the month for which the data is provided
+        # is variable, take into account neighbouring months as well in a
+        # weighted average (depending on how many days away from the middle
+        # of the month these other samples are)?
+        iris.coord_categorisation.add_year(merged_cube, "time")
+        iris.coord_categorisation.add_month_number(merged_cube, "time")
+        averaged_cube = merged_cube.aggregated_by(
+            ["year", "month_number"], iris.analysis.MEAN
+        )
+
+        # Verify the integrity of the time coordinate.
+        avg_time_coord = averaged_cube.coord("time")
+        months = []
+        years = []
+        for i in range(avg_time_coord.shape[0]):
+            months.append(avg_time_coord.cell(i).point.month)
+            years.append(avg_time_coord.cell(i).point.year)
+
+        assert np.all(
+            np.diff(np.where(np.diff(months) != 1)) == 12
+        ), "The year should change every 12 samples!"
+        assert np.all(
+            np.diff(np.where(np.diff(years) == 1)) == 12
+        ), "The year should increase every 12 samples!"
+
+        averaged_cube.units = "1"
+
+        self.cubes = iris.cube.CubeList([averaged_cube])
+        self.write_cache()
+
+
 class Simard_canopyheight(Dataset):
     _pretty = "Simard Canopy Height"
 
