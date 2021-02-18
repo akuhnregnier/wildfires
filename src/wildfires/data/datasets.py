@@ -5504,6 +5504,9 @@ class Ext_MOD15A2H_fPAR(MonthlyDataset):
         merged_time_coord = merged_cube.coord("time")
         assert merged_cube.coord_dims(merged_time_coord) == (0,)
 
+        assert np.all(merged_cube.data >= 0), "All data should be >= 0"
+        assert np.all(merged_cube.data <= 1), "All data should be <= 1"
+
         expected_missing = (datetime(2016, 2, 18),)
         missing_indices = np.where(np.diff(merged_time_coord.points) > (8 + 1e-5))[0]
         assert len(missing_indices) <= len(
