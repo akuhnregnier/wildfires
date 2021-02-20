@@ -774,7 +774,7 @@ class CX1GeneralCluster(PBSCluster):
             + f"--lifetime-stagger {stagger}".split(),
             env_extra=list(mod_kwargs.get("env_extra", ()))
             + f"""
-export DASK_TEMPORARY_DIRECTORY=$TMPDIR
+export DASK_TEMPORARY_DIRECTORY=/tmp
 #
 JOBID="${{PBS_JOBID%%.*}}"
 echo $(date): JOBID $JOBID on host $(hostname).
