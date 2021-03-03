@@ -8,34 +8,33 @@ from subprocess import check_call
 
 from tqdm import tqdm
 
-# CX1 specific setup.
-data_dir = str(Path(os.environ["EPHEMERAL"]) / "MOD15A2Hv006")
-
-# Environment bin path.
-env_bin = Path(
-    "/rds/general/user/ahk114/home/.pyenv/versions/miniconda3-latest/envs/"
-    "wildfires/bin"
-)
-modis_download_bin = str(env_bin / "modis_download.py")
-
-
-def download_modis_day(day_str):
-    """Download a single day."""
-    return check_call(
-        [
-            modis_download_bin,
-            "-p",
-            "MOD15A2H.006",
-            "-f",
-            day_str,
-            "-O",
-            "-r",
-            data_dir,
-        ]
-    )
-
 
 if __name__ == "__main__":
+    # CX1 specific setup.
+    data_dir = str(Path(os.environ["EPHEMERAL"]) / "MOD15A2Hv006")
+
+    # Environment bin path.
+    env_bin = Path(
+        "/rds/general/user/ahk114/home/.pyenv/versions/miniconda3-latest/envs/"
+        "wildfires/bin"
+    )
+    modis_download_bin = str(env_bin / "modis_download.py")
+
+    def download_modis_day(day_str):
+        """Download a single day."""
+        return check_call(
+            [
+                modis_download_bin,
+                "-p",
+                "MOD15A2H.006",
+                "-f",
+                day_str,
+                "-O",
+                "-r",
+                data_dir,
+            ]
+        )
+
     futures = []
     with ThreadPoolExecutor(max_workers=40) as executor:
         for year in range(2012, 1999, -1):
