@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """Joblib Memory decorator with limited MaskedArray support."""
-from functools import wraps
+from functools import partial, wraps
 
 import joblib
 import numpy as np
 import xxhash
 
-from ..joblib.caching import CodeObj, wrap_decorator
+from ..joblib.caching import CodeObj
 from .cube_aggregation import Datasets
 from .datasets import Dataset
 
@@ -53,8 +53,7 @@ def get_hash(arg):
     return arg_hash
 
 
-@wrap_decorator
-def ma_cache(func, *, memory=None):
+class ma_cache:
     """MaskedArray-capable Joblib Memory decorator.
 
     This is achieved by looking for MaskedArray instances in certain predefined
@@ -64,30 +63,76 @@ def ma_cache(func, *, memory=None):
     Note: This realises any lazy data.
 
     """
-    if memory is None:
-        raise ValueError("A Joblib.memory.Memory instance must be given.")
 
-    @wraps(func)
-    def cached_func(*orig_args, **orig_kwargs):
+    def __init__(self, *, memory=None):
+        if memory is None:
+            raise ValueError("A Joblib.memory.Memory instance must be given.")
+        self.memory = memory
+
+    def __call__(self, *args, **kwargs):
+        if len(args) == 1 and callable(args[0]):
+            # The decorator was not configured with additional arguments.
+            return self._decorator(args[0])
+
+        def decorator_wrapper(f):
+            return self._decorator(f, *args, **kwargs)
+
+        return decorator_wrapper
+
+    @staticmethod
+    def _get_hashed(func, *args, **kwargs):
         # Go through the original arguments and hash the contents manually.
         args_hashes = []
-        for arg in orig_args:
+        for arg in args:
             args_hashes.append(get_hash(arg))
 
         # Repeat the above process for the kwargs. The keys should never include
         # MaskedArray data so we only need to deal with the values.
         kwargs_hashes = {}
-        for key, arg in orig_kwargs.items():
+        for key, arg in kwargs.items():
             kwargs_hashes[key] = get_hash(arg)
 
         # Include a hashed representation of the original function to ensure we can
         # tell different functions apart.
         func_code = CodeObj(func.__code__).hashable()
 
-        @memory.cache(ignore=["args", "kwargs"])
-        def inner(func_code, args_hashes, kwargs_hashes, args, kwargs):
+        return dict(
+            func_code=func_code, args_hashes=args_hashes, kwargs_hashes=kwargs_hashes
+        )
+
+    def _decorator(self, func):
+        def inner(hashed, args, kwargs):
             return func(*args, **kwargs)
 
-        return inner(func_code, args_hashes, kwargs_hashes, orig_args, orig_kwargs)
+        cached_inner = self.memory.cache(ignore=["args", "kwargs"])(inner)
 
-    return cached_func
+        @wraps(func)
+        def cached_func(*orig_args, **orig_kwargs):
+            hashed = ma_cache._get_hashed(func, *orig_args, **orig_kwargs)
+            return cached_inner(hashed, orig_args, orig_kwargs)
+
+        return Decorated(
+            cached_func=cached_func,
+            cached_inner=cached_inner,
+            bound_get_hashed=partial(ma_cache._get_hashed, func),
+        )
+
+
+class Decorated:
+    """A cached function."""
+
+    def __init__(self, cached_func, cached_inner, bound_get_hashed):
+        self.cached_func = cached_func
+        self._cached_inner = cached_inner
+        self._get_hashed = bound_get_hashed
+
+    def __call__(self, *args, **kwargs):
+        return self.cached_func(*args, **kwargs)
+
+    def is_cached(self, *args, **kwargs):
+        """Return True if this call is already cached and False otherwise."""
+        return self._cached_inner.store_backend.contains_item(
+            self._cached_inner._get_output_identifiers(
+                self._get_hashed(*args, **kwargs), args, kwargs
+            )
+        )

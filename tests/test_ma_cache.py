@@ -96,26 +96,25 @@ def test_ma_cache(dummy_memory):
     dataset = DummyDataset()
     dataset.cube.data.mask[5, 180, 300] = True
 
-    assert dataset == dummy_func(
-        dataset,
+    args = (
         (1, 2, 3),
         2,
         3,
+    )
+    kwargs = dict(
         a=10,
         b=20,
         c=np.ma.MaskedArray([1, 2, 3], mask=[1, 0, 1]),
     )
 
+    assert not dummy_func.is_cached(dataset, *args, **kwargs)
+
+    assert dataset == dummy_func(dataset, *args, **kwargs)
+
+    assert dummy_func.is_cached(dataset, *args, **kwargs)
+
     # Test the loading too.
-    loaded = dummy_func(
-        dataset,
-        (1, 2, 3),
-        2,
-        3,
-        a=10,
-        b=20,
-        c=np.ma.MaskedArray([1, 2, 3], mask=[1, 0, 1]),
-    )
+    loaded = dummy_func(dataset, *args, **kwargs)
     assert loaded is not dataset
     assert loaded.cube.data is not dataset.cube.data
     assert loaded == dataset
@@ -124,6 +123,7 @@ def test_ma_cache(dummy_memory):
 
 def test_multiple_function_ma_cache(dummy_memory):
     """Ensure that the decorator can discern between different functions."""
+
     @ma_cache(memory=dummy_memory)
     def dummy_func1(x):
         return x + 1
@@ -132,8 +132,14 @@ def test_multiple_function_ma_cache(dummy_memory):
     def dummy_func2(x):
         return x + 2
 
+    assert not dummy_func1.is_cached(0)
+    assert not dummy_func2.is_cached(0)
+
     assert dummy_func1(0) == 1
     assert dummy_func2(0) == 2
+
+    assert dummy_func1.is_cached(0)
+    assert dummy_func2.is_cached(0)
 
     # Now test the previously cached versions.
     assert dummy_func1(0) == 1
