@@ -45,7 +45,7 @@ def hash_df(df):
     This only considers the index, data, and column names.
 
     """
-    dataset_hash = xxhash.xxh64_hexdigest(df.values)
+    dataset_hash = xxhash.xxh64_hexdigest(np.ascontiguousarray(df.values))
     dataset_hash += joblib.hashing.hash(df.index)
     dataset_hash += joblib.hashing.hash(df.columns)
     return dataset_hash
