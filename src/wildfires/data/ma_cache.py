@@ -4,6 +4,7 @@ from functools import partial, wraps
 
 import joblib
 import numpy as np
+import pandas as pd
 import xxhash
 
 from ..joblib.caching import CodeObj
@@ -38,6 +39,18 @@ def hash_dataset(dataset):
     return dataset_hash
 
 
+def hash_df(df):
+    """Compute the hash of a pandas DataFrame.
+
+    This only considers the index, data, and column names.
+
+    """
+    dataset_hash = xxhash.xxh64_hexdigest(df.values)
+    dataset_hash += joblib.hashing.hash(df.index)
+    dataset_hash += joblib.hashing.hash(df.columns)
+    return dataset_hash
+
+
 def get_hash(arg):
     """Compute the hash."""
     if isinstance(arg, np.ma.core.MaskedArray):
@@ -48,6 +61,8 @@ def get_hash(arg):
             arg_hash += hash_dataset(dataset)
     elif isinstance(arg, Dataset):
         arg_hash = hash_dataset(arg)
+    elif isinstance(arg, pd.DataFrame):
+        arg_hash = hash_df(arg)
     else:
         arg_hash = joblib.hashing.hash(arg)
     return arg_hash
