@@ -1325,15 +1325,23 @@ class DaskGridSearchCV(GridSearchCV):
 
 
 def dask_fit_loco(
-    estimator, X_train, y_train, client, leave_out, local_n_jobs=None, verbose=False
+    estimator,
+    X_train,
+    y_train,
+    client,
+    leave_out,
+    local_n_jobs=None,
+    verbose=False,
+    X_test=None,
+    y_test=None,
 ):
     """Simple LOCO feature importances.
 
     Args:
         estimator (object implementing `dask_fit()` and `score()` methods): Estimator
             to be evaluated.
-        train_X (pandas DataFrame): DataFrame containing the training data.
-        train_y (pandas Series or array-like): Target data.
+        X_train (pandas DataFrame): DataFrame containing the training data.
+        y_train (pandas Series or array-like): Target data.
         client (`dask.distributed.Client`): Dask Client used to submit tasks to the
             scheduler.
         leave_out (iterable of column names): Column names to exclude. An empty string
@@ -1343,6 +1351,8 @@ def dask_fit_loco(
             backend with `local_n_jobs` threads.
         verbose (bool): If True, print out progress information related to the fitting
             of individual sub-estimators and scoring of the resulting estimators.
+        X_test (pandas DataFrame): DataFrame containing the test data.
+        y_test (pandas Series or array-like): Test data.
 
     Returns:
         mse: Mean squared error of the training set predictions.
@@ -1409,6 +1419,19 @@ def dask_fit_loco(
                 results[column]["mse"] = mean_squared_error(
                     y_true=y_train, y_pred=y_pred
                 )
+
+                if X_test is not None and y_test is not None:
+                    sel_X_test = np.asarray(
+                        X_test[[col for col in X_test.columns if col != column]]
+                    )
+                    y_test_pred = estimator.predict(sel_X_test)
+                    results[column]["test_score"] = r2_score(
+                        y_true=y_test, y_pred=y_test_pred
+                    )
+                    results[column]["test_mse"] = mean_squared_error(
+                        y_true=y_test, y_pred=y_test_pred
+                    )
+
             estimator_score_count += 1
             score_event.set()
 
