@@ -114,6 +114,7 @@ dependencies:
   - idna=2.10=pyh9f0ad1d_0
   - imagecodecs=2021.1.11=py37h95c7a1b_1
   - imageio=2.9.0=py_0
+  - immutabledict=1.2.0=pyhd8ed1ab_0
   - importlib-metadata=3.4.0=py37h89c1867_0
   - importlib_metadata=3.4.0=hd8ed1ab_0
   - iniconfig=1.1.1=pyh9f0ad1d_0
