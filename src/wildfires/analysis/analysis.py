@@ -448,7 +448,7 @@ def data_processing(
         for cube in filled_datasets.cubes:
             cube.data.mask = master_mask
 
-    endog_data = pd.Series(get_unmasked(burned_area_cube.data))
+    endog_data = pd.Series(get_unmasked(burned_area_cube.data), name=target_variable)
     exog_datasets = filled_datasets.remove_variables(target_variable, inplace=False)
     data = []
     for cube in exog_datasets.cubes:
