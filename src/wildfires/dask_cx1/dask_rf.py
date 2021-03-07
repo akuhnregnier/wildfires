@@ -1606,7 +1606,9 @@ def dask_fit_combinations(
     # Task submission progress bar.
     submit_tqdm = tqdm(
         desc="Submitting tasks",
-        total=0,
+        total=len(feature_combinations) * n_splits,
+        # If updating with each batch of submissions.
+        # total=0,
         disable=not verbose,
         unit="task",
         smoothing=0.01,
@@ -1775,8 +1777,9 @@ def dask_fit_combinations(
             if not sub_est_fs:
                 raise RuntimeError("No sub-estimators were scheduled to be trained.")
 
-            submit_tqdm.total += comb_estimator.get_params()["n_estimators"]
-            submit_tqdm.update(0)
+            # Fine-grained tracking of submissions.
+            # submit_tqdm.total += comb_estimator.get_params()["n_estimators"]
+            # submit_tqdm.update(0)
 
             # Update progress meter upon task completion.
             for sub_est_f in sub_est_fs:
