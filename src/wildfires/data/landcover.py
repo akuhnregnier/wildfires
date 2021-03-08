@@ -6,7 +6,8 @@ import dask.array as da
 import iris
 import numpy as np
 import yaml
-from numba import njit
+
+from ..utils import parallel_njit
 
 # Load PFT conversion table as in Forkel et al. (2017).
 with (Path(__file__).parent / "conversion_table.yaml").open("r") as f:
@@ -69,7 +70,7 @@ def convert_to_pfts(category_cube, conversion, min_category, max_category):
         else:
             structured_mapping[landcover_index] = np.zeros(n_pfts, dtype=np.uint8)
 
-    @njit(parallel=True, nogil=True)
+    @parallel_njit
     def _execute_mapping(category, structured_mapping, n_pfts):
         """Carry out conversion to PFT fractions."""
         pfts = np.zeros((*category.shape, *(n_pfts,)))

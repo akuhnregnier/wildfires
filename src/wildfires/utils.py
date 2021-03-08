@@ -24,9 +24,12 @@ import fiona
 import iris
 import numpy as np
 from affine import Affine
+from numba import njit, set_num_threads
 from rasterio import features
 from scipy.ndimage import label
 from tqdm import tqdm
+
+from .qstat import get_ncpus
 
 logger = logging.getLogger(__name__)
 
@@ -1521,3 +1524,9 @@ def update_nested_dict(old, new, copy_mode="shallow"):
 
     old.update(new)
     return old
+
+
+def parallel_njit(func):
+    set_num_threads(get_ncpus())
+    jitted_func = njit(parallel=True, nogil=True)(func)
+    return jitted_func
