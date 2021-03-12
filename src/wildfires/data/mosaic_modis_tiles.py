@@ -289,7 +289,7 @@ def mosaic_process_date(
         check_output(shlex.split(cmd))
 
     if output_file.is_file():
-        if execute_gdalwarp or overwite:
+        if execute_gdalwarp or overwrite:
             logger.info(f"'{output_file}' exists. Deleting.")
             output_file.unlink()
         else:
