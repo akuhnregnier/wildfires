@@ -26,6 +26,8 @@ import logging
 import os
 import re
 import shlex
+import shutil
+import threading
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from collections import defaultdict
 from pathlib import Path
@@ -91,6 +93,20 @@ def delayed_read_band_data(fpar_dataset_name, qc_dataset_name):
         np.logical_or(fpar_data > max_valid, np.bitwise_and(qc_data, 0b11010111))
     ] = fill_value
     return fpar_data
+
+
+def safe_cube_save(cube, filename, temporary_dir):
+    """Write content to a temporary file first then move this."""
+    tmp_file = (
+        temporary_dir
+        / (f"{filename.name}-{id(threading.current_thread())}-{os.getpid()}")
+    ).with_suffix(filename.suffix)
+
+    # Write to temporary file.
+    iris.save(cube, tmp_file, zlib=False)
+
+    # Then move.
+    shutil.move(tmp_file, filename)
 
 
 def mosaic_process_date(
@@ -307,7 +323,7 @@ def mosaic_process_date(
     cube.standard_name = None
     cube.long_name = "Fraction of Absorbed Photosynthetically Active Radiation"
     cube.units = "1"
-    iris.save(cube, output_file, zlib=False)
+    safe_cube_save(cube, output_file, temporary_dir)
 
     logger.info(f"Finished writing to '{output_file}'.")
     return output_file
