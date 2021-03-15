@@ -138,7 +138,13 @@ def mosaic_process_date(
             the processed data.
 
     """
-    if len(date_files) < min_n_tiles:
+    if date == "2000225":
+        if len(date_files) != 131:
+            logger.warning(f"Expected 131 files for 2000225. Got {len(date_files)}.")
+    elif date == "2002081":
+        if len(date_files) != 179:
+            logger.warning(f"Expected 179 files for 2002081. Got {len(date_files)}.")
+    elif len(date_files) < min_n_tiles:
         logger.warning(
             f"Found {len(date_files)} files (tiles) for '{date}'. "
             f"Expected at least {min_n_tiles}."

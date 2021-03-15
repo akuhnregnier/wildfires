@@ -5463,7 +5463,12 @@ class Ext_MOD15A2H_fPAR(MonthlyDataset):
         raw_cubes = load_cubes(files)
 
         raw_dates = []
-        centr_offset = timedelta(days=3, seconds=86399, microseconds=500000)
+        centr_offset = timedelta(
+            days=3,
+            seconds=86399,
+            # The microseconds are not registered when using 'days since ...' units.
+            # microseconds=500000
+        )
         for f in files:
             match = re.search("Fpar_500m_(\d{7})_0d25.nc", os.path.split(f)[-1]).group(
                 1
@@ -5507,8 +5512,14 @@ class Ext_MOD15A2H_fPAR(MonthlyDataset):
         assert np.all(merged_cube.data >= 0), "All data should be >= 0"
         assert np.all(merged_cube.data <= 1), "All data should be <= 1"
 
-        expected_missing = (datetime(2016, 2, 18),)
+        # Dates are expected to be absent (start dates).
+        expected_missing = (
+            datetime(2001, 6, 18),
+            datetime(2001, 6, 26),
+            datetime(2016, 2, 18),
+        )
         missing_indices = np.where(np.diff(merged_time_coord.points) > (8 + 1e-5))[0]
+
         assert len(missing_indices) <= len(
             expected_missing
         ), "There should usually be at most 8 days between samples."
