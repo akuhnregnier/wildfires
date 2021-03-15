@@ -4286,7 +4286,9 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
 class ESA_CCI_Landcover_PFT(Dataset):
     _pretty = "ESA Landcover"
 
-    def __init__(self):
+    def __init__(self, override=False):
+        if not override:
+            raise NotImplementedError("Use Ext_ESA_CCI_Landcover_PFT instead.")
         self.dir = os.path.join(DATA_DIR, "ESA-CCI-LC_landcover", "0d25_lc2pft")
 
         self.cubes = self.read_cache()
