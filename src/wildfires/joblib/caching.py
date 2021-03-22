@@ -24,6 +24,8 @@ class CodeObj:
     For a function `func`, use like so:
         code_obj = CodeObj(func.__code__).hashable()
 
+    Note that closure variables are not supported.
+
     """
 
     expansion_limit = 1000
