@@ -4215,7 +4215,7 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
                 "time_coverage_start",
                 "time_coverage_end",
                 # Removing flag-related attributes since this prevents round-trip
-                # consistency of the units '1' the will be assigned later. Otherwise
+                # consistency of the units '1' that will be assigned later. Otherwise
                 # these units would be reset upon saving/loading.
                 # See https://github.com/SciTools/iris/commit/d4f9a3a2c5b7125647a3fcb354a754d2a893d08e.
                 "flag_meanings",
@@ -4285,6 +4285,7 @@ class Ext_ESA_CCI_Landcover_PFT(Dataset):
 
 class ESA_CCI_Landcover_PFT(Dataset):
     _pretty = "ESA Landcover"
+    _not_implemented = True
 
     def __init__(self, override=False):
         if not override:
