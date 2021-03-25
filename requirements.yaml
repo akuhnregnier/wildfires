@@ -7,6 +7,7 @@ dependencies:
   - _openmp_mutex=4.5=1_gnu
   - _py-xgboost-mutex=2.0=cpu_0
   - affine=2.3.0=py_0
+  - alphashape=1.1.0=pyh9f0ad1d_0
   - antlr-python-runtime=4.7.2=py37hc8dfbb8_1002
   - anyio=2.0.2=py37h89c1867_4
   - apipkg=1.5=py_0
@@ -45,6 +46,7 @@ dependencies:
   - chardet=4.0.0=py37h89c1867_1
   - charls=2.2.0=h9c3ff4c_0
   - click=7.1.2=pyh9f0ad1d_0
+  - click-log=0.3.2=pyh9f0ad1d_0
   - click-plugins=1.1.1=py_0
   - cligj=0.7.1=pyhd8ed1ab_0
   - cloudpickle=1.6.0=py_0
@@ -64,6 +66,7 @@ dependencies:
   - dbus=1.13.6=hfdff14a_1
   - decorator=4.4.2=py_0
   - defusedxml=0.6.0=py_0
+  - descartes=1.1.0=py_4
   - dill=0.3.3=pyhd8ed1ab_0
   - distlib=0.3.1=pyh9f0ad1d_0
   - distributed=2021.1.1=py37h89c1867_0
@@ -89,6 +92,7 @@ dependencies:
   - future=0.18.2=py37h89c1867_3
   - gdal=3.1.4=py37h2ec2946_2
   - gdk-pixbuf=2.42.2=h0c95a7a_2
+  - geopandas=0.9.0=pyhd8ed1ab_0
   - geos=3.8.1=he1b5a44_0
   - geotiff=1.6.0=h5d11630_3
   - gettext=0.19.8.1=h0b5b191_1005
@@ -179,6 +183,7 @@ dependencies:
   - libpng=1.6.37=h21135ba_2
   - libpq=12.3=h255efa7_3
   - libsodium=1.0.18=h36c2ea0_1
+  - libspatialindex=1.9.3=h9c3ff4c_3
   - libspatialite=5.0.0=heaf302f_0
   - libssh2=1.9.0=hab1572f_5
   - libstdcxx-ng=9.3.0=h6de172a_18
@@ -232,7 +237,7 @@ dependencies:
   - numpy=1.20.0=py37haa41c4c_0
   - olefile=0.46=pyh9f0ad1d_1
   - openjpeg=2.4.0=hf7af979_0
-  - openssl=1.1.1i=h7f98852_0
+  - openssl=1.1.1j=h7f98852_0
   - packaging=20.8=pyhd3deb0d_0
   - pandas=1.2.1=py37hdc94413_0
   - pandoc=2.11.4=h7f98852_0
@@ -306,6 +311,7 @@ dependencies:
   - readline=8.0=he28a2e2_2
   - regex=2020.11.13=py37h5e8e339_1
   - requests=2.25.1=pyhd3deb0d_0
+  - rtree=0.9.7=py37h0b55af0_1
   - scikit-image=0.18.1=py37hdc94413_0
   - scikit-learn=0.24.1=py37h69acf81_0
   - scipy=1.6.0=py37h14a347d_0
@@ -376,7 +382,7 @@ dependencies:
   - zlib=1.2.11=h516909a_1010
   - zstd=1.4.8=ha95c52a_1
   - pip:
-    - git+https://github.com/akuhnregnier/ALEPython.git@0.3.4#egg=alepython
+    - git+https://github.com/akuhnregnier/ALEPython.git@0.3.5#egg=alepython
     - git+https://github.com/akuhnregnier/clean_ipynb.git@0.3.2#egg=clean_ipynb
     - git+https://github.com/akuhnregnier/era5analysis.git@0.2.1#egg=era5analysis
     - git+https://github.com/akuhnregnier/jupyter-notebook-tools.git@0.1.0#egg=jupyter-notebook-tools
