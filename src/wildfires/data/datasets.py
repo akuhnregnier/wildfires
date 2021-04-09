@@ -1210,6 +1210,7 @@ def temporal_nn(
         (target_timespan[1].year - target_timespan[0].year) * 12
         + target_timespan[1].month
         - target_timespan[0].month
+        + 1
     )
 
     source_months = target_months + n_months * 2
@@ -1219,12 +1220,13 @@ def temporal_nn(
         (source_timespan[1].year - source_timespan[0].year) * 12
         + source_timespan[1].month
         - source_timespan[0].month
+        + 1
     )
 
     # Check that a sufficient number of months were present.
-    if not target.cube.shape[0] == (target_months + 1):
+    if not target.cube.shape[0] == target_months:
         raise RuntimeError("Missing data for the target time period.")
-    if not source.cube.shape[0] == (source_months + 1):
+    if not source.cube.shape[0] == source_months:
         raise RuntimeError("Missing data for the source time period.")
 
     if not target.cube.coords("month_number"):
