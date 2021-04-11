@@ -23,7 +23,6 @@ setuptools.setup(
     entry_points="""
         [console_scripts]
         valid-ports=wildfires.ports:main
-        sync-worker-ports=wildfires.dask_cx1.sync_worker_ports:main
         general-lab=wildfires.dask_cx1.dask_utils:main
         mosaic-modis-tiles=wildfires.data.mosaic_modis_tiles:main
       """,
