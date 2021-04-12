@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
     sys.path.append(os.path.expanduser(os.path.join("~", "Documents", "wildfires")))
-    from wildfires.logging_config import LOGGING
     from wildfires.data.datasets import CHELSA
+    from wildfires.logging_config import LOGGING
 
     logging.config.dictConfig(LOGGING)
 

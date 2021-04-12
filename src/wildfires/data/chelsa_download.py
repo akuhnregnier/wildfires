@@ -13,7 +13,7 @@ import os
 
 from tqdm import tqdm
 
-from wildfires.data.datasets import DATA_DIR
+from wildfires.configuration import DATA_DIR
 
 
 def download(dataset, year, month, ignore_existing=True, size_threshold=8.8e7):

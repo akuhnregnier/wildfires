@@ -44,7 +44,7 @@ class DummyDataset(wildfire_datasets.MonthlyDataset):
         )
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def big_dataset():
     big_dataset = DummyDataset()
     dummy_cube = deepcopy(big_dataset.cubes[0])

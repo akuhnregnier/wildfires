@@ -259,14 +259,14 @@ def get_land_mask(n_lon=1440, ignore_indices=(7, 126)):
 
     Examples:
         >>> import numpy as np
-        >>> from wildfires.data.datasets import data_is_available
+        >>> from wildfires.configuration import data_is_available
         >>> if data_is_available():
         ...     mask = get_land_mask(n_lon=1440)
         ...     assert mask.dtype == np.bool_
         ...     assert mask.shape == (720, 1440)
 
     """
-    from wildfires.data.datasets import DATA_DIR
+    from wildfires.configuration import DATA_DIR
 
     assert n_lon % 2 == 0, (
         "The number of longitude points has to be an even number for the number of "

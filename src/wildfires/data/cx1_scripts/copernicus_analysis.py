@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
     sys.path.append(os.path.expanduser(os.path.join("~", "Documents", "wildfires")))
-    from wildfires.data.datasets import Copernicus_SWI, LOGGING
+    from wildfires.data.datasets import LOGGING, Copernicus_SWI
 
     logger = logging.getLogger(__name__)
     logging.config.dictConfig(LOGGING)

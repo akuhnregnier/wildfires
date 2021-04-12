@@ -12,7 +12,7 @@ from textwrap import dedent, indent
 
 import numpy as np
 
-from ..data import DATA_DIR
+from ..configuration import DATA_DIR
 from ..logging_config import enable_logging
 from ..qstat import get_qstat_json
 

@@ -9,8 +9,9 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 
+from ..cache import get_memory
+from ..cache.cloudpickle_backend import register_backend as register_cloudpickle_backend
 from ..data import *
-from ..joblib.cloudpickle_backend import register_backend
 from ..logging_config import enable_logging
 from ..qstat import get_ncpus
 from .analysis import *
@@ -21,7 +22,7 @@ __all__ = ("rf_time_lag_grid_search",)
 
 logger = logging.getLogger(__name__)
 
-register_backend()
+register_cloudpickle_backend()
 memory = get_memory("time_lags", backend="cloudpickle", verbose=100)
 
 # Creating the Data Structures used for Fitting

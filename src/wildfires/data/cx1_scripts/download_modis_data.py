@@ -8,7 +8,6 @@ from subprocess import check_call
 
 from tqdm import tqdm
 
-
 if __name__ == "__main__":
     # CX1 specific setup.
     data_dir = str(Path(os.environ["EPHEMERAL"]) / "MOD15A2Hv006")

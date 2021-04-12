@@ -4,8 +4,10 @@ import numpy as np
 import pytest
 from psutil import virtual_memory
 
-from wildfires.data.datasets import data_is_available
+from wildfires.configuration import data_is_available
 from wildfires.utils import get_centres
+
+from .core import *
 
 
 def allequal(x, y):
@@ -17,7 +19,7 @@ def available_memory_gb():
 
 
 data_availability = pytest.mark.skipif(
-    not data_is_available() or available_memory_gb() < 10,
+    not data_is_available() or available_memory_gb() < 32,
     reason="Data directory is unavailable or there is not enough memory.",
 )
 

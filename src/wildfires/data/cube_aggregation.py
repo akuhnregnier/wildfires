@@ -9,13 +9,12 @@ TODO: Enable regex based processing of dataset names too (e.g. for
 TODO: Selection.remove_datasets or Selection.select_datasets).
 
 """
-import inspect
 import logging
 import logging.config
 import re
 from collections import OrderedDict
 from copy import deepcopy
-from functools import partial, reduce, wraps
+from functools import partial, reduce
 from pprint import pformat, pprint
 
 import iris
@@ -23,23 +22,21 @@ import iris.coord_categorisation
 import numpy as np
 from joblib import Parallel, delayed
 
-from ..joblib.caching import CodeObj, wrap_decorator
+from ..cache import get_memory
+from ..cache.hashing import DatasetsHasher
 from ..logging_config import LOGGING
 from ..qstat import get_ncpus
 from ..utils import match_shape, strip_multiline
 from .datasets import (
-    DATA_DIR,
     IGNORED_DATASETS,
     Dataset,
     DatasetNotFoundError,
     VariableNotFoundError,
-    data_is_available,
     dataset_times,
     fill_dataset,
     get_climatology,
     get_implemented_datasets,
     get_mean,
-    get_memory,
     get_monthly,
     get_monthly_mean_climatology,
 )
@@ -47,7 +44,6 @@ from .datasets import (
 __all__ = (
     "Datasets",
     "contains",
-    "datasets_cache",
     "get_all_datasets",
     "prepare_selection",
     "print_datasets_dates",
@@ -56,105 +52,7 @@ __all__ = (
 logger = logging.getLogger(__name__)
 memory = get_memory("cube_aggregation", verbose=1)
 
-
-# TODO: Use Dataset.pretty and Dataset.pretty_variable_names attributes!!!
-
-
-@wrap_decorator
-def datasets_cache(func):
-    # NOTE: There is a known bug preventing joblib from pickling numpy MaskedArray!
-    # NOTE: https://github.com/joblib/joblib/issues/573
-    # NOTE: We will avoid this bug by replacing Dataset instances (which may hold
-    # NOTE: references to masked arrays) with their (shallow) immutable string
-    # NOTE: representations.
-    """Circumvent bug preventing joblib from pickling numpy MaskedArray instances.
-
-    This applies to MaskedArray in the input arguments only.
-
-    Do this by giving joblib a different version of the input arguments to cache,
-    while still passing the normal arguments to the decorated function.
-
-    Note:
-        `dataset_function` argument in `func` must be a keyword argument.
-
-    """
-
-    @wraps(func)
-    def takes_original_selection(*orig_args, **orig_kwargs):
-        """Function that is visible to the outside."""
-        if not isinstance(orig_args[0], Datasets) or any(
-            isinstance(arg, Datasets)
-            for arg in list(orig_args[1:]) + list(orig_kwargs.values())
-        ):
-            raise TypeError(
-                "The first positional argument, and only the first argument "
-                f"should be a `Datasets` instance, got '{type(orig_args[0])}' "
-                "as the first argument."
-            )
-        original_selection = orig_args[0]
-        string_representation = "\n".join(
-            dataset._shallow for dataset in original_selection.datasets
-        ) + str(original_selection.state("all", "raw"))
-
-        # Ignore instances with a __call__ method here which also wouldn't necessarily
-        # have a __name__ attribute that could be used for sorting!
-        functions = [func]
-        for param_name, param_value in inspect.signature(func).parameters.items():
-            default_value = param_value.default
-            # If the default value is a function, and it is not given in `orig_kwargs`
-            # already. This is guaranteed to work as long as `func` employs a
-            # keyword-only argument for functions like this.
-            if (
-                param_name not in orig_kwargs
-                and default_value is not inspect.Parameter.empty
-                and hasattr(default_value, "__code__")
-            ):
-                functions.append(default_value)
-                orig_kwargs[param_name] = default_value
-
-        functions.extend(
-            f
-            for f in list(orig_args[1:]) + list(orig_kwargs.values())
-            if hasattr(f, "__code__")
-        )
-
-        functions = list(set(functions))
-        functions.sort(key=lambda f: f.__name__)
-        func_code = tuple(CodeObj(f.__code__).hashable() for f in functions)
-
-        assert len(func_code) == 2, (
-            "Only 2 functions are currently supported. One is the decorated function, "
-            "the other is the processing function `dataset_function`."
-        )
-
-        @memory.cache(ignore=["original_selection", "dataset_function"])
-        def takes_split_selection(
-            func_code,
-            string_representation,
-            original_selection,
-            *args,
-            dataset_function=None,
-            **kwargs,
-        ):
-            # NOTE: The reason why this works is that the combination of
-            # [original_selection] + args here is fed the original `orig_args`
-            # iterable. In effect, the `original_selection` argument absorbs one of
-            # the elements of `orig_args` in the function call to
-            # `takes_split_selection`, so it is not passed in twice. The `*args`
-            # parameter above absorbs the rest. This explicit listing of
-            # `original_selection` is necessary, as we need to explicitly ignore
-            # `original_selection`, which is the whole point of this decorator.
-            assert dataset_function is not None
-            out = func(
-                original_selection, *args, dataset_function=dataset_function, **kwargs
-            )
-            return out
-
-        return takes_split_selection(
-            func_code, string_representation, *orig_args, **orig_kwargs
-        )
-
-    return takes_original_selection
+_datasets_hasher = DatasetsHasher()
 
 
 def contains(
@@ -209,7 +107,8 @@ class Datasets:
     not the case when `Datasets1 += Datasets2` is used.
 
     Examples:
-        >>> from .datasets import HYDE, data_is_available
+        >>> from .datasets import HYDE
+        >>> from ..configuration import data_is_available
         >>> instance_sel = Datasets()
         >>> if data_is_available():
         ...     sel = Datasets().add(HYDE())
@@ -231,9 +130,7 @@ class Datasets:
 
     def __eq__(self, other):
         if isinstance(other, Datasets):
-            return sorted(self, key=lambda x: x.name) == sorted(
-                other, key=lambda x: x.name
-            )
+            return self.hash_value == other.hash_value
         return NotImplemented
 
     def __add__(self, other):
@@ -279,6 +176,16 @@ class Datasets:
         else:
             new_index = index
         return self.datasets[new_index]
+
+    @property
+    def hash_value(self):
+        """Calculate a hash value.
+
+        Returns:
+            str
+
+        """
+        return _datasets_hasher.hash(self)
 
     @property
     def datasets(self):

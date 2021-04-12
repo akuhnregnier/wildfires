@@ -4,7 +4,7 @@ import os
 
 from tqdm import tqdm
 
-from wildfires.data.datasets import DATA_DIR
+from wildfires.configuration import DATA_DIR
 
 if __name__ == "__main__":
     combinations = []

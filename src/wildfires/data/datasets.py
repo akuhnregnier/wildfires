@@ -31,7 +31,7 @@ from abc import ABCMeta, abstractmethod
 from collections import OrderedDict
 from copy import copy, deepcopy
 from datetime import datetime, timedelta
-from functools import reduce, wraps
+from functools import reduce
 
 import cf_units
 import dask.array as da
@@ -49,16 +49,17 @@ from dateutil.relativedelta import relativedelta
 from era5analysis import MonthlyMeanMinMaxDTRWorker, retrieval_processing, retrieve
 from git import InvalidGitRepositoryError, Repo
 from iris.time import PartialDateTime
-from joblib import Memory, Parallel, delayed
+from joblib import Parallel, delayed
 from numpy.testing import assert_allclose
 from pyhdf.SD import SD, SDC
 from scipy.optimize import minimize
 from tqdm import tqdm
 
 from .. import __version__
+from ..cache import IrisMemory
+from ..cache.hashing import _dataset_hasher
 from ..chunked_regrid import spatial_chunked_regrid
-from ..joblib.caching import CodeObj, wrap_decorator
-from ..joblib.iris_backend import register_backend
+from ..configuration import DATA_DIR, M_PER_HR_THRES, MM_PER_HR_THRES
 from ..qstat import get_ncpus
 from ..utils import (
     box_mask,
@@ -77,7 +78,6 @@ from .landcover import convert_to_pfts, get_mapping_pfts
 
 __all__ = (
     "CommitMatchError",
-    "DATA_DIR",
     "Dataset",
     "DatasetNotFoundError",
     "Error",
@@ -89,9 +89,7 @@ __all__ = (
     "ObservedAreaError",
     "VariableNotFoundError",
     "cube_contains_coords",
-    "data_is_available",
     "data_map_plot",
-    "dataset_cache",
     "dataset_preprocessing",
     "dataset_times",
     "dummy_lat_lon_cube",
@@ -102,7 +100,6 @@ __all__ = (
     "get_dataset_mean_cubes",
     "get_dataset_monthly_cubes",
     "get_mean",
-    "get_memory",
     "get_monthly",
     "get_monthly_mean_climatology",
     "homogenise_cube_attributes",
@@ -135,8 +132,6 @@ IGNORED_DATASETS = [
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = os.path.join(os.path.expanduser("~"), "FIREDATA")
-
 
 repo_dir = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir)
 try:
@@ -144,44 +139,8 @@ try:
 except InvalidGitRepositoryError:
     repo = None
 
-# Above this mm/h threshold, a day is a 'wet day'.
-# 0.1 mm per day, from Harris et al. 2014, as used in Forkel et al. 2018.
-MM_PER_HR_THRES = 0.1 / 24
-M_PER_HR_THRES = MM_PER_HR_THRES / 1000
 
-
-def data_is_available():
-    """Check if DATA_DIR exists.
-
-    Returns:
-        bool: True if the data directory exists.
-
-    """
-    return os.path.exists(DATA_DIR)
-
-
-def get_memory(cache_dir="", **kwargs):
-    """Get a joblib Memory object used to cache function results.
-
-    Args:
-        cache_dir (str or None): Joblib cache directory name within
-            `wildfires.data.DATA_DIR`. If None, no caching will be done.
-        **kwargs: Extra arguments passed to `joblib.Memory()`.
-
-    Returns:
-        joblib.memory.Memory: Joblib Memory object.
-
-    """
-    return Memory(
-        location=os.path.join(DATA_DIR, "joblib_cache", cache_dir)
-        if cache_dir is not None and data_is_available()
-        else None,
-        **kwargs,
-    )
-
-
-register_backend()
-iris_memory = get_memory("datasets", backend="iris", verbose=0)
+iris_cache = IrisMemory("datasets", verbose=0).cache
 
 
 class Error(Exception):
@@ -370,67 +329,6 @@ def homogenise_cube_attributes(cubes, adjust_time=False):
     return cubes
 
 
-@wrap_decorator
-def dataset_cache(func, iris_memory=iris_memory):
-    # NOTE: There is a known bug preventing joblib from pickling numpy MaskedArray!
-    # NOTE: https://github.com/joblib/joblib/issues/573
-    # NOTE: We will avoid this bug by replacing Dataset instances (which may hold
-    # NOTE: references to masked arrays) with their (shallow) immutable string
-    # NOTE: representations.
-    """Circumvent bug preventing joblib from pickling numpy MaskedArray instances.
-
-    This applies to MaskedArray in the input arguments only.
-
-    Do this by giving joblib a different version of the input arguments to cache,
-    while still passing the normal arguments to the decorated function.
-
-    Note:
-        `dataset_function` argument in `func` must be a keyword argument.
-
-    """
-
-    @wraps(func)
-    def accepts_dataset(*orig_args, **orig_kwargs):
-        """Function that is visible to the outside."""
-        if not isinstance(orig_args[0], Dataset) or any(
-            isinstance(arg, Dataset)
-            for arg in list(orig_args[1:]) + list(orig_kwargs.values())
-        ):
-            raise TypeError(
-                "The first positional argument, and only the first argument "
-                f"should be a `Dataset` instance, got '{type(orig_args[0])}' "
-                "as the first argument."
-            )
-        dataset = orig_args[0]
-        string_representation = dataset._shallow
-
-        # Ignore instances with a __call__ method here which also wouldn't necessarily
-        # have a __name__ attribute that could be used for sorting!
-        functions = [func]
-        func_code = tuple(CodeObj(f.__code__).hashable() for f in functions)
-
-        @iris_memory.cache(ignore=["original_dataset"])
-        def accepts_string_dataset(
-            func_code, string_representation, original_dataset, *args, **kwargs
-        ):
-            # NOTE: The reason why this works is that the combination of
-            # [original_selection] + args here is fed the original `orig_args`
-            # iterable. In effect, the `original_selection` argument absorbs one of
-            # the elements of `orig_args` in the function call to
-            # `takes_split_selection`, so it is not passed in twice. The `*args`
-            # parameter above absorbs the rest. This explicit listing of
-            # `original_selection` is necessary, as we need to explicitly ignore
-            # `original_selection`, which is the whole point of this decorator.
-            out = func(original_dataset, *args, **kwargs)
-            return out
-
-        return accepts_string_dataset(
-            func_code, string_representation, *orig_args, **orig_kwargs
-        )
-
-    return accepts_dataset
-
-
 def homogenise_cube_mask(cube):
     """Ensure cube.data is a masked array with a full mask (in-place).
 
@@ -512,14 +410,14 @@ def get_mean(dataset, min_time, max_time):
     return (dataset.get_mean_dataset(),)
 
 
-@dataset_cache
+@iris_cache
 def fill_dataset(dataset, mask):
     """Perform processing on all cubes."""
     logger.debug(f"Filling '{dataset}' with {len(dataset)} variable(s).")
     return iris.cube.CubeList([fill_cube(cube, mask) for cube in dataset])
 
 
-@dataset_cache
+@iris_cache
 def get_dataset_mean_cubes(dataset):
     """Return mean cubes."""
     logger.debug(f"Calculating mean for '{dataset}' with {len(dataset)} variable(s).")
@@ -543,7 +441,7 @@ def get_dataset_mean_cubes(dataset):
     return mean_cubes
 
 
-@dataset_cache
+@iris_cache
 def get_dataset_monthly_cubes(dataset, start, end):
     """Return monthly cubes between two dates."""
     logger.debug(
@@ -561,32 +459,13 @@ def get_dataset_monthly_cubes(dataset, start, end):
     return monthly_cubes
 
 
-@dataset_cache
+@iris_cache
 def get_dataset_climatology_cubes(dataset, start, end):
     logger.debug(
         f"Calculating climatology for '{dataset}' with {len(dataset)} variable(s)."
     )
     # NOTE: Calling get_dataset_monthly_cubes using the slices is important, as this is
     # how it is called originally, and therefore how it is represented in the cache!!
-    # TODO: Make this behaviour more transparent - perhaps embed this in the
-    # dataset_cache decorator??
-
-    # TODO: Instead of calling get_dataset_monthly_cubes (which fetches the cache,
-    # TODO: requiring file loading, which is slow) access a cached in-memory version of the
-    # TODO: monthly cubes somehow!
-    # TODO: Use pre-computed results if they are available and passed in via an
-    # TODO: optional parameter (eg. `optional_dataset`) (NOT the `dataset` parameter, which
-    # TODO: should still point to the original, unadulterated dataset without monthly
-    # TODO: processing, as that would be the reference point for climatology retrieval from
-    # TODO: the cache).
-    # if (
-    #     optional_dataset.min_time == PartialDateTime(start.year, start.month)
-    #     and optional_dataset.max_time == PartialDateTime(end.year, end.month)
-    #     and optional_dataset.frequency == "monthly"
-    # ):
-    #     monthly_cubes = dataset.cubes
-    # else:
-
     monthly_cubes = iris.cube.CubeList(
         get_dataset_monthly_cubes(dataset[cube_slice], start, end)[0]
         for cube_slice in dataset.single_cube_slices()
@@ -1062,11 +941,12 @@ def regrid(
     return interpolated_cube
 
 
-@dataset_cache
+@iris_cache(ignore=["verbose"])
 def regrid_dataset(
     dataset,
     new_latitudes=get_centres(np.linspace(-90, 90, 721)),
     new_longitudes=get_centres(np.linspace(-180, 180, 1441)),
+    verbose=False,
     **kwargs,
 ):
     logger.debug(f"Regridding '{dataset}' with {len(dataset)} variable(s).")
@@ -1076,6 +956,7 @@ def regrid_dataset(
                 cube,
                 new_latitudes=new_latitudes,
                 new_longitudes=new_longitudes,
+                verbose=verbose,
                 **kwargs,
             )
             for cube in dataset.cubes
@@ -1138,7 +1019,7 @@ def _temporal_nn(source_data, target_index, interpolate_mask, n_months, verbose=
     return monthly_target_data
 
 
-@dataset_cache
+@iris_cache(ignore=["verbose"])
 def temporal_nn(
     dataset, target_timespan, n_months, mask=None, threshold=0, verbose=False
 ):
@@ -1403,7 +1284,7 @@ def _season_model_filling(cube, k=4, ncpus=1, verbose=False):
     return cube
 
 
-@dataset_cache
+@iris_cache(ignore=["verbose", "ncpus"])
 def persistent_season_trend_fill(
     dataset, target_timespan=None, persistent_perc=50, k=4, verbose=False, ncpus=None
 ):
@@ -1552,7 +1433,7 @@ class Dataset(metaclass=RegisterDatasets):
 
         """
         if isinstance(other, Dataset):
-            return self._shallow == other._shallow
+            return self.hash_value == other.hash_value
         return NotImplemented
 
     def __len__(self):
@@ -1608,84 +1489,14 @@ class Dataset(metaclass=RegisterDatasets):
         return dict((pretty, raw) for raw, pretty in cls.pretty_variable_names.items())
 
     @property
-    def _shallow(self):
-        """Create a hashable shallow description of the CubeList.
-
-        Note:
-            Only metadata and coordinates are considered.
+    def hash_value(self):
+        """Calculate a hash value.
 
         Returns:
             str
 
         """
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", message=((r".*guessing contiguous bounds."))
-            )
-            # Join up the elements in this list later to construct the string.
-            cubelist_hash_items = []
-            for cube in self.cubes:
-                # Compute each coordinate's string representation (the coord's __hash__
-                # attribute only returns the output of id()).
-                for coord in cube.coords():
-                    point_diffs = np.diff(coord.points)
-                    unique_diffs = np.unique(point_diffs)
-                    # TODO: More robust comparison of numpy arrays compared to
-                    # just converting them to strings, eg. using rounding!
-                    if len(unique_diffs) != 1:
-                        point_diff_str = str(tuple(point_diffs))
-                    else:
-                        point_diff_str = str(unique_diffs[0])
-
-                    cubelist_hash_items += list(
-                        map(
-                            str,
-                            (
-                                tuple(sorted(coord.attributes.items())),
-                                coord.circular if hasattr(coord, "circular") else None,
-                                tuple(coord.contiguous_bounds())
-                                if coord.is_monotonic()
-                                and coord.contiguous_bounds() is not None
-                                else None,
-                                coord.coord_system,
-                                coord.dtype,
-                                coord.has_bounds(),
-                                coord.is_contiguous(),
-                                coord.is_monotonic(),
-                                coord.long_name,
-                                coord.name(),
-                                np.min(coord.points),
-                                np.max(coord.points),
-                                np.mean(coord.points),
-                                point_diff_str,
-                                coord.shape,
-                                coord.standard_name,
-                                coord.var_name,
-                            ),
-                        )
-                    )
-                for key, value in sorted(cube.metadata._asdict().items()):
-                    # This contains the data for the `cube.attributes` property.
-                    if key == "attributes":
-                        # Get string representation of the attributes dictionary.
-                        cubelist_hash_items += [
-                            str(
-                                tuple(
-                                    (attribute, attribute_value)
-                                    for attribute, attribute_value in sorted(
-                                        value.items()
-                                    )
-                                )
-                            )
-                        ]
-
-                    else:
-                        assert not isinstance(value, dict), (
-                            "Dicts should be handled specially as above to maintain "
-                            "consistent sorting."
-                        )
-                        cubelist_hash_items += [str(key) + str(value)]
-        return "\n".join(cubelist_hash_items)
+        return _dataset_hasher.hash(self)
 
     def __check_cubes(self):
         """Verification functions that should be run prior to accessing data.

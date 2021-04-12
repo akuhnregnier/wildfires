@@ -7,7 +7,7 @@ from pprint import pprint
 
 from dateutil.relativedelta import relativedelta
 
-from wildfires.data.datasets import DATA_DIR
+from wildfires.configuration import DATA_DIR
 
 if __name__ == "__main__":
     files = os.listdir(os.path.join(DATA_DIR, "Copernicus_SWI", "monthly"))

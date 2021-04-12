@@ -23,6 +23,7 @@ from joblib import Parallel, delayed
 from scipy.ndimage import label
 from tqdm import tqdm
 
+from ..cache import get_memory
 from ..data import *
 from ..logging_config import enable_logging
 from .plotting import *

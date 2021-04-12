@@ -142,8 +142,9 @@ def enable_logging(mode="normal", level=None, pbs=False):
 
 if __name__ == "__main__":
     import logging
-    from logging_tree import printout
+
     import cdsapi
+    from logging_tree import printout
 
     c = cdsapi.Client()
     logging.config.dictConfig(LOGGING)

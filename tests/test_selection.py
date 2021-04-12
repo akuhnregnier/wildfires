@@ -5,6 +5,7 @@ import iris
 import iris.coord_categorisation
 import numpy as np
 import pytest
+from joblib import hashing
 
 from wildfires.data.cube_aggregation import Datasets
 from wildfires.data.datasets import HYDE, MonthlyDataset, dummy_lat_lon_cube
@@ -16,7 +17,9 @@ from .utils import data_availability
 
 class DummyDataset(MonthlyDataset):
     def __init__(self, name=None):
-        data = np.random.random((100, 100, 100))
+        data = np.random.default_rng(
+            int(hashing.hash((name, self.name)), base=16)
+        ).random((100, 100, 100))
         data = np.ma.MaskedArray(data, mask=data > 0.5)
 
         cube = dummy_lat_lon_cube(
@@ -30,7 +33,7 @@ class DummyDataset(MonthlyDataset):
 DUMMY_DATASETS = [type(name, (DummyDataset,), {}) for name in ["A", "B", "C", "D"]]
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def big_dataset():
     big_dataset = DummyDataset()
     dummy_cube = deepcopy(big_dataset.cube)
@@ -40,12 +43,12 @@ def big_dataset():
     return big_dataset
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def sel():
     return Datasets(dataset() for dataset in DUMMY_DATASETS[:2])
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def long_sel():
     return Datasets(dataset() for dataset in DUMMY_DATASETS)
 

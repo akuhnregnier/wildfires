@@ -3,19 +3,16 @@ import datetime
 import logging
 import os
 import re
-import shutil
-import traceback
 
 import cloudpickle
 from joblib import register_store_backend
-from joblib._store_backends import (
-    CacheItemInfo,
-    StoreBackendBase,
-    StoreBackendMixin,
-    concurrency_safe_rename,
-    concurrency_safe_write,
-    mkdirp,
-    rm_subdirs,
+from joblib._store_backends import CacheItemInfo, concurrency_safe_rename, mkdirp
+
+from .backend import CommonBackend
+from .hashing import (
+    _default_context_managers,
+    _default_guarded_hashers,
+    _default_initial_hashers,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,23 +23,19 @@ def register_backend():
     register_store_backend("cloudpickle", CloudpickleStoreBackend)
 
 
-class CloudpickleStoreBackend(StoreBackendBase, StoreBackendMixin):
+class CloudpickleStoreBackend(CommonBackend):
     """A StoreBackend used with local or network file systems."""
 
     _open_item = staticmethod(open)
     _item_exists = staticmethod(os.path.exists)
     _move_item = staticmethod(concurrency_safe_rename)
 
-    def clear_location(self, location):
-        """Delete location on store."""
-        if location == self.location:
-            rm_subdirs(location)
-        else:
-            shutil.rmtree(location, ignore_errors=True)
-
-    def create_location(self, location):
-        """Create object location on store"""
-        mkdirp(location)
+    # Run outside of context managers.
+    initial_hashers = list(_default_initial_hashers)
+    # Context managers that temporarily change objects to enable consistent hashing.
+    context_managers = list(_default_context_managers)
+    # Run within context managers.
+    guarded_hashers = list(_default_guarded_hashers)
 
     def get_items(self):
         """Returns the whole list of items available in the store."""
@@ -117,7 +110,7 @@ class CloudpickleStoreBackend(StoreBackendBase, StoreBackendMixin):
 
     def dump_item(self, path, item, verbose=1):
         """Dump an item in the store at the path given as a list of
-           strings."""
+        strings."""
         try:
             item_path = os.path.join(self.location, *path)
             if not self._item_exists(item_path):
@@ -136,37 +129,9 @@ class CloudpickleStoreBackend(StoreBackendBase, StoreBackendMixin):
         except:  # noqa: E722
             " Race condition in the creation of the directory "
 
-    def _concurrency_safe_write(self, to_write, filename, write_func):
-        """Writes an object into a file in a concurrency-safe way."""
-        try:
-            temporary_filename = concurrency_safe_write(to_write, filename, write_func)
-        except:
-            print("Something went wrong before moving the file.!")
-            traceback.print_exc()
-        self._move_item(temporary_filename, filename)
-
     def contains_item(self, path):
         """Check if there is an item at the path, given as a list of strings"""
         item_path = os.path.join(self.location, *path)
         filename = os.path.join(item_path, "output.cpkl")
 
         return self._item_exists(filename)
-
-
-def compare_metadata(dirs):
-    import json
-
-    contents = []
-    for d in dirs:
-        f = os.path.join(d, "metadata.json")
-        with open(f) as fi:
-            contents.append(json.load(fi))
-
-    strings = [c["input_args"]["string_representation"] for c in contents]
-    for (i, (a, b)) in enumerate(zip(*strings)):
-        if a != b:
-            print("i:", i)
-            n = 30
-            print(strings[0][i - n : i + n])
-            print(strings[1][i - n : i + n])
-            break
