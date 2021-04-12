@@ -57,7 +57,7 @@ def big_dataset():
 
 
 @data_availability
-def test_equality():
+def test_equality_coord():
     hyde1 = wildfire_datasets.HYDE()
     hyde2 = wildfire_datasets.HYDE()
 
@@ -69,8 +69,22 @@ def test_equality():
 
     assert hyde1 != hyde2
 
-    for dataset in (hyde1, hyde2):
-        assert all(cube.has_lazy_data() for cube in dataset.cubes)
+
+@data_availability
+def test_equality_data():
+    hyde1 = wildfire_datasets.HYDE()
+    hyde2 = wildfire_datasets.HYDE()
+
+    assert hyde1 == hyde2
+    assert hyde1 is not hyde2
+
+    valid_indices = np.where(~hyde1.cubes[0].data.mask)
+
+    hyde1.cubes[0].data[
+        valid_indices[0][0], valid_indices[1][0], valid_indices[2][0]
+    ] += 1
+
+    assert hyde1 != hyde2
 
 
 @data_availability
