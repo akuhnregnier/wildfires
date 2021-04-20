@@ -141,12 +141,11 @@ class MemoryMixin:
                 NotCachedError: If the given call was not found in the cache.
 
             """
-            if not cached_inner.store_backend.contains_item(
-                cached_inner._get_output_identifiers(
-                    bound_get_hashed(*args, **kwargs), args, kwargs
-                )
-            ):
-                raise NotCachedError("The given call is not cached.")
+            output_ids = cached_inner._get_output_identifiers(
+                bound_get_hashed(*args, **kwargs), args, kwargs
+            )
+            if not cached_inner.store_backend.contains_item(output_ids):
+                raise NotCachedError(f"The given call is not cached: {output_ids}")
             return IN_STORE
 
         cached_func.check_in_store = check_in_store
@@ -328,12 +327,11 @@ class ProxyMemory(MemoryMixin):
                 NotCachedError: If the given call was not found in the cache.
 
             """
-            if not cached_inner.store_backend.contains_item(
-                cached_inner._get_output_identifiers(
-                    bound_get_hashed(*args, **kwargs), args, kwargs
-                )
-            ):
-                raise NotCachedError("The given call is not cached.")
+            output_ids = cached_inner._get_output_identifiers(
+                bound_get_hashed(*args, **kwargs), args, kwargs
+            )
+            if not cached_inner.store_backend.contains_item(output_ids):
+                raise NotCachedError(f"The given call is not cached: {output_ids}")
             return IN_STORE
 
         cached_func.check_in_store = check_in_store
