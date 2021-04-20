@@ -1057,7 +1057,7 @@ def fit_dask_sub_est_random_search_cv(
             # As the results were already cached, try to submit another batch.
             continue
         total_cores = sum(client.ncores().values())  # This may change with time.
-        target_tasks = 2 * total_cores  # Prefetching of tasks.
+        target_tasks = 6 * total_cores  # Prefetching of tasks.
         with sub_est_lock:
             currently_active = sub_est_tqdm.total - sub_est_tqdm.n
         # If we are currently running more tasks than our target, determine how long
@@ -1437,9 +1437,6 @@ def dask_fit_loco(
 
         return construct_and_score
 
-    # Collect all sub-estimator futures for progress monitoring.
-    sub_estimator_fs = []
-
     def estimator_fit_done_callback(futures):
         return futures
 
@@ -1450,9 +1447,20 @@ def dask_fit_loco(
         disable=not verbose,
         unit="task",
         smoothing=0.01,
+        position=0,
     )
 
-    for column in leave_out:
+    # Progress bar for completed estimator scores.
+    score_tqdm = tqdm(
+        desc="Scoring",
+        total=len(leave_out),
+        disable=not verbose,
+        unit="estimator",
+        smoothing=0.1,
+        position=1,
+    )
+
+    def submit_column(column):
         grid_estimator = clone(estimator)
         sel_X_train = np.asarray(
             X_train[[col for col in X_train.columns if col != column]]
@@ -1467,8 +1475,6 @@ def dask_fit_loco(
         if not sub_est_fs:
             raise RuntimeError("No sub-estimators were scheduled to be trained.")
 
-        sub_estimator_fs.extend(sub_est_fs)
-
         # Collate the sub-estimator futures to process them collectively later.
         estimator_future = client.submit(estimator_fit_done_callback, sub_est_fs)
         estimator_future.add_done_callback(
@@ -1476,46 +1482,35 @@ def dask_fit_loco(
         )
         submit_tqdm.update()
 
+    if X_train.values.nbytes / 1e9 < 3:
+        logger.debug("Processing all columns at once.")
+        # For low-memory datasets, scatter all at once to maximise performance.
+        for column in leave_out:
+            submit_column(column)
+
+        while estimator_score_count != len(leave_out):
+            # Wait for a scoring operation to be completed.
+            score_event.wait()
+            # Ready the event for the next scoring.
+            score_event.clear()
+            # Update the progress bar.
+            score_tqdm.update(estimator_score_count - score_tqdm.n)
+    else:
+        logger.debug("Processing one column at a time.")
+        # For high-memory datasets, scatter one at a time.
+        for column in leave_out:
+            submit_column(column)
+            # Wait for a scoring operation to be completed.
+            score_event.wait()
+            # Ready the event for the next scoring.
+            score_event.clear()
+            # Update the progress bar.
+            score_tqdm.update(estimator_score_count - score_tqdm.n)
+
+        assert estimator_score_count == len(leave_out)
+
     submit_tqdm.close()
-
-    def sub_estimator_progress():
-        """Progress bar for completed sub-estimators."""
-        for f in tqdm(
-            as_completed(sub_estimator_fs),
-            desc="Sub-estimators",
-            total=len(sub_estimator_fs),
-            disable=not verbose,
-            unit="sub-estimator",
-            smoothing=0.01,
-            position=1,
-        ):
-            pass
-
-    sub_estimator_progress_thread = Thread(target=sub_estimator_progress)
-    sub_estimator_progress_thread.start()
-
-    # Progress bar for completed estimator scores.
-    score_tqdm = tqdm(
-        desc="Scoring",
-        total=len(leave_out),
-        disable=not verbose,
-        unit="estimator",
-        smoothing=0.1,
-        position=0,
-    )
-
-    while estimator_score_count != len(leave_out):
-        # Wait for a scoring operation to be completed.
-        score_event.wait()
-        # Ready the event for the next scoring.
-        score_event.clear()
-        # Update the progress bar.
-        score_tqdm.update(estimator_score_count - score_tqdm.n)
-
     score_tqdm.close()
-
-    # Join the sub-estimator progress bar thread.
-    sub_estimator_progress_thread.join()
 
     return results
 
@@ -1575,8 +1570,7 @@ def dask_fit_combinations(
 
     def write_scores(scores):
         if cache_dir is not None:
-            with open(cache_file, "wb") as f:
-                pickle.dump(dict(scores), f, -1)
+            safe_write(dict(scores), str(cache_file))
 
     scores = defaultdict(lambda: defaultdict(dict))
     scores.update(
@@ -1817,7 +1811,7 @@ def dask_fit_combinations(
             # As the results were already cached, try to submit another batch.
             continue
         total_cores = sum(client.ncores().values())  # This may change with time.
-        target_tasks = 2 * total_cores  # Prefetching of tasks.
+        target_tasks = 6 * total_cores  # Prefetching of tasks.
         with sub_est_lock:
             currently_active = sub_est_tqdm.total - sub_est_tqdm.n
         # If we are currently running more tasks than our target, determine how long
