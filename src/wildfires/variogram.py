@@ -7,6 +7,8 @@ from distributed import Client, as_completed
 from sklearn.metrics.pairwise import haversine_distances
 from tqdm.auto import tqdm
 
+from .cache import ProxyMemory
+
 __all__ = (
     "binned_variance_batch",
     "combine_multiple_stats",
@@ -14,6 +16,9 @@ __all__ = (
     "compute_variogram",
     "plot_variogram",
 )
+
+
+proxy_cache = ProxyMemory("variogram", verbose=0).cache
 
 
 def combine_stats(old_n, new_n, old_mean, new_mean, old_v, new_v):
@@ -100,6 +105,7 @@ def binned_variance_batch(inds1, inds2, bin_edges, coords, X):
     return n_samples, means, variances
 
 
+@proxy_cache(ignore=["n_jobs", "n_per_job", "verbose"])
 def compute_variogram(
     coords, X, bins=10, max_lag=150, n_jobs=1, n_per_job=10, verbose=False
 ):
