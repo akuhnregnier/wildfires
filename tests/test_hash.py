@@ -77,10 +77,29 @@ def test_nested_ma_dict_get_hash(memory, dummy_datasets):
         "a": np.ma.MaskedArray([1, 2, 3], mask=[1, 0, 1]),
         "b": {
             "c": np.ma.MaskedArray([10, 20, 30], mask=[0, 1, 1]),
+            "d": [np.ma.MaskedArray([-1, -2, -3], mask=[1, 0, 0])],
         },
     }
 
     # Test that the hash changes when data is changed.
     orig_hash = get_hash(nested_dict)
     nested_dict["b"]["c"][1] = 100
+    assert get_hash(nested_dict) != orig_hash
+
+
+@pytest.mark.parametrize("memory", ["iris", "cloudpickle", "proxy"], indirect=True)
+def test_nested_iter_ma_dict_get_hash(memory, dummy_datasets):
+    get_hash = memory.get_hash
+
+    nested_dict = {
+        "a": [np.ma.MaskedArray([1, 2, 3], mask=[1, 0, 1])],
+        "b": {
+            "c": [np.ma.MaskedArray([10, 20, 30], mask=[0, 1, 1])],
+            "d": [np.ma.MaskedArray([-1, -2, -3], mask=[1, 0, 0])],
+        },
+    }
+
+    # Test that the hash changes when data is changed.
+    orig_hash = get_hash(nested_dict)
+    nested_dict["b"]["c"][0][1] = 100
     assert get_hash(nested_dict) != orig_hash

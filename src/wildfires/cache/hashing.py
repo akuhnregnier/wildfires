@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from abc import ABC, abstractmethod
 from collections import OrderedDict
+from collections.abc import Iterable
 from contextlib import contextmanager
 from inspect import iscode
 
@@ -173,6 +174,8 @@ class DFHasher(Hasher):
 class NestedMADictHasher(Hasher):
     """Hashing of (nested) dict with MaskedArray.
 
+    Supports flat, non-nested iterables of MaskedArray as the values.
+
     Note that this does not consider other custom types which are known now or added
     later on.
 
@@ -186,6 +189,16 @@ class NestedMADictHasher(Hasher):
             # If any of the values is a MaskedArray, this hasher is applicable.
             if _ma_hasher.test_argument(val):
                 return True
+
+            if not isinstance(val, np.ndarray) and isinstance(val, Iterable):
+                # If `val` is not a MaskedArray or ndarray but an Iterable,
+                # calculate hash values for every item in the Iterable with
+                # support for MaskedArray. This is only necessary if at least one of
+                # the items in the Iterable is actually a MaskedArray.
+                for item in val:
+                    if _ma_hasher.test_argument(item):
+                        return True
+
         return False
 
     @staticmethod
@@ -196,7 +209,18 @@ class NestedMADictHasher(Hasher):
             if _ma_hasher.test_argument(val):
                 hash_dict[flat_key] = _ma_hasher.hash(val)
             else:
-                hash_dict[flat_key] = joblib.hashing.hash(val)
+                if not isinstance(val, np.ndarray) and isinstance(val, Iterable):
+                    # If `val` is not a MaskedArray or ndarray but an Iterable,
+                    # calculate hash values for every item in the Iterable with
+                    # support for MaskedArray.
+                    hash_dict[flat_key] = []
+                    for item in val:
+                        if _ma_hasher.test_argument(item):
+                            hash_dict[flat_key].append(_ma_hasher.hash(item))
+                        else:
+                            hash_dict[flat_key].append(joblib.hashing.hash(item))
+                else:
+                    hash_dict[flat_key] = joblib.hashing.hash(val)
         # Compute the combined hash value.
         return joblib.hashing.hash(hash_dict)
 
