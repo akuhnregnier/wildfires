@@ -1530,3 +1530,31 @@ def parallel_njit(func):
     set_num_threads(get_ncpus())
     jitted_func = njit(parallel=True, nogil=True)(func)
     return jitted_func
+
+
+def traverse_nested_dict(d, max_recursion=100, _initial_keys=(), _current_recursion=0):
+    """Traverse a nested dictionary, yielding flattened keys and corresponding values.
+
+    Args:
+        d (dict): (Nested) dict.
+        max_recursion (int): Maximum recursion level before a RuntimeError is raised.
+
+    Examples:
+        >>> nested_dict = {'a': 1, 'b': {'c': 2, 'd': {'e': 4}}}
+        >>> list(traverse_nested_dict(nested_dict))
+        [(('a',), 1), (('b', 'c'), 2), (('b', 'd', 'e'), 4)]
+
+    """
+    if _current_recursion > max_recursion:
+        raise RuntimeError("Maximum recursion exceeded")
+
+    for key, val in d.items():
+        if isinstance(val, dict):
+            yield from traverse_nested_dict(
+                val,
+                max_recursion=max_recursion,
+                _initial_keys=_initial_keys + (key,),
+                _current_recursion=_current_recursion + 1,
+            )
+        else:
+            yield (_initial_keys + (key,), val)

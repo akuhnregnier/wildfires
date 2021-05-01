@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 import xxhash
 
+from ..utils import traverse_nested_dict
+
 
 class CodeObj:
     """Return a (somewhat) flattened, hashable version of func.__code__.
@@ -168,6 +170,37 @@ class DFHasher(Hasher):
         return dataset_hash
 
 
+class NestedMADictHasher(Hasher):
+    """Hashing of (nested) dict with MaskedArray.
+
+    Note that this does not consider other custom types which are known now or added
+    later on.
+
+    """
+
+    @staticmethod
+    def test_argument(arg):
+        if not isinstance(arg, dict):
+            return False
+        for flat_key, val in traverse_nested_dict(arg):
+            # If any of the values is a MaskedArray, this hasher is applicable.
+            if _ma_hasher.test_argument(val):
+                return True
+        return False
+
+    @staticmethod
+    def hash(d):
+        """Compute hash for the nested dict containing MaskedArray."""
+        hash_dict = {}
+        for flat_key, val in traverse_nested_dict(d):
+            if _ma_hasher.test_argument(val):
+                hash_dict[flat_key] = _ma_hasher.hash(val)
+            else:
+                hash_dict[flat_key] = joblib.hashing.hash(val)
+        # Compute the combined hash value.
+        return joblib.hashing.hash(hash_dict)
+
+
 @contextmanager
 def adjust_n_jobs(arg):
     if hasattr(arg, "n_jobs"):
@@ -194,4 +227,5 @@ _default_guarded_hashers = [
     DatasetHasher(),
     CubeHasher(),
     DFHasher(),
+    NestedMADictHasher(),
 ]
