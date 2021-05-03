@@ -123,3 +123,40 @@ def process_proxy(output, functions, memory):
             )
         )
     return tuple(processed)
+
+
+def get_attribute(attribute):
+    """Reimplementation of operator.attrgetter that can be used with `signature`."""
+
+    def _get_attr(obj):
+        return getattr(obj, attribute)
+
+    return _get_attr
+
+
+class EstimatorHashProxy(HashProxy):
+    """Lazy Estimator proxy containing a pre-calculated hash value."""
+
+    __slots__ = "predict"
+
+    def __init__(self, *args, predict_proxy, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.predict = predict_proxy
+
+
+def get_proxied_estimator(estimator, memory):
+    """Enable lazy retrieval of `estimator.predict`."""
+    # Turn into lazy object with a cached hash value.
+    def get_estimator():
+        return estimator
+
+    return EstimatorHashProxy(
+        Factory(get_estimator),
+        memory.get_hash,
+        hash_value=memory.get_hash(estimator),
+        predict_proxy=process_proxy(
+            (estimator,),
+            (get_attribute("predict"),),
+            memory=memory,
+        )[0],
+    )
