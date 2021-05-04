@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import types
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from collections.abc import Iterable
@@ -240,10 +241,20 @@ def adjust_n_jobs(arg):
         yield
 
 
+@contextmanager
+def adjust_instance_n_jobs(arg):
+    if isinstance(arg, types.MethodType):
+        with adjust_n_jobs(arg.__self__):
+            yield
+    else:
+        # Do nothing.
+        yield
+
+
 # Run outside of context managers.
 _default_initial_hashers = []
 # Context managers that temporarily change objects to enable consistent hashing.
-_default_context_managers = [adjust_n_jobs]
+_default_context_managers = [adjust_n_jobs, adjust_instance_n_jobs]
 # Run within context managers.
 _default_guarded_hashers = [
     MAHasher(),

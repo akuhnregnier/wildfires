@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-
 import numpy as np
 import pytest
+from sklearn.ensemble import RandomForestRegressor
 
 from .utils import *  # noqa
 
@@ -67,6 +67,48 @@ def test_datasets_get_hash(memory, dummy_datasets):
     dummy_datasets.cube.coord("time").long_name = "testing"
     coord_mod_hash = get_hash(dummy_datasets)
     assert coord_mod_hash != mask_mod_hash
+
+
+@pytest.mark.parametrize("memory", ["iris", "cloudpickle", "proxy"], indirect=True)
+def test_estimator_get_hash(memory):
+    get_hash = memory.get_hash
+
+    # Generate training data.
+    rng = np.random.default_rng(0)
+    X = rng.random((10, 2))
+    y = rng.random((10,))
+
+    # Initialise the estimator.
+    est = RandomForestRegressor(n_jobs=None)
+    # Fit the estimator.
+    est.fit(X, y)
+
+    # Store the original hash of the model and its predict method.
+    orig_est_hash = get_hash(est)
+    orig_est_predict_hash = get_hash(est.predict)
+
+    # Ensure 'n_jobs' has not been changed.
+    assert est.n_jobs is None
+
+    # Ensure this does not change as 'n_jobs' is changed.
+    est.n_jobs = 1
+    assert get_hash(est) == orig_est_hash
+    assert get_hash(est.predict) == orig_est_predict_hash
+
+    # Ensure 'n_jobs' has not been changed.
+    assert est.n_jobs == 1
+
+    # Ensure the hash changes as the model is retrained.
+
+    # Generate new training data.
+    rng = np.random.default_rng(1)
+    X = rng.random((10, 2))
+    y = rng.random((10,))
+    # Fit the estimator anew.
+    est.fit(X, y)
+    # Ensure the hash has changed.
+    assert get_hash(est) != orig_est_hash
+    assert get_hash(est.predict) != orig_est_predict_hash
 
 
 @pytest.mark.parametrize("memory", ["iris", "cloudpickle", "proxy"], indirect=True)
