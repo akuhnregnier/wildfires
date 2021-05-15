@@ -793,15 +793,16 @@ def regrid(
 
         # Make sure that the latitude and longitude coordinates are placed after the
         # initial coordinates to ensure proper indexing below. Note that additional
-        # coordinates may exist which are not reflected in the data's shape - thus
-        # the use of `len(cube.shape) - 1` as opposed to simply `-1`.
+        # coordinates (or fewer) may exist which are not reflected in the data's shape
+        # - thus the use of both `len(cube.shape) - 1` as opposed to simply `-1` and
+        # cube.coord(dimensions=...) instead of simply cube.coords().
         assert (
             set(
                 (
                     coord.name()
                     for coord in (
-                        cube.coords()[len(cube.shape) - 2],
-                        cube.coords()[len(cube.shape) - 1],
+                        cube.coord(dimensions=len(cube.shape) - 2),
+                        cube.coord(dimensions=len(cube.shape) - 1),
                     )
                 )
             )
@@ -809,10 +810,15 @@ def regrid(
         )
 
         # Ensure the initial coordinates reflect the data.
-        assert all(
-            (len(cube.coords()[i].points) == cube.shape[i])
-            for i in range(len(cube.shape))
-        )
+        for i in range(len(cube.shape)):
+            dim_coords = cube.coords(dimensions=i)
+            if dim_coords:
+                assert (
+                    len(dim_coords) == 1
+                ), "There should only be 1 coordinate per dimension."
+                assert (
+                    len(dim_coords[0].points) == cube.shape[i]
+                ), "The number of coordinate points should match the data shape."
 
         # Ensure all dim coords are associated with a single dimension only.
         for coord, dims in cube._dim_coords_and_dims:
