@@ -814,17 +814,34 @@ def regrid(
             for i in range(len(cube.shape))
         )
 
+        # Ensure all dim coords are associated with a single dimension only.
+        for coord, dims in cube._dim_coords_and_dims:
+            assert isinstance(dims, (np.integer, int)) or len(dims) == 1
+
         # Iterate over all dimensions but (guaranteed to be preceding) latitude and
         # longitude.
-        regridded_cubes = iris.cube.CubeList()
         indices_lists = [
             ind_arr.flatten()
             for ind_arr in np.indices(cube.shape[: len(cube.shape) - 2])
         ]
+        new_shape = [*cube.shape[: len(cube.shape) - 2], None, None]
+
+        lat_coord_dims = cube.coord_dims("latitude")
+        assert len(lat_coord_dims) == 1
+        lon_coord_dims = cube.coord_dims("longitude")
+        assert len(lon_coord_dims) == 1
+
+        new_shape[lat_coord_dims[0]] = new_latitudes.shape[0]
+        new_shape[lon_coord_dims[0]] = new_longitudes.shape[0]
+
+        regridded_data = np.ma.MaskedArray(
+            np.zeros(tuple(new_shape)),
+            mask=True,
+        )
         for indices in tqdm(
             zip(*indices_lists),
             total=len(indices_lists[0]),
-            desc="Regridding time slices",
+            desc="Regridding spatial slices",
             disable=not verbose,
         ):
             # Reuse the regridder between subsequent regridding operations.
@@ -837,17 +854,44 @@ def regrid(
                 regridder=regridder,
                 return_regridder=True,
             )
-            regridded_cubes.append(regridded_cube)
+            regridded_data[indices] = regridded_cube.data
 
-        to_remove = set(
-            [coord.name() for coord in regridded_cubes[0].coords()]
-        ).intersection(set(("year", "month_number")))
-        for regridded_cube in regridded_cubes:
-            for coord in to_remove:
-                regridded_cube.remove_coord(coord)
+        new_lat_lon_coords = [None, None]
+        new_lat_lon_coords[lat_coord_dims[0] - (len(cube.shape) - 2)] = (
+            new_latitudes,
+            lat_coord_dims[0],
+        )
+        new_lat_lon_coords[lon_coord_dims[0] - (len(cube.shape) - 2)] = (
+            new_longitudes,
+            lon_coord_dims[0],
+        )
+
+        def get_single_dim(dim):
+            if isinstance(dim, tuple):
+                assert len(dim) == 1
+                return dim[0]
+            return dim
+
+        regridded_cube = iris.cube.Cube(
+            regridded_data,
+            dim_coords_and_dims=(
+                # Account for potentially unordered dim_coords_and_dims, e.g. with
+                # ('time', 0) being the last element in the list.
+                [
+                    (dim_coord, dim)
+                    for dim_coord, dim in cube._dim_coords_and_dims
+                    if get_single_dim(dim) in range(len(cube.shape) - 2)
+                ]
+                + new_lat_lon_coords
+            ),
+            aux_coords_and_dims=cube._aux_coords_and_dims,
+            aux_factories=cube.aux_factories,
+        )
+        regridded_cube.metadata = cube.metadata
+
         if return_regridder:
-            return regridded_cubes.merge_cube(), regridder
-        return regridded_cubes.merge_cube()
+            return regridded_cube, regridder
+        return regridded_cube
 
     # This is where the core 2D regridding takes place.
     assert cube_contains_coords(
