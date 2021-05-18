@@ -809,17 +809,6 @@ def regrid(
             == set(("latitude", "longitude"))
         )
 
-        # Ensure the initial coordinates reflect the data.
-        for i in range(len(cube.shape)):
-            dim_coords = cube.coords(dimensions=i)
-            if dim_coords:
-                assert (
-                    len(dim_coords) == 1
-                ), "There should only be 1 coordinate per dimension."
-                assert (
-                    len(dim_coords[0].points) == cube.shape[i]
-                ), "The number of coordinate points should match the data shape."
-
         # Ensure all dim coords are associated with a single dimension only.
         for coord, dims in cube._dim_coords_and_dims:
             assert isinstance(dims, (np.integer, int)) or len(dims) == 1
