@@ -5313,7 +5313,13 @@ class Ext_MOD15A2H_fPAR(MonthlyDataset):
         # Location of temporary source files.
         # See wildfires/data/mosaic_modis_tiles.py
         raw_dir = os.path.join(os.environ["EPHEMERAL"], "MOD15A2Hv006_0d25")
-        files = glob.glob(os.path.join(raw_dir, "*.nc"))
+        files = [
+            # Ignore 2000217 because it appears to be missing some data which is not
+            # reflected in the extreme bounds, making processing difficult.
+            f
+            for f in glob.glob(os.path.join(raw_dir, "*.nc"))
+            if "_2000217_" not in f
+        ]
         files.sort()
         raw_cubes = load_cubes(files)
 
@@ -5369,6 +5375,7 @@ class Ext_MOD15A2H_fPAR(MonthlyDataset):
 
         # Dates are expected to be absent (start dates).
         expected_missing = (
+            datetime(2000, 8, 4),
             datetime(2001, 6, 18),
             datetime(2001, 6, 26),
             datetime(2016, 2, 18),
