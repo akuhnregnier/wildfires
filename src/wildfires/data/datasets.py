@@ -4298,7 +4298,7 @@ class GFEDv4(MonthlyDataset):
         )
 
         latitudes = iris.coords.DimCoord(
-            get_centres(np.linspace(90, -90, 721)),
+            get_centres(np.linspace(-90, 90, 721)),
             standard_name="latitude",
             units="degrees",
         )
@@ -4312,7 +4312,8 @@ class GFEDv4(MonthlyDataset):
         longitudes.guess_bounds()
 
         burned_area_cube = iris.cube.Cube(
-            data,
+            # Reverse latitudes.
+            data[:, ::-1],
             long_name=long_name,
             units=unit,
             dim_coords_and_dims=[(time_coord, 0), (latitudes, 1), (longitudes, 2)],
