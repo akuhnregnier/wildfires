@@ -1526,10 +1526,17 @@ def update_nested_dict(old, new, copy_mode="shallow"):
     return old
 
 
-def parallel_njit(func):
-    set_num_threads(get_ncpus())
-    jitted_func = njit(parallel=True, nogil=True)(func)
-    return jitted_func
+def parallel_njit(*args, cache=False):
+    if args:
+        if len(args) > 1:
+            raise ValueError("Only 1 arg should be supplied.")
+        func = args[0]
+        if not callable(func):
+            raise ValueError("Given arg must be callable.")
+        set_num_threads(get_ncpus())
+        jitted_func = njit(parallel=True, nogil=True, cache=cache)(func)
+        return jitted_func
+    return partial(parallel_njit, cache=cache)
 
 
 def traverse_nested_dict(d, max_recursion=100, _initial_keys=(), _current_recursion=0):
