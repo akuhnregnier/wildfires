@@ -47,6 +47,8 @@ __all__ = (
 # Sentinel value used to denote calls that are already cached.
 IN_STORE = object()
 
+DEFAULT_ROOT_DIR = os.path.join(DATA_DIR, "joblib_cache")
+
 
 class MemoryMixin:
     @property
@@ -341,24 +343,29 @@ class ProxyMemory(MemoryMixin):
         return cached_func
 
 
-def get_memory(cache_dir="", **kwargs):
+def get_memory(cache_dir="", root_dir=DEFAULT_ROOT_DIR, **kwargs):
     """Get a joblib Memory object used to cache function results.
 
     Args:
         cache_dir (str or None): Joblib cache directory name within
             `wildfires.data.DATA_DIR`. If None, no caching will be done.
+        root_dir (str or None): Root cache directory that will be used instead of
+            `wildfires.data.DATA_DIR` if given.
         **kwargs: Extra arguments passed to `joblib.Memory()`.
 
     Returns:
         joblib.memory.Memory: Joblib Memory object.
 
     """
-    return Memory(
-        location=os.path.join(DATA_DIR, "joblib_cache", cache_dir)
-        if cache_dir is not None and data_is_available()
-        else None,
-        **kwargs,
-    )
+    if root_dir == DEFAULT_ROOT_DIR and cache_dir is None:
+        location = None
+    else:
+        location = os.path.join(root_dir, cache_dir)
+
+    if DATA_DIR in location and not data_is_available():
+        location = None
+
+    return Memory(location=location, **kwargs)
 
 
 def checkattr(name):
