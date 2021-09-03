@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 import pytest
+from iris.time import PartialDateTime
 from sklearn.ensemble import RandomForestRegressor
 
 from .utils import *  # noqa
@@ -145,3 +146,13 @@ def test_nested_iter_ma_dict_get_hash(memory, dummy_datasets):
     orig_hash = get_hash(nested_dict)
     nested_dict["b"]["c"][0][1] = 100
     assert get_hash(nested_dict) != orig_hash
+
+
+@pytest.mark.parametrize("memory", ["iris", "cloudpickle", "proxy"], indirect=True)
+def test_partialdatetime_get_hash(memory):
+    get_hash = memory.get_hash
+
+    dt = PartialDateTime(year=2000, month=1)
+    orig_hash = get_hash(dt)
+    dt.year = 2001
+    assert get_hash(dt) != orig_hash

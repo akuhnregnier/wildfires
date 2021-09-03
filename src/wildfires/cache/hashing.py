@@ -2,7 +2,7 @@
 import types
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from contextlib import contextmanager
 from inspect import iscode
 
@@ -11,6 +11,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import xxhash
+from iris.time import PartialDateTime
 
 from ..utils import traverse_nested_dict
 
@@ -226,6 +227,35 @@ class NestedMADictHasher(Hasher):
         return joblib.hashing.hash(hash_dict)
 
 
+class PartialDateTimeHasher(Hasher):
+    """Hashing of (iterables of) PartialDateTime."""
+
+    @staticmethod
+    def test_argument(arg):
+        if isinstance(arg, PartialDateTime):
+            return True
+        elif isinstance(arg, Sequence) and all(
+            isinstance(v, PartialDateTime) for v in arg
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def hash(arg):
+        if isinstance(arg, PartialDateTime):
+            return PartialDateTimeHasher.calculate_hash(arg)
+        elif isinstance(arg, Sequence) and all(
+            isinstance(v, PartialDateTime) for v in arg
+        ):
+            return joblib.hashing.hash(
+                [PartialDateTimeHasher.calculate_hash(dt) for dt in arg]
+            )
+
+    @staticmethod
+    def calculate_hash(dt):
+        return joblib.hashing.hash([getattr(dt, attr) for attr in dt.__slots__])
+
+
 @contextmanager
 def adjust_n_jobs(arg):
     if hasattr(arg, "n_jobs"):
@@ -263,4 +293,5 @@ _default_guarded_hashers = [
     CubeHasher(),
     DFHasher(),
     NestedMADictHasher(),
+    PartialDateTimeHasher(),
 ]
