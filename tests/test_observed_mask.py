@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
+import glob
+import os
+
 import iris
 import numpy as np
 import pytest
 
 from wildfires.data.cube_aggregation import Datasets, prepare_selection
-from wildfires.data.datasets import CCI_BurnedArea_MERIS_4_1
+from wildfires.data.datasets import DATA_DIR, CCI_BurnedArea_MERIS_4_1
 
 from .utils import data_availability
 
@@ -76,6 +79,17 @@ def test_MERIS_observed_area_mask():
     assert np.all(from_partial.data == reference.data)
 
 
+@pytest.mark.skipif(
+    (
+        not list(
+            glob.glob(
+                os.path.join(DATA_DIR, "CCI_BurnedArea_MERIS_4_1", "**", "*.nc"),
+                recursive=True,
+            )
+        )
+    ),
+    reason="Cannot find MERIS_4_1 source files",
+)
 @pytest.mark.slow
 @data_availability
 @pytest.mark.parametrize("thres", [0.1, 0.8, 0.9])

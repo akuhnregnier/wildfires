@@ -949,8 +949,14 @@ def cube_plotting(
                 vmin = data_vmin
             if vmax is None:
                 vmax = data_vmax
+        elif "norm" in kwargs:
+            warnings.warn(
+                "vmin and/or vmax and norm were given. vmin and/or vmax will be ignored"
+            )
 
-        if "norm" not in kwargs:
+        if "norm" in kwargs:
+            norm = kwargs.pop("norm")
+        else:
             if boundaries is None:
                 boundaries = get_bin_edges(
                     cube.data,
@@ -1087,9 +1093,6 @@ def cube_plotting(
             if extend == "neither":
                 norm.clip = True
 
-            if "norm" not in kwargs:
-                kwargs["norm"] = norm
-
         mesh = ax.pcolormesh(
             gridlons,
             gridlats,
@@ -1101,10 +1104,7 @@ def cube_plotting(
                 # opposed to the coordinate system of the plot.
                 "transform": ccrs.PlateCarree(),
                 "rasterized": True,
-                # TODO: FIXME: Setting vmin/vmax to something close to the data extremes seems
-                # to mess up norm / cmap... - Ignore for now??
-                "vmin": vmin,
-                "vmax": vmax,
+                "norm": norm,
                 **kwargs,
             },
         )
