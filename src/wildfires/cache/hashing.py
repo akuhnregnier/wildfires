@@ -52,6 +52,7 @@ class CodeObj:
             if "co_" in attr
             and "co_firstlineno" not in attr
             and "co_filename" not in attr
+            and "co_lines" not in attr
         )
         # Replace any nested code object (eg. for list comprehensions) with a reduced
         # version by calling the hashable function recursively.
