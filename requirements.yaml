@@ -156,7 +156,6 @@ dependencies:
   - libcblas=3.9.0=7_openblas
   - libclang=11.0.1=default_ha53f305_1
   - libcurl=7.71.1=hcdd3856_8
-  - libdap4=3.20.6=h1d1bd15_1
   - libdeflate=1.7=h7f98852_5
   - libedit=3.1.20191231=he28a2e2_2
   - libev=4.33=h516909a_1

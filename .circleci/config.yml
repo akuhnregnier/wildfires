@@ -1,0 +1,37 @@
+version: 2.1
+orbs:
+  python: circleci/python@2.0.3
+  codecov: codecov/codecov@3.1.1
+
+jobs:
+  build-and-test:
+    docker:
+      - image: cimg/python:3.7.12
+    steps:
+      - checkout
+      - run:
+          name: Install and run tests
+          command: |
+            # Install conda.
+            wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
+            bash miniconda.sh -b -p $HOME/miniconda
+            source "$HOME/miniconda/etc/profile.d/conda.sh"
+            hash -r
+            conda config --set always_yes yes --set changeps1 no
+            conda update -q conda
+            # Useful for debugging any issues with conda
+            conda info -a
+            # Create the new environment.
+            conda env create --file "requirements.yaml" -n wildfires
+            conda activate wildfires
+            # Finally install our package to test.
+            pip install -e .
+            # Run tests.
+            pytest --maxfail=1 -n0 -m "not slow" --cov-report=xml
+      - codecov/upload
+
+workflows:
+  main:
+    jobs:
+      - build-and-test
+

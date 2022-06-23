@@ -15,6 +15,8 @@ Calling repr() on Proxy objects is fine, but calling str() will realise them
 """
 import logging
 import os
+import tempfile
+import warnings
 from copy import deepcopy
 from functools import partial, reduce, wraps
 from inspect import signature
@@ -363,7 +365,8 @@ def get_memory(cache_dir="", root_dir=DEFAULT_ROOT_DIR, **kwargs):
         location = os.path.join(root_dir, cache_dir)
 
     if DATA_DIR in location and not data_is_available():
-        location = None
+        warnings.warn("Using temporary directory as Memory location.")
+        location = tempfile.mkdtemp()
 
     return Memory(location=location, **kwargs)
 
