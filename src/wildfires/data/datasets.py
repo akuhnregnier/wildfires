@@ -46,7 +46,6 @@ import pandas as pd
 import rasterio
 import scipy.ndimage
 from dateutil.relativedelta import relativedelta
-from era5analysis import MonthlyMeanMinMaxDTRWorker, retrieval_processing, retrieve
 from git import InvalidGitRepositoryError, Repo
 from iris.time import PartialDateTime
 from joblib import Parallel, delayed
@@ -796,18 +795,15 @@ def regrid(
         # coordinates (or fewer) may exist which are not reflected in the data's shape
         # - thus the use of both `len(cube.shape) - 1` as opposed to simply `-1` and
         # cube.coord(dimensions=...) instead of simply cube.coords().
-        assert (
-            set(
-                (
-                    coord.name()
-                    for coord in (
-                        cube.coord(dimensions=len(cube.shape) - 2),
-                        cube.coord(dimensions=len(cube.shape) - 1),
-                    )
+        assert set(
+            (
+                coord.name()
+                for coord in (
+                    cube.coord(dimensions=len(cube.shape) - 2),
+                    cube.coord(dimensions=len(cube.shape) - 1),
                 )
             )
-            == set(("latitude", "longitude"))
-        )
+        ) == set(("latitude", "longitude"))
 
         # Ensure all dim coords are associated with a single dimension only.
         for coord, dims in cube._dim_coords_and_dims:
@@ -3584,6 +3580,12 @@ class ERA5_Temperature(MonthlyDataset):
             )
         )
         if not files:
+            from era5analysis import (
+                MonthlyMeanMinMaxDTRWorker,
+                retrieval_processing,
+                retrieve,
+            )
+
             logger.info("No processed files found. Downloading and processing now.")
             retrieval_processing(
                 retrieve(
