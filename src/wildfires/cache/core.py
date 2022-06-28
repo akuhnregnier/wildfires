@@ -434,6 +434,15 @@ def _calculate_dependency_hash(dependencies):
         dependency_hashes.append(joblib.hashing.hash(signature(func)))
         dependency_hashes.append(joblib.hashing.hash(CodeObj(func.__code__).hashable()))
 
+    assert 2 * len(dependencies) == len(dependency_hashes)
+
+    if os.environ.get("CACHE_DEBUG") == "1":
+        print("Dependency hashes:")
+        for f, sig_hash_val, code_hash_val in zip(
+            dependencies, dependency_hashes[::2], dependency_hashes[1::2]
+        ):
+            print(f, sig_hash_val, code_hash_val)
+
     return joblib.hashing.hash(dependency_hashes)
 
 
@@ -466,9 +475,26 @@ def _get_hashed(func, *args, dependencies=(), hash_func, ignore=None, **kwargs):
     # Hash the original function to differentiate different functions apart.
     func_code = CodeObj(func.__code__).hashable()
 
-    return dict(
+    hashed = dict(
         func_code=func_code,
         args_hashes=args_hashes,
         kwargs_hashes=kwargs_hashes,
         dependencies=_calculate_dependency_hash(dependencies),
     )
+
+    if os.environ.get("CACHE_DEBUG") == "1":
+        from pprint import pprint
+
+        print("func", func)
+        print("hash func", hash_func)
+        print("ignore", ignore)
+        print("args:")
+        pprint(args)
+        print("kwargs:")
+        pprint(kwargs)
+        print("dependencies:")
+        pprint(dependencies)
+        print("hashed:")
+        pprint(hashed)
+
+    return hashed
